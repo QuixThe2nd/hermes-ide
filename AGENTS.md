@@ -10,7 +10,7 @@ past that); see the **routing table** at the end and read the area file before e
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
-messaging gateway (Telegram, Discord, Slack, and ~20 other platforms), a TUI,
+messaging gateway (Discord, Slack, and ~20 other platforms), a TUI,
 and an Electron desktop app. It learns across sessions (memory + skills),
 delegates to subagents, runs scheduled jobs, and drives a real terminal and
 browser.
@@ -45,6 +45,24 @@ Two invariants shape almost every design decision and are the lens for reviewing
   arrive as a CLI command + skill, a service-gated tool, or a plugin — but the
   plugin itself can and often should live in this tree (see the fork note at
   the top).
+
+## Codebase ownership
+
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+In the area your change touches, act as an owner, not a guest: merge duplicate code into one
+implementation instead of adding a parallel one, and fix related bugs you find rather than only
+mentioning them, each in its own commit with its own test. Unrelated areas stay out of the diff;
+report them instead. The full coding conventions live in `skills/dev-lanes/SOUL.md`, which every
+coding lane and delegated agent receives automatically; read it before your first change.
+
+## Go-only feature implementation
+
+Every coding agent and subagent implementing a new hermes-ide feature writes
+the new functionality in Go — never production Python. Existing Python may be
+migrated or deleted while moving toward a 100% Go codebase; do not grow it.
+`.github/workflows/go-line-balance.yml` enforces this mechanically: every PR
+must keep `python added lines <= go added lines`, and a violating diff cannot
+merge (the check is required via "All required checks pass").
 
 ## Contribution Rubric — What We Want / What We Don't
 
@@ -103,6 +121,13 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
   integrate the same *category*, design one shared interface instead of merging
   them one at a time (see the ABC + orchestrator note under the Footprint
   Ladder).
+- **Study established products before designing.** Before designing a solution,
+  look at how established products in the space solve the same problem and
+  adopt their proven patterns and conventions rather than inventing an approach
+  from scratch.
+- **Check the dependency before reimplementing.** Before hand-rolling a helper,
+  check the docs and types of the dependencies the repo already has — assume a
+  well-maintained library can do it until proven otherwise.
 - **Behavior contracts over snapshots.** Tests should assert how two pieces of
   data must relate (invariants), not freeze a current value (model lists,
   config version literals, enumeration counts). See "Don't write
@@ -270,7 +295,6 @@ hermes-agent/
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
 ├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
 ├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
-├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
 └── tests/                # Pytest suite (~39k tests / ~3.7k files, Sep 2026)
 ```
 
@@ -281,7 +305,7 @@ Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
 ## TypeScript Style
 
-Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
+Applies to TypeScript across Hermes: desktop, TUI, and future TS packages.
 
 - Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
 - Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
@@ -335,8 +359,8 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
-  `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
+- **Moving a symbol means fixing its docs in the same PR:** grep `skills/`
+  and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.
 
@@ -370,7 +394,7 @@ class AIAgent:
         disabled_toolsets: list = None,
         quiet_mode: bool = False,
         save_trajectories: bool = False,
-        platform: str = None,              # "cli", "telegram", etc.
+        platform: str = None,              # "cli", "discord", etc.
         session_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
@@ -427,7 +451,6 @@ All slash commands are defined in a central `COMMAND_REGISTRY` list of `CommandD
 - **CLI** — `process_command()` resolves aliases via `resolve_command()`, dispatches on canonical name
 - **Gateway** — `GATEWAY_KNOWN_COMMANDS` frozenset for hook emission, `resolve_command()` for dispatch
 - **Gateway help** — `gateway_help_lines()` generates `/help` output
-- **Telegram** — `telegram_bot_commands()` generates the BotCommand menu
 - **Slack** — `slack_subcommand_map()` generates `/hermes` subcommand routing
 - **Autocomplete** — `COMMANDS` flat dict feeds `SlashCommandCompleter`
 - **CLI help** — `COMMANDS_BY_CATEGORY` dict feeds `show_help()`
@@ -461,7 +484,7 @@ if canonical == "mycommand":
 - `gateway_only` — only available in messaging platforms
 - `gateway_config_gate` — config dotpath (e.g. `"display.tool_progress_command"`); when set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. `GATEWAY_KNOWN_COMMANDS` always includes config-gated commands so the gateway can dispatch them; help/menus only show them when the gate is open.
 
-**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
+**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, platform menus, Slack mapping, and autocomplete all update automatically.
 
 ---
 
@@ -606,7 +629,7 @@ Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 `model`, `agent`, `terminal`, `compression`, `display`, `stt`, `tts`,
 `memory`, `security`, `delegation`, `smart_model_routing`, `checkpoints`,
 `auxiliary`, `curator`, `skills`, `gateway`, `logging`, `cron`, `profiles`,
-`plugins`, `honcho`.
+`plugins`.
 
 `auxiliary` holds per-task overrides for side-LLM work (curator, vision,
 embedding, title generation, session_search, etc.) — each task can pin
@@ -773,7 +796,7 @@ explicitly (it's idempotent).
 #### Native plugin compatibility policy
 
 The canonical contract and deprecation policy live in
-`website/docs/developer-guide/plugins/index.md#native-plugin-compatibility-contract`.
+the native plugin compatibility contract in the developer guide.
 Compatibility is enforced as a behavior contract, not through a monolithic
 `PLUGIN_API_VERSION`, a manifest-wide native `api:` match, or version literals
 on unrelated payloads. Keep documented plugin surfaces additive:
@@ -798,8 +821,7 @@ source-reading tests, or assertions that a global version literal changed.
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in
-providers include **honcho, mem0, supermemory, byterover, hindsight,
-holographic, openviking, retaindb**.
+provider is **hindsight**. Other names fail closed and are not shipped.
 
 Discovery covers the same four sources as the general `PluginManager` —
 bundled, `$HERMES_HOME/plugins/`, `./.hermes/plugins/` (opt-in via
@@ -872,7 +894,7 @@ NOT import them (would double-instantiate `ProviderProfile`). Plugins
 without an explicit `kind:` get auto-coerced via a source-text heuristic
 (`register_provider` + `ProviderProfile` in `__init__.py`).
 
-Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
+Full authoring guide: the model-provider plugin page in the developer guide.
 
 ### Dashboard / context-engine / image-gen plugin directories
 
@@ -892,13 +914,13 @@ companion repo, not in this tree.
 Two parallel surfaces:
 
 - **`skills/`** — built-in skills shipped and loadable by default.
-  Organized by category directories (e.g. `skills/github/`, `skills/mlops/`).
+  Organized by category directories (e.g. `skills/research/`, `skills/productivity/`).
 - **`optional-skills/`** — heavier or niche skills shipped with the repo but
   NOT active by default. Installed explicitly via
   `hermes skills install official/<category>/<skill>`. Adapter lives in
   `tools/skills_hub.py` (`OptionalSkillSource`). Categories include
   `autonomous-ai-agents`, `blockchain`, `communication`, `creative`,
-  `devops`, `email`, `health`, `mcp`, `migration`, `mlops`, `productivity`,
+  `devops`, `email`, `health`, `mcp`, `migration`, `productivity`,
   `research`, `security`, `web-development`.
 
 When reviewing skill PRs, check which directory they target — heavy-dep or
@@ -1001,8 +1023,8 @@ contributor skill PRs.
 ## Toolsets
 
 All toolsets are defined in `toolsets.py` as a single `TOOLSETS` dict.
-Each platform's adapter picks a base toolset (e.g. Telegram uses
-`"messaging"`); `_HERMES_CORE_TOOLS` is the default bundle most
+Each platform's adapter picks a base toolset (e.g. WhatsApp uses
+`"hermes-whatsapp"`); `_HERMES_CORE_TOOLS` is the default bundle most
 platforms inherit from.
 
 Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
@@ -1082,7 +1104,7 @@ Config section (`curator:` in `config.yaml`):
 `enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
 `archive_after_days`, `backup.*`.
 
-Full user-facing docs: `website/docs/user-guide/features/curator.md`.
+Full user-facing docs: the curator page in the user guide.
 
 ---
 
@@ -1594,7 +1616,7 @@ extract, not to regex around it.
 | `cron/` | `cron/AGENTS.md` | Scheduler invariants and job fields |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
 
-Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,
+Long-form background lives in the developer guide (agent-loop, prompt-assembly,
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,
 session-storage, ...). Workflow rules (PR/issue/review/salvage process) live in the
 `hermes-agent-dev` skill, not here.

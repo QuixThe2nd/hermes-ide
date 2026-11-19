@@ -12,7 +12,7 @@ emitted here ride the existing ``status_callback`` rail
 _status_callback_sync``) under a dedicated event type
 (:data:`COMPRESSION_TOOL_STATUS_EVENT`) so the gateway can give them
 send-once/edit-in-place episode semantics without touching the
-Telegram/Slack ``send_or_update_status`` path.
+messaging ``send_or_update_status`` path.
 
 Coupling notes:
 - Gateway session hygiene (``gateway/run.py``) drives the SAME line builders
@@ -28,8 +28,8 @@ Coupling notes:
   episode by matching the prefixes.
 - The routine compression status templates (COMPACTION_STATUS et al.) are
   NOT reworded here; the gateway noise filter
-  (``_TELEGRAM_NOISY_STATUS_RE``) and
-  ``tests/gateway/test_telegram_noise_filter.py`` pinned data stay coupled
+  (``_NOISY_STATUS_RE``) and
+  ``tests/gateway/test_compression_progress_notices.py`` pinned data stay coupled
   to those, unchanged.
 """
 
@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 # Dedicated status_callback event type for the tool-style lifecycle. The
 # gateway keys per-chat episode state off (adapter, chat_id) and edits one
-# message per episode; platforms with send_or_update_status (Telegram/Slack)
-# keep their existing per-status-key editing untouched.
+# message per episode; platforms with send_or_update_status keep their
+# existing per-status-key editing untouched.
 COMPRESSION_TOOL_STATUS_EVENT = "compression_tool"
 
 TOOL_NAME = "context_compress"
@@ -355,7 +355,7 @@ def emit_compression_tool_status(
 
     Routed directly through ``status_callback`` (not ``_emit_status``) so the
     CLI transcript keeps its existing lines. The surface is Discord-only:
-    sessions on any other platform (CLI/TUI/Telegram/Slack/...) get NO event
+    sessions on any other platform (CLI/TUI/Slack/...) get NO event
     at all, keeping their status behavior byte-identical — the gateway's
     episode rail (gateway/run.py) is the sole consumer. ``attempt_token``
     identifies the emitting attempt to the gateway across the synchronous

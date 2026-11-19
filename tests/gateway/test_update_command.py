@@ -15,7 +15,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/update", platform=Platform.TELEGRAM,
+def _make_event(text="/update", platform=Platform.SLACK,
                 user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
     source = SessionSource(
@@ -33,7 +33,6 @@ def _make_runner():
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
-    runner._voice_mode = {}
     runner._update_prompt_pending = {}
     return runner
 
@@ -124,7 +123,7 @@ class TestHandleUpdateCommand:
     async def test_writes_pending_marker(self, tmp_path):
         """Writes .update_pending.json with correct platform and chat info."""
         runner = _make_runner()
-        event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+        event = _make_event(platform=Platform.SLACK, chat_id="99999")
         event.message_id = "m-update"
 
         fake_root = tmp_path / "project"
@@ -146,7 +145,7 @@ class TestHandleUpdateCommand:
         pending_path = hermes_home / ".update_pending.json"
         assert pending_path.exists()
         data = json.loads(pending_path.read_text())
-        assert data["platform"] == "telegram"
+        assert data["platform"] == "slack"
         assert data["chat_id"] == "99999"
         assert data["chat_type"] == "dm"
         assert data["message_id"] == "m-update"
@@ -294,12 +293,12 @@ class TestSendUpdateNotification:
 
         pending_path = hermes_home / ".update_pending.json"
         pending_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "67890", "user_id": "12345",
+            "platform": "discord", "chat_id": "67890", "user_id": "12345",
         }))
         (hermes_home / ".update_output.txt").write_text("still running")
 
         mock_adapter = AsyncMock()
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
@@ -317,13 +316,13 @@ class TestSendUpdateNotification:
 
         claimed_path = hermes_home / ".update_pending.claimed.json"
         claimed_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "67890", "user_id": "12345",
+            "platform": "discord", "chat_id": "67890", "user_id": "12345",
         }))
         (hermes_home / ".update_output.txt").write_text("done")
         (hermes_home / ".update_exit_code").write_text("0")
 
         mock_adapter = AsyncMock()
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
@@ -341,7 +340,7 @@ class TestSendUpdateNotification:
 
         # Write pending marker
         pending = {
-            "platform": "telegram",
+            "platform": "discord",
             "chat_id": "67890",
             "user_id": "12345",
             "timestamp": "2026-03-04T21:00:00",
@@ -355,7 +354,7 @@ class TestSendUpdateNotification:
         # Mock the adapter
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
@@ -377,7 +376,7 @@ class TestSendUpdateNotification:
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
         pending_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "111", "user_id": "222",
+            "platform": "discord", "chat_id": "111", "user_id": "222",
         }))
         output_path.write_text("✓ Done")
         exit_code_path.write_text("0")
@@ -385,7 +384,7 @@ class TestSendUpdateNotification:
         # Adapter send raises
         mock_adapter = AsyncMock()
         mock_adapter.send.side_effect = RuntimeError("network error")
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             await runner._send_update_notification()
@@ -417,9 +416,9 @@ class TestSendUpdateNotification:
         output_path.write_text("Done")
         exit_code_path.write_text("0")
 
-        # Only telegram adapter available, but pending says discord
+        # Only slack adapter available, but pending says discord
         mock_adapter = AsyncMock()
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner.adapters = {Platform.SLACK: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             result = await runner._send_update_notification()
@@ -568,7 +567,7 @@ class TestWatchUpdateProgress:
         hermes_home.mkdir()
 
         (hermes_home / ".update_pending.json").write_text(json.dumps({
-            "platform": "telegram",
+            "platform": "discord",
             "chat_id": "67890",
             "user_id": "12345",
         }))
@@ -578,7 +577,7 @@ class TestWatchUpdateProgress:
         (hermes_home / ".update_exit_code").write_text("0")
 
         mock_adapter = AsyncMock()
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner.adapters = {Platform.DISCORD: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
             await runner._watch_update_progress(poll_interval=0.01, stream_interval=0.01, timeout=1.0)

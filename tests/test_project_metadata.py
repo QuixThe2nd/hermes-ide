@@ -58,19 +58,13 @@ def test_lazy_installable_extras_excluded_from_all():
     # list so the test stays a contract — adding a new opt-in backend
     # means updating this list AND verifying [all] doesn't contain it.
     lazy_covered_extras = {
-        "anthropic", "bedrock",
+        "anthropic",
         "exa", "firecrawl", "parallel-web",
         "fal",
-        "edge-tts", "tts-premium",
-        "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
-        "stt-whisper",
-        "modal", "daytona", "vercel",
         "messaging", "matrix",
         "discord",
-        "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite",
-        "honcho", "hindsight",
-        "supermemory", "mem0",
-        "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
+        "hindsight",
+        "mistral",  # mistralai provider SDK, lazy-installed
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:
@@ -79,7 +73,7 @@ def test_lazy_installable_extras_excluded_from_all():
             if f"hermes-agent[{extra}]" in spec
         ]
         assert not offending, (
-            f"[{extra}] is in [all] but also in LAZY_DEPS. "
+            f"[{extra}] is in [all] but is a PM on-demand extra. "
             f"Remove it from [all] in pyproject.toml — it lazy-installs "
             f"at first use. Found in [all]: {offending}"
         )

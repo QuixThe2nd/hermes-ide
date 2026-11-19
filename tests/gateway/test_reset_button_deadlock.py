@@ -1,4 +1,4 @@
-"""Regression test for #35994: Telegram /new confirm-button deadlock.
+"""Regression test for #35994: /new confirm-button deadlock.
 
 The /new confirmation button callback runs the slash-confirm handler on the
 asyncio event loop (see GatewayRunner._request_slash_confirm). That handler
@@ -28,7 +28,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -47,12 +47,11 @@ def _make_runner_with_cached_agent(close_fn):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
@@ -62,12 +61,12 @@ def _make_runner_with_cached_agent(close_fn):
     session_entry = SessionEntry(
         session_key=session_key, session_id="sess-old",
         created_at=datetime.now(), updated_at=datetime.now(),
-        platform=Platform.TELEGRAM, chat_type="dm",
+        platform=Platform.DISCORD, chat_type="dm",
     )
     new_entry = SessionEntry(
         session_key=session_key, session_id="sess-new",
         created_at=datetime.now(), updated_at=datetime.now(),
-        platform=Platform.TELEGRAM, chat_type="dm",
+        platform=Platform.DISCORD, chat_type="dm",
     )
     runner.session_store = MagicMock()
     runner.session_store.reset_session.return_value = new_entry

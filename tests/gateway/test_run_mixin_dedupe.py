@@ -16,7 +16,6 @@ from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_shutdown import GatewayShutdownMixin
 from gateway.run_startup import GatewayStartupMixin
-from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn_runner import TurnRunner, _TurnRunnerCore
 
 # (method name, module-level mixin class) pairs that were byte-identical duplicates of
@@ -26,23 +25,12 @@ CONSOLIDATED_MIXIN_METHODS = (
     ("_retain_background_task", GatewayAdapterLifecycleMixin),
     ("_goal_still_active_for_session", GatewayBusySessionMixin),
     ("_lookup_session_id_under_store_lock", GatewayBusySessionMixin),
-    ("_demote_interrupt", GatewayBusySessionMixin),
-    ("_try_agent_verb", GatewayBusySessionMixin),
     ("_agent_has_active_subagents", GatewayBusySessionMixin),
     ("_session_has_compression_in_flight", GatewayBusySessionMixin),
-    ("_steer_running_agent", GatewayBusySessionMixin),
-    ("_steer_active_subagents", GatewayBusySessionMixin),
-    ("_resolve_busy_steer_or_redirect", GatewayBusySessionMixin),
     ("_hm_text_only", GatewayInboundMixin),
-    ("_hm_busy_steer", GatewayInboundMixin),
     ("_clear_plugin_message_injector", GatewayInboundMixin),
-    ("_busy_profile_name_for_source", GatewayConfigLoadersMixin),
-    ("_start_free_tier_bootstrap", GatewayStartupMixin),
     ("_stop_systemd_watchdog", GatewayShutdownMixin),
     ("wait_for_shutdown", GatewayShutdownMixin),
-    ("_telegram_topic_root_lobby_message", GatewayTopicThreadsMixin),
-    ("_telegram_topic_root_new_message", GatewayTopicThreadsMixin),
-    ("_telegram_topic_help_text", GatewayTopicThreadsMixin),
     ("_current_session_run_generation", GatewayAgentCacheMixin),
     ("_is_session_run_current", GatewayAgentCacheMixin),
     ("_set_pending_turn_sidecar_notes", GatewayAgentCacheMixin),

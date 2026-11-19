@@ -82,7 +82,7 @@ def _make_context(
         scope_id=guild_id,
         message_id=message_id,
     )
-    connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
+    connected = connected if connected is not None else [Platform.DISCORD, Platform.WHATSAPP]
     if notification_channels is None:
         notification_channels = {
             Platform.DISCORD: DeliveryTarget(
@@ -134,7 +134,7 @@ class TestEphemeralChangeKeyParity:
         ("guild_id", dict(guild_id="123123123")),
         ("parent_chat_id", dict(parent_chat_id="999000111")),
         ("chat_id", dict(chat_id="999999999", parent_chat_id="999999999")),
-        ("platform", dict(platform=Platform.TELEGRAM)),
+        ("platform", dict(platform=Platform.DISCORD)),
         ("connected_platforms", dict(connected=[Platform.DISCORD])),
         ("message_id_cleared", dict(message_id=None)),
     ]
@@ -214,54 +214,6 @@ def _source():
     )
 
 
-class _VcAdapter:
-    def __init__(self, value):
-        self.value = value
-
-    def get_voice_channel_context(self, guild_id):
-        return self.value
-
-
-def _vc_runner(vc_value):
-    adapter = _VcAdapter(vc_value)
-    runner = _make_runner(adapters={Platform.DISCORD: adapter})
-    return runner, adapter
-
-
-def _vc_event():
-    return SimpleNamespace(raw_message=SimpleNamespace(guild_id="777"))
-
-
-class TestVoiceChannelSidecarNote:
-    def test_first_sighting_injects(self):
-        runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: **Voice:** dev-vc (2 members)]"
-
-    def test_unchanged_state_injects_nothing(self):
-        runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
-
-    def test_member_change_injects_again(self):
-        runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        adapter.value = "**Voice:** dev-vc (3 members)"
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: **Voice:** dev-vc (3 members)]"
-
-    def test_leaving_channel_injects_disconnect_note(self):
-        runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        adapter.value = ""
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: not connected to a voice channel]"
-
-    def test_never_in_channel_injects_nothing(self):
-        runner, _ = _vc_runner("")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
-
-
 # ---------------------------------------------------------------------------
 # 5. Sidecar note staging: one-shot per turn
 # ---------------------------------------------------------------------------
@@ -282,14 +234,14 @@ class TestConnectedPlatformsOrder:
     def test_sorted_regardless_of_insertion_order(self):
         cfg_a = GatewayConfig(
             platforms={
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
-                Platform.DISCORD: PlatformConfig(enabled=True, token="d"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=True, token="d"),
             }
         )
         cfg_b = GatewayConfig(
             platforms={
-                Platform.DISCORD: PlatformConfig(enabled=True, token="d"),
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
+                Platform.MATRIX: PlatformConfig(enabled=True, token="d"),
+                Platform.DISCORD: PlatformConfig(enabled=True, token="t"),
             }
         )
         assert cfg_a.get_connected_platforms() == cfg_b.get_connected_platforms()

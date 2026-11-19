@@ -86,7 +86,7 @@ def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
     for slot_name, slot_cfg in (_section("auxiliary") or {}).items():
         if isinstance(slot_cfg, dict):
             _check(f"auxiliary.{slot_name}.model", slot_cfg.get("model"))
-    for path in (("delegation",), ("tts", "xai"), ("plugins", "image_gen", "xai")):
+    for path in (("delegation",), ("plugins", "image_gen", "xai")):
         _check_section(*path)
     return issues
 

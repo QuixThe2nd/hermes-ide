@@ -265,6 +265,8 @@ class TurnRunner(_TurnRunnerCore):
             message_len_fn=message_len_fn,
             include_content=include_content,
             recalled_count=args.get("recalled_count"),
+            kinds=args.get("kinds"),
+            triggering_message_id=getattr(ctx, "inbound_message_id", None),
         )
         for message in messages:
             ctx.progress_queue.put(message)
@@ -639,6 +641,9 @@ class TurnRunner(_TurnRunnerCore):
                 if self._is_flush_marker(raw):
                     self._signal_flush_marker(raw)
                     continue
+                if self._is_hold_marker(raw):
+                    self._release_hold_marker(raw)
+                    continue
                 if not self._agent_interrupted() and st.apply_event(raw):
                     await self._task_card_publish(st)
         except asyncio.CancelledError:
@@ -669,7 +674,7 @@ class TurnRunner(_TurnRunnerCore):
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
-        # Oversized-row chunking (codebox only): a boxed row sliced across
+        # Oversized-row chunking: a boxed row sliced across
         # several messages leaves only its tail slices editable; _row_head_len
         # counts the escaped chars of the CURRENT row already visible in the
         # earlier chunks, and _row_slices how many trailing buffer lines belong
@@ -679,6 +684,9 @@ class TurnRunner(_TurnRunnerCore):
         _row_slices: int = 0
         # Prefix of separate-mode rows whose sends succeeded; flush owns the tail.
         _delivered_rows: int = 0
+        # Narration hold opened this box: show the row text, not a (×N) rewrite.
+        # A content-bubble ``__reset__`` still uses the counted retry form.
+        plain_repeats: bool = False
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -700,7 +708,7 @@ class TurnRunner(_TurnRunnerCore):
             _progress_len_fn=len_fn,
             # Leave room for platform quirks / formatting; tiny test adapters keep a usable limit.
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
-            # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
+            # Overflow edits pass metadata (topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
         )
 
@@ -716,14 +724,14 @@ class TurnRunner(_TurnRunnerCore):
         return await ctx.deliver_visible(lambda: st.adapter.edit_message(**kwargs))
 
     def _progress_text(self, st, lines: list) -> str:
-        # Code-box presentation (display.tool_progress_codebox): the whole
-        # accumulated group becomes ONE unlabelled fenced block, with inner ```
-        # escaped so already-fenced command/code previews render inside the box
-        # instead of breaking out. Applies to every lane: accumulated bubbles,
-        # "separate" per-row messages and non-editable fallback sends.
+        # Code-box presentation (always on): the whole accumulated group becomes
+        # ONE unlabelled fenced block, with inner ``` escaped so already-fenced
+        # command/code previews render inside the box instead of breaking out.
+        # Applies to every lane: accumulated bubbles, "separate" per-row
+        # messages and non-editable fallback sends.
         from gateway.display_config import format_progress_group
 
-        return format_progress_group(lines, self._codebox_active(st))
+        return format_progress_group(lines)
 
     async def _send_progress_row(self, st, row):
         """Send one row as its own message(s): "separate" grouping and non-editable fallbacks.
@@ -734,7 +742,7 @@ class TurnRunner(_TurnRunnerCore):
         from gateway.display_config import format_progress_row
 
         result = None
-        for text in format_progress_row(row, self._codebox_active(st), st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
+        for text in format_progress_row(row, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
             result = await self._send_progress_text(st, text)
         return result
 
@@ -802,6 +810,55 @@ class TurnRunner(_TurnRunnerCore):
         return isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__"
 
     @staticmethod
+    def _is_hold_marker(raw) -> bool:
+        """Narration-send gate marker (GatewayStreamConsumer::_begin_progress_gate):
+        ('__hold__', asyncio.Event) or ('__gate__', threading.Event) — a commentary /
+        first-stream send is in flight."""
+        return isinstance(raw, tuple) and len(raw) == 2 and raw[0] in ("__hold__", "__gate__")
+
+    @staticmethod
+    def _release_hold_marker(raw) -> None:
+        """Free a gate marker's waiter without delivering anything (non-editable
+        lanes, cancel drains, interrupted turns — there is no bubble to hold)."""
+        with suppress(Exception):
+            raw[1].set()
+
+    async def _handle_hold_marker(self, st, raw) -> None:
+        """A narration send is in flight (see GatewayStreamConsumer._progress_box_hold).
+
+        Close the current bubble NOW so the narration lands below it, then HOLD the
+        next box's first send until the send completes (or fails). Without the hold,
+        the pump can open the new box ABOVE the still-in-flight narration, and the
+        late ('__reset__',) from its completion closes the box this same step's
+        tools just opened — tool rows split across boxes out of order.
+        """
+        if not self._agent_interrupted():
+            with suppress(Exception):
+                await self._roll_progress_overflow_if_needed(st)
+                # Unsent rows belong to the box ABOVE the narration. Flush only
+                # edits an existing bubble, so a never-sent buffer has to go out
+                # before the reset or those rows vanish.
+                if st.can_edit and st.progress_lines and st.progress_msg_id is None:
+                    await self._progress_send_or_edit(st, st.progress_lines[-1])
+                else:
+                    await self._flush_progress_edit(st)
+            self._reset_progress_bubble(st)
+        # The new box is the narration's tool rows, not a post-reset retry.
+        st.plain_repeats = True
+        # The event may be asyncio.Event (in-loop gate) or threading.Event
+        # (agent-worker-thread gate); poll — both expose is_set().
+        evt = raw[1]
+
+        async def _released():
+            while not evt.is_set():
+                await asyncio.sleep(0.02)
+
+        try:
+            await asyncio.wait_for(_released(), timeout=60.0)
+        except Exception:
+            logger.warning("progress hold marker never released; continuing")
+
+    @staticmethod
     def _is_flush_marker(raw) -> bool:
         """Context-card ordering gate marker (gateway.run._CONTEXT_FLUSH_QUEUE_MARKER):
         ('__flush__', asyncio.Event) — deliver what was absorbed ahead of it, then set."""
@@ -861,12 +918,10 @@ class TurnRunner(_TurnRunnerCore):
             agent_interrupted=self._agent_interrupted,
         )
 
-    def _codebox_active(self, st) -> bool:
-        return bool(self._ctx.progress_codebox)
 
     def _chunking_active(self, st) -> bool:
         # Buffer slicing only serves the editable lane; non-editable rows are chunked at send time.
-        return self._codebox_active(st) and st.can_edit
+        return st.can_edit
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick.
@@ -880,6 +935,14 @@ class TurnRunner(_TurnRunnerCore):
 
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
+            if st.plain_repeats:
+                # Rows queued under a narration hold were never shown. Collapse
+                # repeats to the plain row — a (×N) seed here is the row the
+                # hold reset dropped, not a retry the user already saw.
+                if base_msg not in st.progress_lines:
+                    st.progress_lines.append(base_msg)
+                    st._row_tail, st._row_slices = False, 0
+                return base_msg
             if not st.progress_lines:
                 # Bubble was just reset (interim content landed) but the producer's
                 # dedup memory says this row repeats: seed the fresh bubble with the
@@ -897,7 +960,7 @@ class TurnRunner(_TurnRunnerCore):
                 # only the editable tail with the counter instead of duplicating the head.
                 # Only the trailing lines of that row are replaced; earlier pending
                 # rows must stay visible.
-                tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
+                tail = repeat_row_text(base_msg, count)[st._row_head_len:]
                 if self._chunking_active(st):
                     slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                     if len(slices) > 1:
@@ -944,6 +1007,11 @@ class TurnRunner(_TurnRunnerCore):
                 if self._is_flush_marker(raw):
                     # Cancelled drain: release the ordering gate's waiter.
                     self._signal_flush_marker(raw)
+                    continue
+                if self._is_hold_marker(raw):
+                    # Cancelled drain: the narration send releases its own hold
+                    # in its finally; release here too so the pump never waits.
+                    self._release_hold_marker(raw)
                     continue
                 if is_claude_delegation_start_marker(raw):
                     if not self._agent_interrupted():
@@ -1031,11 +1099,30 @@ class TurnRunner(_TurnRunnerCore):
                     await self._deliver_agent_status_marker(raw)
                 elif self._is_flush_marker(raw):
                     self._signal_flush_marker(raw)
+                elif self._is_hold_marker(raw):
+                    self._release_hold_marker(raw)
             return
         st = self._progress_edit_state(adapter)
         claude_delivery = self._claude_progress_delivery(st)
         last_edit_ts = 0.0
-        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
+        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (platform flood control)
+        pending = None
+        dirty = False
+
+        async def _publish(msg) -> bool:
+            """Deliver the current buffer. False = transient edit failure, retry."""
+            nonlocal dirty, last_edit_ts
+            if not st.progress_lines:
+                dirty = False
+                return True
+            if not await self._roll_progress_overflow_if_needed(st):
+                if not await self._progress_send_or_edit(st, msg):
+                    return False
+            dirty = False
+            last_edit_ts = time.monotonic()
+            await self._progress_restore_typing(st)
+            return True
+
         while True:
             # Mid-turn platform reconnect swaps the registry adapter; re-resolve
             # per iteration so remaining sends/edits/typing ride the current transport.
@@ -1044,15 +1131,40 @@ class TurnRunner(_TurnRunnerCore):
                 if not ctx._run_still_current():
                     self._drain_progress_queue()
                     return
-                try:
-                    raw = ctx.progress_queue.get_nowait()
-                except queue.Empty:
-                    # Keep this await inside the cancellation-drain try: normal
-                    # turn cleanup also cancels the consumer while it is parked.
-                    await asyncio.sleep(0.3)
-                    continue
+                if pending is not None:
+                    raw = pending
+                    pending = None
+                else:
+                    try:
+                        raw = ctx.progress_queue.get_nowait()
+                    except queue.Empty:
+                        # Keep this await inside the cancellation-drain try: normal
+                        # turn cleanup also cancels the consumer while it is parked.
+                        # Idle flush: a throttled absorb must still land when no
+                        # further row arrives. The old continue-after-sleep dropped
+                        # the last row until cancel.
+                        # Separate mode must not idle-flush: a dedup only rewrites
+                        # the buffer, and a buffered row is sent by flush_before_status.
+                        if dirty and st.can_edit and st.progress_lines:
+                            remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
+                            if st.progress_msg_id is None or remaining <= 0:
+                                if not ctx._run_still_current():
+                                    return
+                                if not await _publish(st.progress_lines[-1]):
+                                    await asyncio.sleep(0.3)
+                                continue
+                            await asyncio.sleep(min(0.3, max(0.02, remaining)))
+                            continue
+                        await asyncio.sleep(0.3)
+                        continue
                 if self._is_flush_marker(raw):
+                    if dirty and st.progress_lines:
+                        await _publish(st.progress_lines[-1])
                     await self._handle_flush_marker(st, raw)
+                    continue
+                if self._is_hold_marker(raw):
+                    await self._handle_hold_marker(st, raw)
+                    dirty = False
                     continue
                 # Late rows are suppressed after stop. Viewer markers survive:
                 # the spawned agent keeps running and its link remains useful.
@@ -1060,7 +1172,13 @@ class TurnRunner(_TurnRunnerCore):
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
+                    if st.progress_lines and not self._agent_interrupted():
+                        if st.progress_msg_id is None:
+                            await _publish(st.progress_lines[-1])
+                        else:
+                            await self._flush_progress_edit(st)
                     self._reset_progress_bubble(st)
+                    dirty = False
                     continue
                 if is_claude_delegation_start_marker(raw):
                     await claude_delivery.deliver_start(raw)
@@ -1069,19 +1187,61 @@ class TurnRunner(_TurnRunnerCore):
                     await claude_delivery.deliver_viewer_marker(raw)
                     continue
                 msg = self._progress_absorb(st, raw)
+                dirty = True
+                # Accumulate: fold every row already queued into this box before
+                # its first send, stopping at a marker so a reset/hold still
+                # splits in queue order. Separate mode sends one row per message.
+                if st.can_edit:
+                    while pending is None:
+                        try:
+                            nxt = ctx.progress_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if (
+                            self._is_reset_marker(nxt)
+                            or self._is_hold_marker(nxt)
+                            or self._is_flush_marker(nxt)
+                            or is_claude_delegation_start_marker(nxt)
+                            or _is_agent_status_queue_marker(nxt)
+                        ):
+                            pending = nxt
+                            break
+                        msg = self._progress_absorb(st, nxt)
                 if not await self._roll_progress_overflow_if_needed(st):
-                    # Throttle edits: batch rapid tool updates into fewer API calls.
                     remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
-                    if remaining > 0:
+                    if st.can_edit:
+                        # First send of a box is immediate so a narration-held
+                        # burst is ONE send. Later edits wait; the idle path
+                        # flushes them. Never sleep-and-drop the last row.
+                        if st.progress_msg_id is not None and remaining > 0:
+                            continue
+                    elif remaining > 0:
+                        # Separate: buffer inside the throttle window. The row
+                        # lands via flush_before_status (before a viewer notice)
+                        # or the next tick — never as a second copy of a dedup.
                         await asyncio.sleep(remaining)
                         continue
                     if not ctx._run_still_current():
                         return
                     if not await self._progress_send_or_edit(st, msg):
                         continue
+                dirty = False
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except asyncio.CancelledError:
+                # A marker pulled ahead of the batch is not on the queue. Put
+                # it back in front so the cancel drain still delivers it.
+                if pending is not None:
+                    rest = []
+                    while True:
+                        try:
+                            rest.append(ctx.progress_queue.get_nowait())
+                        except queue.Empty:
+                            break
+                    ctx.progress_queue.put(pending)
+                    for item in rest:
+                        ctx.progress_queue.put(item)
+                    pending = None
                 await self._drain_progress_on_cancel(st)
                 return
             except Exception as e:
@@ -1089,22 +1249,6 @@ class TurnRunner(_TurnRunnerCore):
                 await asyncio.sleep(1)
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
-
-    def voice_ack_callback(self, call_id, tool_name, args):
-        """tool_start_callback: speak a one-time ack in the voice channel."""
-        ctx = self._ctx
-        if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
-            return
-        ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
-        if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
-            return
-        try:
-            self._schedule(
-                adapter.play_ack_in_voice(ctx._voice_ack_guild[0]), "voice ack scheduling error", loop=ctx._voice_ack_loop,
-            )
-        except Exception as err:
-            logger.debug("voice ack schedule failed: %s", err)
 
     # Slack-native task cards ride agent.tool_start_callback / tool_complete_callback so start and
     # completion correlate by the REAL tool-call id; name-correlated progress_callback text events
@@ -1146,9 +1290,7 @@ class TurnRunner(_TurnRunnerCore):
         })
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
-        """Compose the voice ack + native task-card start consumers."""
-        if self._ctx._voice_ack_guild[0] is not None:
-            self.voice_ack_callback(call_id, tool_name, args)
+        """Native task-card start consumer (Slack)."""
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
         from gateway.run_claude_progress import claude_delegation_single_status, queue_claude_delegation_start
@@ -1213,9 +1355,7 @@ class TurnRunner(_TurnRunnerCore):
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
             # only knowable AFTER delivery, so register eagerly and let the rename lane look up the
             # cache at fire time — gating registration on the cache read meant it never registered.
-            if runner._is_telegram_topic_lane(source):
-                lane = "_schedule_telegram_topic_title_rename"
-            elif runner._is_matrix_inbox_room_lane(source):
+            if runner._is_matrix_inbox_room_lane(source):
                 lane = "_schedule_matrix_room_title_rename"
             elif runner._is_discord_auto_thread_lane(source) or runner._is_relay_discord_channel_lane(source):
                 lane = "_schedule_discord_semantic_thread_rename"
@@ -1293,9 +1433,6 @@ class TurnRunner(_TurnRunnerCore):
         if ctx.mute_notification_reply:
             return None, None, None, False
         stream_consumer = None
-        # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
-        # run_sync only reads it via the holder for delta-callback wiring.
-        stts = ctx.streaming_tts_consumer_holder[0]
         scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
         if scfg is None:
             from gateway.config import StreamingConfig
@@ -1306,6 +1443,8 @@ class TurnRunner(_TurnRunnerCore):
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
+        # Streaming-TTS delta sink wired by the turn setup (None when TTS is off).
+        stts = ctx.streaming_tts_consumer_holder[0]
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -1314,6 +1453,20 @@ class TurnRunner(_TurnRunnerCore):
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
+                    progress_queue = ctx.progress_queue
+
+                    def _progress_narration_gate(evt):
+                        """Narration gate: queue ('__gate__', evt) on the progress queue
+                        BEFORE any tool rows the in-flight send's step can enqueue, so
+                        the pump closes the old bubble and holds the next box's first
+                        send until the narration lands (GatewayStreamConsumer::
+                        _begin_progress_gate). The consumer releases the event (from
+                        the agent worker thread — hence a threading.Event) whether the
+                        send succeeded or failed."""
+                        if progress_queue is None:
+                            return
+                        progress_queue.put(("__gate__", evt))
+
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
@@ -1322,6 +1475,9 @@ class TurnRunner(_TurnRunnerCore):
                         ),
                         on_new_message=(
                             (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
+                        ),
+                        on_progress_gate=(
+                            _progress_narration_gate if ctx.progress_queue is not None else None
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
@@ -1336,24 +1492,15 @@ class TurnRunner(_TurnRunnerCore):
                     stream_consumer.stream_deltas_enabled = want_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
-        # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
         stream_delta_cb = None
-        if delta_sinks:
+        if stream_consumer is not None and want_stream_deltas:
             def stream_delta_cb(text: Optional[str]) -> None:
                 if ctx._run_still_current():
-                    for sink in delta_sinks:
-                        sink.on_delta(text)
+                    stream_consumer.on_delta(text)
 
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
-            if stts is not None:
-                # Flush accepted deltas; completed commentary is a separate speech segment.
-                stts.on_delta(None)
-                if not already_streamed:
-                    stts.on_delta(text)
-                    stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1371,7 +1518,7 @@ class TurnRunner(_TurnRunnerCore):
 
     def _skip_context_files(self, platform_key) -> bool:
         """gateway.platforms.<plat>.skip_context_files: messaging platforms may opt out of
-        filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, .cursorrules)."""
+        filesystem-heavy context-file discovery (SOUL.md, AGENTS.md, CLAUDE.md)."""
         platforms_cfg = (self._ctx.user_config.get("gateway") or {}).get("platforms") or {}
         # ``hermes gateway setup`` writes ``gateway.platforms`` as a LIST of enabled platform names,
         # not a dict; treat any non-dict shape as "no per-platform overrides" rather than crashing.
@@ -1624,12 +1771,9 @@ class TurnRunner(_TurnRunnerCore):
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
-        # Discord's one-time voice ack and Slack's task cards both ride the authoritative start
-        # callback, so neither infers identity from tool names.
-        agent.tool_start_callback = (
-            (ctx.native_tool_start_callback or ctx.voice_ack_callback)
-            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
-        )
+        # Slack's task cards ride the authoritative start callback, so they never infer
+        # identity from tool names.
+        agent.tool_start_callback = ctx.native_tool_start_callback if ctx._native_slack_task_cards else None
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
@@ -1641,7 +1785,39 @@ class TurnRunner(_TurnRunnerCore):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        # The serving-identity runtime note rides the same channel: during an overlap restart every
+        # externally visible pid (systemd MainPID, pid file, gateway_state.json) names the draining
+        # predecessor, so each turn must be able to trust which process is actually serving it.
+        # When the session's DURABLE last-served record names a different process, a transition
+        # note rides beside it: persisted conversation/task context carried over (not a new task),
+        # process-local state (terminals, background processes, kernels, caches, pids) did not and
+        # must be revalidated.
+        from gateway.serving_transition import session_turn_notes
+        from gateway.context_injection_labels import join_turn_notes, tag_turn_note
+
+        turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+        runtime_note, transition_note = session_turn_notes(
+            getattr(runner, "session_store", None),
+            getattr(ctx, "session_id", None), runner)
+        if runtime_note:
+            turn_notes.append(runtime_note)
+        if transition_note:
+            # "Conversation moved processes" (#829) is a restart notice; the
+            # per-turn serving-identity runtime note names the serving process
+            # on every turn and is NOT one — it stays unclassified.
+            turn_notes.append(tag_turn_note("restart", transition_note))
+        # Joined text is byte-identical to the legacy "\n\n".join; kinds are
+        # additive display metadata aligned 1:1 with the staged entries.
+        agent._gateway_turn_context_notes, agent._gateway_turn_note_kinds = (
+            join_turn_notes(turn_notes)
+        )
+        # A transparent continuation defers the notes channel above, but a
+        # restart just moved the conversation to a new process mid-turn —
+        # stage the runtime notes on their own one-shot channel so the
+        # continuation turn still learns which process serves it AND that the
+        # process changed.
+        continuation_notes = [note for note in (runtime_note, transition_note) if note]
+        agent._gateway_continuation_note = "\n\n".join(continuation_notes)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
@@ -1763,9 +1939,15 @@ class TurnRunner(_TurnRunnerCore):
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
+        metadata = ctx._status_thread_metadata
+        requester_id = str(getattr(getattr(ctx, "source", None), "user_id", "") or "").strip()
+        if requester_id:
+            # Keep recipient identity turn-scoped; concurrent chats share adapters, not metadata.
+            metadata = dict(metadata or {})
+            metadata["mention_user_id"] = requester_id
         send_kwargs = dict(
             chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-            session_key=session_key, metadata=ctx._status_thread_metadata,
+            session_key=session_key, metadata=metadata,
         )
 
         def _text_fallback():
@@ -1840,16 +2022,12 @@ class TurnRunner(_TurnRunnerCore):
         ctx = self._ctx
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
-        # sequences. Telegram observed=True rows are withheld from replayable history and attached to
+        # sequences. Observed group-context rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
-        agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
+        agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt,
             inject_timestamps=_message_timestamps_enabled(ctx.user_config),
-            hermes_session_id=ctx.session_id,
         )
-        # Recovery preparation decides whether this note is an ordinary new
-        # message or must yield to the pure continuation seam.
-        self._cursor_recovery_note = cursor_recovery_note
         self._live_history_selected = False
         self._live_replay_source = None
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
@@ -1987,8 +2165,19 @@ class TurnRunner(_TurnRunnerCore):
                     "forced_recovery_control": True,
                 }
             from agent.notification_presentation import notification_turn
-            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                return agent.run_conversation(api_message, **kwargs)
+            from gateway.vault_prompt_lifecycle import vault_save_login_scope
+
+            adapter = self._runner._delivery_adapter_for(ctx.source)
+            with vault_save_login_scope(
+                adapter,
+                source=ctx.source,
+                session_key=session_key,
+                loop=ctx._loop_for_step,
+                chat_id=ctx._status_chat_id or ctx.source.chat_id,
+                metadata=ctx._status_thread_metadata,
+            ):
+                with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
+                    return agent.run_conversation(api_message, **kwargs)
         finally:
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
@@ -2030,22 +2219,6 @@ class TurnRunner(_TurnRunnerCore):
         except TypeError:
             stream_consumer.finish()
 
-    def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
-        """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered
-        event): restore it from the binding so _thread_metadata_for_source yields the right
-        message_thread_id instead of the General thread (non-fatal)."""
-        ctx = self._ctx
-        try:
-            # run_sync is off-loop (executor); sync DB is fine.
-            binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(session_id=agent_session_id)
-            if binding and binding.get("thread_id"):
-                ctx.source.thread_id = str(binding["thread_id"])
-                logger.debug(
-                    "Restored source.thread_id=%s from binding after session split %s → %s",
-                    ctx.source.thread_id, ctx.session_id, agent_session_id,
-                )
-        except Exception:
-            logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
     def _sync_session_after_run(self, agent_history):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
@@ -2062,7 +2235,6 @@ class TurnRunner(_TurnRunnerCore):
         if session_was_split:
             logger.info("Session split detected: %s → %s (compression)", ctx.session_id, agent_session_id)
             entry = runner.session_store._entries.get(ctx.session_key)
-            persisted = False
             if entry:
                 entry_session_id = getattr(entry, "session_id", None)
                 if not ctx._run_still_current():
@@ -2072,7 +2244,7 @@ class TurnRunner(_TurnRunnerCore):
                         ctx.session_key or "?", ctx.run_generation,
                     )
                 elif entry_session_id == agent_session_id:
-                    persisted = True
+                    pass
                 elif entry_session_id != ctx.session_id:
                     logger.info(
                         "Skipping session split sync for %s because the "
@@ -2084,17 +2256,8 @@ class TurnRunner(_TurnRunnerCore):
                     entry.session_id = agent_session_id
                     runner.session_store._save()
                     runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
-                    persisted = True
             # Only after this run published its split — a stale /stop→/new predecessor must not
-            # mutate routing state.
-            if persisted:
-                src = ctx.source
-                if (
-                    getattr(src, "platform", None) == Platform.TELEGRAM and getattr(src, "chat_type", None) == "dm"
-                    and getattr(src, "thread_id", None) is None and runner._session_db is not None
-                ):
-                    self._restore_telegram_thread_id_after_split(agent_session_id)
-                runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
+            # mutate routing state (the persisted guard above already gates entry mutation).
         runner._sync_session_model_from_agent(agent_session_id, agent)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
@@ -2139,12 +2302,12 @@ class TurnRunner(_TurnRunnerCore):
         # before run_conversation) is retained as a secondary guard. It is also the sole guard on the
         # fallback branch taken when mid-run context compression shrinks the message list below the original
         # history length, preserving the compression-safe behaviour of #160.
-        media_tags, has_voice_directive = _collect_auto_append_media_tags(
+        media_tags = _collect_auto_append_media_tags(
             result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
         )
         if not media_tags:
             return final_response
-        unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
+        unique_tags = list(dict.fromkeys(media_tags))
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
@@ -2189,7 +2352,7 @@ class TurnRunner(_TurnRunnerCore):
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
             from hermes_cli.auth import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
-                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                # Quota cap with valid credentials: re-authentication cannot help; name the reset window (#89401).
                 from gateway.run import _gateway_provider_error_reply
                 return {"final_response": _gateway_provider_error_reply(str(exc)),
                         "messages": [], "api_calls": 0, "tools": [],
@@ -2197,8 +2360,8 @@ class TurnRunner(_TurnRunnerCore):
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                    "failing, run `hermes doctor` on the host."),
+                    "Ask whoever runs this bot to reconnect the provider with `hermes auth`, or use "
+                    "/model to pick a different model. If it keeps failing, run `hermes doctor` on the host."),
                 "messages": [], "api_calls": 0, "tools": [],
                 "served_model": None, "requested_model": None,
             }
@@ -2292,35 +2455,73 @@ class TurnRunner(_TurnRunnerCore):
             "agent_persisted": result.get("agent_persisted", True),
         }
 
-    # --- Tool-stage embed delivery (Discord) -------------------------------
-    # Moved verbatim from gateway/run.py TurnRunner: run_turn._run_agent_inner
-    # (kept by #569) subscribes turn_runner.tool_stage_event_callback and
-    # drains send_tool_stage_embeds(), but builds this TurnRunner.
+    # --- Tool-stage event delivery (MoA embeds and browser images) -----------
+    # run_turn._run_agent_inner subscribes turn_runner.tool_stage_event_callback
+    # and drains send_tool_stage_embeds(), but builds this TurnRunner.
 
-    def tool_stage_event_callback(self, event: dict) -> None:
-        """Bus subscriber: enqueue one stage event from a tool worker thread."""
+    def tool_stage_event_callback(self, event: dict) -> bool:
+        """Bus subscriber: enqueue one event, reporting queue/turn rejection."""
         ctx = self._ctx
         if not ctx.stage_event_queue or not ctx._run_still_current():
-            return
+            return False
         try:
             ctx.stage_event_queue.put_nowait(event)
+            return True
         except Exception:
             logger.debug("tool stage event enqueue failed", exc_info=True)
+            return False
+
+    _STAGE_FLUSH_TIMEOUT = 21.0
+
+    async def flush_tool_stage_events(self, stage_task) -> None:
+        """Deliver events already queued by a normally finishing browser-enabled turn."""
+        ctx = self._ctx
+        if (
+            not ctx.stage_event_queue
+            or not ctx._browser_progress_enabled
+            or stage_task.done()
+            or not ctx._run_still_current()
+        ):
+            return
+        flushed = asyncio.Event()
+        marker = {"type": "browser.flush", "done": flushed}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._STAGE_FLUSH_TIMEOUT
+        while True:
+            try:
+                ctx.stage_event_queue.put_nowait(marker)
+                break
+            except queue.Full:
+                if stage_task.done() or not ctx._run_still_current() or loop.time() >= deadline:
+                    return
+                await asyncio.sleep(0.01)
+        waiter = asyncio.ensure_future(flushed.wait())
+        try:
+            await asyncio.wait(
+                {waiter, stage_task},
+                timeout=max(0.0, deadline - loop.time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiter.cancel()
 
     def _collect_final_stage_events(self) -> list:
         """Drain the stage queue; one event per invocation (terminal preferred)."""
         ctx = self._ctx
         by_invocation: Dict[str, list] = {}
+        to_deliver: list = []
         while not ctx.stage_event_queue.empty():
             try:
                 event = ctx.stage_event_queue.get_nowait()
             except Exception:
                 break
+            if event.get("type") == "browser.screenshot":
+                to_deliver.append(event)
+                continue
             invocation = str(event.get("invocation_id") or "")
             if not invocation:
                 continue
             by_invocation.setdefault(invocation, []).append(event)
-        to_deliver: list = []
         for events in by_invocation.values():
             terminal = next((e for e in reversed(events) if e.get("terminal")), None)
             to_deliver.append(terminal if terminal is not None else events[-1])
@@ -2564,6 +2765,20 @@ class TurnRunner(_TurnRunnerCore):
         records: Dict[str, dict],
         parked: Optional[Dict[str, list]] = None,
     ) -> None:
+        event_type = event.get("type")
+        if event_type == "browser.flush":
+            set_done = getattr(event.get("done"), "set", None)
+            if callable(set_done):
+                set_done()
+            return
+        if event_type == "browser.screenshot":
+            if not self._ctx._browser_progress_enabled:
+                return
+            from gateway.browser_progress import deliver_browser_progress
+            await deliver_browser_progress(self, event)
+            return
+        if self._ctx._stage_embed_adapter is None:
+            return
         invocation = str(event.get("invocation_id") or "")
         if (
             parked is not None
@@ -2641,7 +2856,7 @@ class TurnRunner(_TurnRunnerCore):
         ctx = self._ctx
         if not ctx.stage_event_queue:
             return
-        if ctx._stage_embed_adapter is None:
+        if ctx._stage_embed_adapter is None and not ctx._browser_progress_enabled:
             return
 
         # invocation_id -> embed message id. Concurrent invocations of the
@@ -2682,7 +2897,7 @@ class TurnRunner(_TurnRunnerCore):
         line the direct rail would have sent goes through the same
         ``_send_or_update_status_coro`` door with the same status wiring
         (adapter, chat id, thread metadata, cleanup tracking), so platform
-        rendering — Discord's branded embed conversion, Telegram's
+        rendering — Discord's branded embed conversion, a platform's
         status-bubble editing — is byte-identical. Only the scheduling
         changed: queue-ordered instead of independently scheduled. Returns
         the sent message id on success (``None`` otherwise) so correlated

@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [Stocks, Finance, Market, Crypto, Investing]
     category: finance
-    related_skills: [dcf-model, comps-analysis, lbo-model]
+    related_skills: []
 ---
 
 # Stocks Skill

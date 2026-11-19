@@ -11,14 +11,12 @@ from gateway.session import SessionSource
 
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
-        "TELEGRAM_ALLOWED_USERS",
-        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
         "SIGNAL_ALLOWED_USERS",
         "SIGNAL_GROUP_ALLOWED_USERS",
-        "TELEGRAM_GROUP_ALLOWED_CHATS",
         "EMAIL_ALLOWED_USERS",
         "SMS_ALLOWED_USERS",
         "MATTERMOST_ALLOWED_USERS",
@@ -26,7 +24,6 @@ def _clear_auth_env(monkeypatch) -> None:
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
-        "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
         "SLACK_ALLOW_ALL_USERS",
@@ -158,62 +155,6 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
-def test_telegram_group_users_legacy_chat_ids_still_authorize(monkeypatch):
-    """Backward-compat: PR #15027 shipped TELEGRAM_GROUP_ALLOWED_USERS as a
-    chat-ID allowlist. PR #17686 renamed it to sender IDs and added
-    TELEGRAM_GROUP_ALLOWED_CHATS. Users on the old guidance must keep working:
-    chat-ID-shaped values (starting with "-") in the _USERS var are honored as
-    chat IDs with a deprecation warning.
-    """
-    _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "-1001878443972")
-
-    runner, _adapter = _make_runner(
-        Platform.TELEGRAM,
-        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
-    )
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        user_id="999",
-        chat_id="-1001878443972",
-        user_name="tester",
-        chat_type="forum",
-    )
-
-    assert runner._is_user_authorized(source) is True
-
-
-def test_telegram_group_users_mixed_sender_and_legacy_chat(monkeypatch):
-    """Mixed values: positive user ID gates senders; negative chat ID gates chat."""
-    _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "999,-1001878443972")
-
-    runner, _adapter = _make_runner(
-        Platform.TELEGRAM,
-        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
-    )
-
-    # Legacy chat ID path: any sender in the listed chat is authorized
-    legacy_chat_source = SessionSource(
-        platform=Platform.TELEGRAM,
-        user_id="123",
-        chat_id="-1001878443972",
-        user_name="tester",
-        chat_type="group",
-    )
-    assert runner._is_user_authorized(legacy_chat_source) is True
-
-    # Sender path: listed sender user ID authorized in any group
-    sender_source = SessionSource(
-        platform=Platform.TELEGRAM,
-        user_id="999",
-        chat_id="-1009999999999",
-        user_name="tester",
-        chat_type="group",
-    )
-    assert runner._is_user_authorized(sender_source) is True
-
 
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
@@ -306,26 +247,6 @@ async def test_signal_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
     result = await runner._handle_message(
         _make_event(Platform.SIGNAL, "+15559999999", "+15559999999")  # not in allowlist
-    )
-
-    assert result is None
-    runner.pairing_store.generate_code.assert_not_called()
-    adapter.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_telegram_with_allowlist_ignores_unauthorized_dm(monkeypatch):
-    """Same behavior for Telegram: allowlist ⟹ ignore unauthorized DMs."""
-    _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
-
-    config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)},
-    )
-    runner, adapter = _make_runner(Platform.TELEGRAM, config)
-
-    result = await runner._handle_message(
-        _make_event(Platform.TELEGRAM, "999999999", "999999999")
     )
 
     assert result is None
@@ -461,15 +382,15 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
         {"unauthorized_dm_behavior": "DECLINE", "unauthorized_dm_decline_message": "  custom text  "}
     )
     assert config.unauthorized_dm_behavior == "decline"
-    assert config.get_unauthorized_dm_behavior(Platform.TELEGRAM) == "decline"
+    assert config.get_unauthorized_dm_behavior(Platform.DISCORD) == "decline"
     assert config.to_dict()["unauthorized_dm_behavior"] == "decline"
     assert GatewayConfig.from_dict(config.to_dict()).unauthorized_dm_decline_message == "custom text"
 
     with _patch("gateway.pairing.PAIRING_DIR", tmp_path):
         store = pairing_mod.PairingStore()
-        assert store.has_recent_decline("telegram", "12345") is False
-        store.record_decline("telegram", "12345")
-        assert store.has_recent_decline("telegram", "12345") is True
-        assert store.has_recent_decline("telegram", "67890") is False
+        assert store.has_recent_decline("discord", "12345") is False
+        store.record_decline("discord", "12345")
+        assert store.has_recent_decline("discord", "12345") is True
+        assert store.has_recent_decline("discord", "67890") is False
         with _patch("gateway.pairing.time.time", return_value=time.time() + pairing_mod.DECLINE_DEDUPE_SECONDS + 1):
-            assert store.has_recent_decline("telegram", "12345") is False
+            assert store.has_recent_decline("discord", "12345") is False

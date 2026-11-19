@@ -62,7 +62,7 @@ class TestScoreProvider:
 
     def test_reset_later_than_reference_scores_below_quota_frac(self):
         # 25d out: 0.85 * 168/600 — time still dilutes, never amplifies
-        reading = _reading("cursor", 85, 25 * 86400, "cursor")
+        reading = _reading("codex", 85, 25 * 86400, "codex")
         assert score_provider(reading) == pytest.approx(0.85 * REFERENCE_HOURS / 600.0)
 
 
@@ -185,7 +185,7 @@ class TestStacking:
 class TestResetGate:
     """Only Codex/Grok/z.ai have a resets API; reset fields elsewhere are inert."""
 
-    @pytest.mark.parametrize("provider", ["kimi-coding", "cursor", "openrouter"])
+    @pytest.mark.parametrize("provider", ["kimi-coding", "openrouter"])
     def test_injected_resets_score_exactly_like_zero(self, provider: str):
         polluted = _reading(
             provider, 0, WEEK, reset_count=1, reset_expiry_seconds=3600
@@ -193,7 +193,7 @@ class TestResetGate:
         clean = _reading(provider, 0, WEEK)
         assert score_provider(polluted) == score_provider(clean) == 0.0
 
-    @pytest.mark.parametrize("provider", ["kimi-coding", "cursor", "openrouter"])
+    @pytest.mark.parametrize("provider", ["kimi-coding", "openrouter"])
     def test_injected_resets_never_lift_the_low_quota_sink(self, provider: str):
         assert is_low_quota(_reading(provider, 0, WEEK, reset_count=1))
         assert is_low_quota(_reading(provider, 0, WEEK, reset_count=3))

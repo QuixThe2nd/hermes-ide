@@ -335,7 +335,7 @@ class TestProfiles:
         for kept in ("github", "devops", "software-development", "data-science"):
             assert kept not in compact
         # General posture demotes nothing.
-        general = cc.resolve_runtime_mode(platform="telegram", cwd=tmp_path, config={})
+        general = cc.resolve_runtime_mode(platform="discord", cwd=tmp_path, config={})
         assert general.compact_skill_categories() == frozenset()
 
 

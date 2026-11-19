@@ -153,7 +153,7 @@ def _anydoc_missing_error(path: str) -> str:
 
 def _hosted_ocr_config() -> tuple:
     """(enabled, api_key, api_url); never raises, no network. Maintainer decision: the ONLY route
-    is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the Nous gateway's Parse proxy
+    is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the managed gateway's Parse proxy
     live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
     key. The key is a profile credential: read through the secret scope so a multiplexed
     secondary never spends (or reveals its documents to) the default profile's Firecrawl key."""

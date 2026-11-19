@@ -1,12 +1,11 @@
 """Shared magic-byte audio/AV container detection — the ONE sniffer for the codebase.
 
-Outbound (``tools/tts_tool.py``): TTS backends silently ignore the requested
-format (Edge emits MP3, Piper WAV), so the file is sniffed and its ``.ogg``
-extension repaired. Inbound (``gateway/platforms/base.py`` cache_audio_*,
+Inbound (``gateway/platforms/base.py`` cache_audio_*,
 adapters): adapters pass wrong/guessed voice-note
 extensions (``.oga``, iOS M4A-branded MP4), so the cache sniffs the
-real container for STT and players. Only audio/AV containers are claimed:
-RIFF/WEBP and other images return ``None`` so callers check images first.
+real container for players and file delivery. Only audio/AV containers are
+claimed: RIFF/WEBP and other images return ``None`` so callers check images
+first.
 """
 
 from __future__ import annotations

@@ -26,9 +26,6 @@ sessions, and build long-term memory.
 - Combining retrieval with agent tool use
 - Researching or prototyping semantic search workflows
 
-**Use the mlops/pinecone skill instead when:**
-- Need a general Pinecone reference (index management, CRUD, hybrid search)
-- Working on production infrastructure without agent integration
 
 ## Quick start
 

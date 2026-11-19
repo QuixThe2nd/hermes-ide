@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint:            "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
 
-  footer:
-    status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Használat: `/footer [on|off|status]`"
-    saved:                 "📎 Futási idejű lábléc: **{state}**{example}\n_(globálisan elmentve — a következő üzenettől lép életbe)_"
-    example_line:          "\nPélda: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "A célok nem érhetők el ebben a munkamenetben."
     no_goal_set:           "Nincs cél beállítva."
@@ -252,17 +244,6 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     current_with_title:    "📌 Munkamenet: `{session_id}`\nCím: **{title}**"
     current_no_title:      "📌 Munkamenet: `{session_id}`\nNincs cím beállítva. Használat: `/title Saját munkamenet neve`"
 
-  topic:
-    not_telegram_dm:         "A /topic parancs csak Telegram privát csevegésekben érhető el."
-    no_session_db:           "A munkamenet-adatbázis nem érhető el."
-    unauthorized:            "Nincs jogosultságod a /topic használatához ezen a boton."
-    restore_needs_topic:     "Egy munkamenet visszaállításához először hozz létre vagy nyiss meg egy Telegram topicot, majd küldd a /topic <session-id> parancsot abban a topicban. Új topic létrehozásához nyisd meg az All Messagest, és küldj oda bármilyen üzenetet."
-    topics_disabled:         "A Telegram topicok még nincsenek engedélyezve ehhez a bothoz.\n\nHogyan engedélyezd:\n1. Nyisd meg a @BotFathert.\n2. Válaszd ki a botod.\n3. Nyisd meg a Bot Settings → Threads Settings menüt.\n4. Kapcsold be a Threaded Mode-ot, és győződj meg róla, hogy a felhasználók új threadeket hozhatnak létre.\n\nEzután küldd újra a /topic parancsot."
-    topics_user_disallowed:  "A Telegram topicok engedélyezve vannak, de a felhasználók nem hozhatnak létre topicokat.\n\nNyisd meg a @BotFather → válaszd ki a botod → Bot Settings → Threads Settings menüt, majd kapcsold ki a 'Disallow users to create new threads' opciót.\n\nEzután küldd újra a /topic parancsot."
-    enable_failed:           "Nem sikerült engedélyezni a Telegram topic módot: {error}"
-    bound_status:            "Ez a topic ehhez van kapcsolva:\nMunkamenet: {label}\nID: {session_id}\n\nHasználd a /new parancsot, hogy lecseréld ezt a topicot új munkamenetre.\nPárhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
-    thread_ready:            "A többmunkamenetes Telegram topicok engedélyezve vannak.\n\nEz a topic független Hermes-munkamenetként szolgál. Használd a /new parancsot, hogy lecseréld a topic jelenlegi munkamenetét. Párhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
-    untitled_session:        "Cím nélküli munkamenet"
 
   undo:
     nothing:               "Nincs mit visszavonni."
@@ -276,41 +257,6 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     start_failed:            "✗ Nem sikerült elindítani a frissítést: {error}"
     starting:                "☤ Hermes frissítés indítása… A folyamatot itt fogom közvetíteni."
 
-  usage:
-    rate_limits:              "⏱️ **Sebességkorlátok:** {state}"
-    header_session:           "📊 **Munkamenet tokenhasználat**"
-    label_model:              "Modell: `{model}`"
-    label_input_tokens:       "Bemeneti tokenek: {count}"
-    label_cache_read:         "Gyorsítótár-olvasási tokenek: {count}"
-    label_cache_write:        "Gyorsítótár-írási tokenek: {count}"
-    label_output_tokens:      "Kimeneti tokenek: {count}"
-    label_total:              "Összesen: {count}"
-    label_api_calls:          "API-hívások: {count}"
-    label_cost:               "Költség: {prefix}${amount}"
-    label_cost_included:      "Költség: belefoglalva"
-    label_context:            "Kontextus: {used} / {total} ({pct}%)"
-    label_compressions:       "Tömörítések: {count}"
-    breakdown_header: "🧩 **Kontextus-bontás** _(becsült)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Rendszerüzenet"
-    breakdown_cat_tool_definitions: "Eszközdefiníciók"
-    breakdown_cat_rules: "Szabályok"
-    breakdown_cat_skills: "Készségek"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Alügynök-definíciók"
-    breakdown_cat_memory: "Memória"
-    breakdown_cat_conversation: "Beszélgetés"
-    header_session_info:      "📊 **Munkamenet-információ**"
-    label_messages:           "Üzenetek: {count}"
-    label_estimated_context:  "Becsült kontextus: ~{count} token"
-    detailed_after_first:     "_(A részletes használat az első ügynökválasz után érhető el)_"
-    no_data:                  "Ehhez a munkamenethez nincsenek elérhető használati adatok."
-    unknown_subcommand:       "Ismeretlen /usage alparancs: `{args}`. Próbáld: `/usage` vagy `/usage reset [--force]`."
-    reset_wrong_provider:     "A félretett limit-visszaállítások csak az openai-codex szolgáltatónál érhetők el. Válts először a `/model` paranccsal."
-
-  credits:
-    not_logged_in:            "Nincs bejelentkezve a Nous Portalra. Jelentkezz be a kreditegyenleg megtekintéséhez és feltöltéséhez."
-
   verbose:
     not_enabled:           "A `/verbose` parancs nincs engedélyezve az üzenetküldő platformokon.\n\nEngedélyezd a `config.yaml` fájlban:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Eszközfolyamat: **OFF** — nem jelenik meg eszközaktivitás."
@@ -320,23 +266,6 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     mode_log:              "⚙️ Eszközfolyamat: **LOG** — csendes a csevegésben; az eszközhívások a ~/.hermes/logs/tool_calls.log fájlba íródnak."
     saved_suffix:          "_(elmentve ehhez: **{platform}** — a következő üzenettől lép életbe)_"
     save_failed:           "_(nem sikerült menteni a konfigurációba: {error})_"
-
-  voice:
-    enabled_voice_only:    "Hangmód bekapcsolva.\nHanggal válaszolok, ha hangüzenetet küldesz.\nHasználd a /voice tts parancsot, hogy minden üzenetre hangválaszt kapj."
-    disabled_text:         "Hangmód kikapcsolva. Csak szöveges válaszok."
-    tts_enabled:           "Auto-TTS bekapcsolva.\nMinden válasz tartalmaz egy hangüzenetet."
-    status_mode:           "Hangmód: {label}"
-    status_channel:        "Hangcsatorna: #{channel}"
-    status_participants:   "Résztvevők: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (beszél)"
-    enabled_short:         "Hangmód bekapcsolva."
-    disabled_short:        "Hangmód kikapcsolva."
-    label_off:             "Ki (csak szöveg)"
-    label_voice_only:      "Be (hangválasz hangüzenetekre)"
-    label_all:             "TTS (hangválasz minden üzenetre)"
-    help:                  "{toggle}\n\n**Hogyan működik a /voice**\n• `/voice on` — hangválasz, amikor hangüzenetet küldesz\n• `/voice tts` — hangválasz *minden* üzenetre\n• `/voice off` — vissza a csak szöveges válaszokhoz\n• `/voice status` — az aktuális mód megjelenítése\n• `/voice` (argumentum nélkül) — gyors váltás be és ki között{channels}"
-    help_channels:         "\n\n**Élő hangcsatornák (Discord)**\n• Először lépj be egy hangcsatornába, majd `/voice channel` — csatlakozom, hallgatok és hangosan válaszolok\n• `/voice leave` — lecsatlakozás a hangcsatornáról"
 
   shared:
     session_db_unavailable:      "A munkamenet-adatbázis nem érhető el."

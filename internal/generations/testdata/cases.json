@@ -1,0 +1,241 @@
+{
+  "comment": "Shared contract table for the gateway restart generation array. internal/generations (Go, canonical) and gateway/generations.py (Python twin the runtime uses) must answer identically for every case. Case semantics: generations[] is the array handed to the twin by the gateway glue (hub successor registry snapshot + the synthetic record for the record-less original, with OS-verified liveness); me is the asking generation; pid_file describes what the PID file currently names (absent = no file). Fields answered per case: newest_live, restart_target, may_claim, may_start_shared, ancestors, takeover, describe.",
+  "cases": [
+    {
+      "name": "single original generation serving",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 101,
+      "expect": {
+        "newest_live": 101,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": true,
+        "ancestors": [],
+        "describe": ["101: serving"]
+      }
+    },
+    {
+      "name": "two generations: predecessor draining, successor serving",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 102,
+      "expect": {
+        "newest_live": 102,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": false,
+        "ancestors": [101],
+        "describe": ["102: serving", "101: draining"]
+      }
+    },
+    {
+      "name": "three generations array: newest serving, both ancestors draining",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": false, "draining": true, "live": true},
+        {"pid": 103, "predecessor": 102, "spawn_seq": 2, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 103,
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": false,
+        "ancestors": [102, 101],
+        "describe": ["103: serving", "102: draining", "101: draining"]
+      }
+    },
+    {
+      "name": "restart on middle draining generation forwards to newest",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": false, "draining": true, "live": true},
+        {"pid": 103, "predecessor": 102, "spawn_seq": 2, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 102,
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 103,
+        "may_claim": false,
+        "may_start_shared": false,
+        "ancestors": [101],
+        "describe": ["103: serving", "102: draining", "101: draining"]
+      }
+    },
+    {
+      "name": "superseded generation waiting to claim never claims",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": false, "draining": true, "live": true},
+        {"pid": 103, "predecessor": 102, "spawn_seq": 2, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 102,
+      "pid_file": {"pid": 103, "live": true},
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 103,
+        "may_claim": false,
+        "may_start_shared": false,
+        "ancestors": [101],
+        "takeover": false,
+        "describe": ["103: serving", "102: draining", "101: draining"]
+      }
+    },
+    {
+      "name": "successor may take over the PID file naming its live ancestor",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 102,
+      "pid_file": {"pid": 101, "live": true},
+      "expect": {
+        "newest_live": 102,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": false,
+        "ancestors": [101],
+        "takeover": true,
+        "describe": ["102: serving", "101: draining"]
+      }
+    },
+    {
+      "name": "dead PID file holder is always displacable",
+      "generations": [
+        {"pid": 103, "predecessor": 0, "spawn_seq": 0, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 103,
+      "pid_file": {"pid": 777, "live": false},
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": true,
+        "ancestors": [],
+        "takeover": true,
+        "describe": ["103: serving"]
+      }
+    },
+    {
+      "name": "unrelated live gateway in the PID file must not be displaced",
+      "generations": [
+        {"pid": 103, "predecessor": 0, "spawn_seq": 0, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 103,
+      "pid_file": {"pid": 888, "live": true},
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": true,
+        "ancestors": [],
+        "takeover": false,
+        "describe": ["103: serving"]
+      }
+    },
+    {
+      "name": "dead successor is never authoritative even while listed",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": false, "draining": true, "live": false},
+        {"pid": 103, "predecessor": 102, "spawn_seq": 2, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 101,
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 103,
+        "may_claim": false,
+        "may_start_shared": true,
+        "ancestors": [],
+        "describe": ["103: serving", "101: draining", "102: gone"]
+      }
+    },
+    {
+      "name": "shared adapters start once every ancestor is gone",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": false},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": false, "draining": true, "live": false},
+        {"pid": 103, "predecessor": 102, "spawn_seq": 2, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 103,
+      "expect": {
+        "newest_live": 103,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": true,
+        "ancestors": [102, 101],
+        "describe": ["103: serving", "102: gone", "101: gone"]
+      }
+    },
+    {
+      "name": "record-less ancestor (unsynthesized original) fails shared-start closed",
+      "generations": [
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 102,
+      "expect": {
+        "newest_live": 102,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": false,
+        "ancestors": [101],
+        "describe": ["102: serving"]
+      }
+    },
+    {
+      "name": "respawned fork loses to the already-serving generation",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 103, "predecessor": 102, "spawn_seq": 2, "attached": true, "draining": false, "live": true},
+        {"pid": 104, "predecessor": 101, "spawn_seq": 3, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 104,
+      "pid_file": {"pid": 103, "live": true},
+      "expect": {
+        "newest_live": 104,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": false,
+        "ancestors": [101],
+        "takeover": false,
+        "describe": ["104: serving", "103: starting", "101: draining"]
+      }
+    },
+    {
+      "name": "successor still starting (attached, unclaimed) is the forward target",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": true, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": true, "draining": false, "live": true}
+      ],
+      "me": 101,
+      "expect": {
+        "newest_live": 102,
+        "restart_target": 102,
+        "may_claim": false,
+        "may_start_shared": true,
+        "ancestors": [],
+        "describe": ["102: serving", "101: draining"]
+      }
+    },
+    {
+      "name": "all successors dead: original may reclaim",
+      "generations": [
+        {"pid": 101, "predecessor": 0, "spawn_seq": 0, "attached": false, "draining": true, "live": true},
+        {"pid": 102, "predecessor": 101, "spawn_seq": 1, "attached": false, "draining": false, "live": false}
+      ],
+      "me": 101,
+      "expect": {
+        "newest_live": 101,
+        "restart_target": 0,
+        "may_claim": true,
+        "may_start_shared": true,
+        "ancestors": [],
+        "describe": ["101: serving", "102: gone"]
+      }
+    }
+  ]
+}

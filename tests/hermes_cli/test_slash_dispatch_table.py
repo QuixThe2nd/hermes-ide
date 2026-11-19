@@ -16,13 +16,13 @@ OLD_CHAIN_COMMANDS = [
     "sessions", "codex-runtime", "retry",
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
     "blueprint", "skills", "learn", "init", "memory",
-    "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
-    "timestamps", "verbose", "focus", "footer", "compress", "usage", "subscription", "topup", "insights", "copy",
+    "platforms", "status", "context", "statusbar", "diff", "battery",
+    "timestamps", "verbose", "focus", "compress", "subscription", "insights", "copy",
     "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
     "reload-skills", "browser", "plugins", "rollback", "snapshot",
     "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",
     "goal", "refine", "review", "loop", "plan",
-    "subgoal", "skin", "voice", "wake", "busy", "indicator",
+    "subgoal", "skin", "indicator",
 ]
 
 
@@ -47,8 +47,7 @@ def test_registry_names_resolve_into_the_table():
         assert cmd is not None and HermesCLI._slash_handler(cmd.name) is not None, name
     # registry commands the CLI never handled inline must still fall through
     dispatched = {c.name for c in COMMAND_REGISTRY if HermesCLI._slash_handler(c.name)}
-    # /login has no old branch; it resolves through the naming-convention fallback.
-    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit", "login"}
+    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit"}
 
 
 def _cli():
@@ -78,9 +77,9 @@ def test_dispatch_return_semantics_and_side_effects():
     assert c.process_command("/exit") is False
     c = _cli()
     with patch.object(HermesCLI, "_handle_handoff_command", return_value=False):
-        assert c.process_command("/handoff telegram") is False
+        assert c.process_command("/handoff discord") is False
     with patch.object(HermesCLI, "_handle_handoff_command", return_value=True):
-        assert c.process_command("/handoff telegram") is True
+        assert c.process_command("/handoff discord") is True
     with patch.object(HermesCLI, "_handle_update_command", return_value=True):
         assert c.process_command("/update") is False
     with patch.object(HermesCLI, "_handle_update_command", return_value=False):

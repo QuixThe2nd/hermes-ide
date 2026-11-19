@@ -79,7 +79,10 @@ class GatewayGoalCommandsMixin:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
         A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. Best-effort: failures only logged.
+        none and is marked internal — it is goal machinery, not human text, so the drained event
+        must never be classified as user intent (the recursive chase-append loop). Kickoffs stay
+        human-shaped: their text is the user's own goal wording and the non-internal head-slot
+        placement is what starts the goal promptly. Best-effort: failures only logged.
         """
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
@@ -90,6 +93,7 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
+                    internal=not kickoff and self._is_goal_continuation_event(text),
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

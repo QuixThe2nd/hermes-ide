@@ -8,8 +8,6 @@ was already live. The copied release-checksum parser also has one canonical owne
 from agent.activity_tracking import ActivityTrackingMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
 from agent.interrupt_control import InterruptControlMixin
-from agent.proxy_sources import iron_proxy
-from agent.rate_limit_credits import RateLimitCreditsMixin
 from agent.secret_sources import bitwarden
 from agent.session_persistence import SessionPersistenceMixin
 from agent.turn_explainers import TurnExplainersMixin
@@ -32,10 +30,6 @@ _CONSOLIDATED = (
     (AIAgent, InterruptControlMixin, (
         "_drain_pending_redirect", "_drain_pending_steer", "_has_pending_redirect",
         "clear_interrupt", "hard_interrupt", "interrupt", "redirect", "steer",
-    )),
-    (AIAgent, RateLimitCreditsMixin, (
-        "_capture_credits", "_capture_rate_limits", "_check_openrouter_cache_status",
-        "_credits_notices_enabled", "_emit_credits_notices",
     )),
     (AIAgent, SessionPersistenceMixin, (
         "_apply_persist_user_message_override", "_convert_to_trajectory_format",
@@ -76,11 +70,10 @@ def test_bridge_keeps_its_non_shadowed_reply_prefix_implementation():
     assert callable(WhatsAppAdapter._effective_reply_prefix)
 
 
-def test_checksum_parser_is_shared_from_bitwarden(tmp_path):
-    assert iron_proxy._expected_sha256 is bitwarden._expected_sha256
-    assert iron_proxy._expected_sha256.__module__ == bitwarden.__name__
+def test_checksum_parser_lives_on_bitwarden(tmp_path):
+    assert bitwarden._expected_sha256.__module__ == bitwarden.__name__
 
     checksum = tmp_path / "checksums.txt"
     digest = "a" * 64
     checksum.write_text(f"{digest}  artifact.tar.gz\n", encoding="utf-8")
-    assert iron_proxy._expected_sha256(checksum, "artifact.tar.gz") == digest
+    assert bitwarden._expected_sha256(checksum, "artifact.tar.gz") == digest

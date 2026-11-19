@@ -133,8 +133,8 @@ _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # ``timeouts.tools.unbounded_tools`` in config.yaml (a list of tool names; an
 # explicit empty list disables the exemption entirely).
 #
-# Uniform delegation lifecycle: ALL four delegate tools are exempt in their
-# default (blocking) mode — a foreground fan-out, a multi-hour claude/cursor
+# Uniform delegation lifecycle: ALL delegate tools are exempt in their
+# default (blocking) mode — a foreground fan-out, a multi-hour claude
 # run, or a days-long assistant mission wait is legitimate blocked work, not
 # a wedged thread. The 30s tool heartbeat keeps the gateway's inactivity
 # watchdog fed the whole time, so the deadline exemption is the only guard
@@ -144,8 +144,13 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
     {
         "delegate_agent",
         "delegate_claude_agent",
-        "delegate_cursor_agent",
         "delegate_assistant",
+        # Coding lane tools — a foreground lane run (especially an OMP RPC
+        # goal-mode reverse-engineer pass) legitimately blocks for a long time.
+        "delegate_ui_dev",
+        "delegate_client_dev",
+        "delegate_backend_dev",
+        "delegate_reverse_engineer",
         # Hidden registry aliases (advertise=False) — dispatchable forever.
         "delegate_task",
         "restart",
@@ -167,6 +172,15 @@ _TOOL_NAME_ALIASES = {
     "delegate_task": "delegate_agent",
 }
 
+# Lane tools named here (not imported from tools.delegate_lane_specs to keep
+# agent -> tools import edges at call sites only).
+_LANE_TOOL_NAMES = frozenset({
+    "delegate_ui_dev",
+    "delegate_client_dev",
+    "delegate_backend_dev",
+    "delegate_reverse_engineer",
+})
+
 
 def _resolve_unbounded_tools() -> frozenset[str]:
     from agent.deadline import resolve_name_list
@@ -183,12 +197,22 @@ def _resolve_unbounded_tools() -> frozenset[str]:
             expanded.add(new)
         if new in expanded:
             expanded.add(old)
-    if not expanded & {"delegate_agent", "delegate_task"}:
+    if not expanded & ({"delegate_agent", "delegate_task"} | _LANE_TOOL_NAMES):
         logger.warning(
             "timeouts.tools.unbounded_tools names no delegation tool; a "
             "foreground delegate_agent call will be killed by the %ss batch "
             "deadline. Add 'delegate_agent' to keep long blocking delegations "
             "alive.",
+            _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
+        )
+    missing_lanes = _LANE_TOOL_NAMES - expanded
+    if missing_lanes:
+        logger.warning(
+            "timeouts.tools.unbounded_tools omits the lane tool(s) %s; their "
+            "foreground calls will be killed by the %ss batch deadline. Add "
+            "them to keep long blocking lane runs (e.g. an OMP goal-mode "
+            "reverse-engineer pass) alive.",
+            ", ".join(sorted(missing_lanes)),
             _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         )
     return frozenset(expanded)
@@ -1568,7 +1592,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
     if function_name in ("delegate_agent", "delegate_task"):
-        # Backend-routed calls (claude/cursor) need the registry dispatch path:
+        # Backend-routed calls (claude) need the registry dispatch path:
         # the external handlers key spawn/restart receipts on the session and
         # tool-call ids only that path supplies. The subagent fast path keeps
         # its live-agent intercept.
@@ -1605,7 +1629,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
     if agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
+        # Memory-provider tools (hindsight_retain, ...) are not in the registry.
         return _SequentialDispatch(
             execute=lambda next_args: agent._memory_manager.handle_tool_call(function_name, next_args),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args),

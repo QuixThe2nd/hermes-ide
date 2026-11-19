@@ -26,6 +26,9 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
+# ``bedrock_content_blocks`` survives only in sessions recorded while the Bedrock
+# provider existed; scrub it at the wire boundary so replaying legacy history
+# through another provider cannot 400.
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
     "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
@@ -250,7 +253,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
 
 def _route_replays_reasoning_details(base_url: Any) -> bool:
     """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array, also consumed by the Nous Portal).
+    reasoning array).
 
     Every other chat-completions endpoint either ignores the field or, when its schema is
     strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
@@ -261,7 +264,7 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+    return base_url_host_matches(base_url, "openrouter.ai")
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:

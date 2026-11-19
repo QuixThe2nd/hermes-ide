@@ -70,19 +70,19 @@ def out_of_turn():
 
     Earlier AIAgent-driven tests in this process can leave those contextvars set, which would hand the
     header to an unfixed tree through ``get_conversation_context()`` instead of the explicit runtime."""
-    from agent import portal_tags
+    from agent import conversation_scope
 
     tokens = (
         aux._RUNTIME_MAIN_CONTEXT.set(None),
-        portal_tags.set_conversation_context(None),
-        portal_tags.set_affinity_scope(None),
+        conversation_scope.set_conversation_context(None),
+        conversation_scope.set_affinity_scope(None),
     )
     try:
         yield
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(tokens[0])
-        portal_tags.reset_conversation_context(tokens[1])
-        portal_tags.reset_affinity_scope(tokens[2])
+        conversation_scope.reset_conversation_context(tokens[1])
+        conversation_scope.reset_affinity_scope(tokens[2])
 
 
 _OPENCODE_RUNTIME = {

@@ -15,8 +15,8 @@ class TestPlatformEnumDynamic:
     """Test that Platform enum accepts unknown values for plugin platforms."""
 
     def test_builtin_members_still_work(self):
-        assert Platform.TELEGRAM.value == "telegram"
-        assert Platform("telegram") is Platform.TELEGRAM
+        assert Platform.DISCORD.value == "discord"
+        assert Platform("discord") is Platform.DISCORD
 
 
     def test_dynamic_member_case_normalised(self):
@@ -278,8 +278,8 @@ class TestCronPlatformResolution:
 
     def test_builtin_platform_resolves(self):
         """Built-in platform names resolve via Platform() call."""
-        p = Platform("telegram")
-        assert p is Platform.TELEGRAM
+        p = Platform("discord")
+        assert p is Platform.DISCORD
 
 
 # ── platforms.py integration ──────────────────────────────────────────

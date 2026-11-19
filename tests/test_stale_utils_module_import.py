@@ -26,7 +26,7 @@ Python modules in this process" -- and reloads ``hermes_constants`` after the
 pull, but NOT ``utils``. Any ``utils`` consumer added in the same release stays
 exposed until the process restarts.
 
-The messaging client (Discord/Telegram/Feishu/...) is incidental: the trigger is
+The messaging client (Discord/Slack/Feishu/...) is incidental: the trigger is
 a fresh import on a stale process, not the platform. We assert that below by
 reproducing the failure with the Discord adapter's exact import line.
 """

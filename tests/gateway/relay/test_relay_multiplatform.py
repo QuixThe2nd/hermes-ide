@@ -40,18 +40,18 @@ def _clean_env(monkeypatch):
 
 
 def test_identities_multi_platform_keyed_map(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord, telegram")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord, matrix")
     monkeypatch.setenv(
         "GATEWAY_RELAY_BOT_IDS",
         json.dumps(
             {
                 "discord": {"botId": "app-1"},
-                "telegram": {"botId": "bot-9", "username": "@my_bot"},
+                "matrix": {"botId": "bot-9", "username": "@my_bot"},
             }
         ),
     )
     # Order preserved; whitespace in the list trimmed.
-    assert relay.relay_platform_identities() == [("discord", "app-1"), ("telegram", "bot-9")]
+    assert relay.relay_platform_identities() == [("discord", "app-1"), ("matrix", "bot-9")]
     # The PRIMARY is the first listed platform.
     assert relay.relay_platform_identity() == ("discord", "app-1")
 
@@ -65,17 +65,17 @@ def test_bot_ids_malformed_json_degrades_to_empty(monkeypatch):
 
 # ─────────────────────────── provision loop ───────────────────────────
 
-def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token"):
+def _arm(monkeypatch, *, url="wss://connector.example/relay", token="idp-token"):
     monkeypatch.setattr(relay, "relay_url", lambda: url)
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: token)
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", lambda: token)
 
 
 def test_self_provision_loops_per_platform(monkeypatch):
     _arm(monkeypatch)
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,telegram")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,matrix")
     monkeypatch.setenv(
         "GATEWAY_RELAY_BOT_IDS",
-        json.dumps({"discord": {"botId": "app-1"}, "telegram": {"botId": "bot-9"}}),
+        json.dumps({"discord": {"botId": "app-1"}, "matrix": {"botId": "bot-9"}}),
     )
     calls = []
 
@@ -86,7 +86,7 @@ def test_self_provision_loops_per_platform(monkeypatch):
     monkeypatch.setattr(relay, "_post_provision", _fake)
     assert relay.self_provision_relay() is True
     # One POST per fronted platform, all under the SAME gatewayId.
-    assert [(p, b) for p, b, _ in calls] == [("discord", "app-1"), ("telegram", "bot-9")]
+    assert [(p, b) for p, b, _ in calls] == [("discord", "app-1"), ("matrix", "bot-9")]
     assert len({gw for _, _, gw in calls}) == 1
     # The in-process secret is set once (from the first success).
     import os
@@ -119,22 +119,22 @@ async def test_adapter_stamps_per_frame_platform_from_inbound(monkeypatch):
         len_unit="chars",
     )
     stub = StubConnector(descriptor)
-    # This gateway fronts both discord and telegram.
-    stub._identities = [("discord", "app-1"), ("telegram", "bot-9")]
+    # This gateway fronts both discord and matrix.
+    stub._identities = [("discord", "app-1"), ("matrix", "bot-9")]
     adapter = RelayAdapter(PlatformConfig(), descriptor, transport=stub)
     await adapter.connect()
 
-    # A telegram inbound for chat "tg-1".
+    # A matrix inbound for chat "mx-1".
     await stub.push_inbound(
         MessageEvent(
             text="hi",
             message_type=MessageType.TEXT,
-            source=SessionSource(platform=Platform.TELEGRAM, chat_id="tg-1", chat_type="dm", user_id="u-1"),
+            source=SessionSource(platform=Platform.MATRIX, chat_id="mx-1", chat_type="dm", user_id="u-1"),
         )
     )
-    await adapter.send("tg-1", "a telegram reply")
-    # The reply was tagged for telegram (per-frame egress).
-    assert stub.sent_platforms[-1] == "telegram"
+    await adapter.send("mx-1", "a matrix reply")
+    # The reply was tagged for matrix (per-frame egress).
+    assert stub.sent_platforms[-1] == "matrix"
 
     # A discord inbound for chat "dc-1".
     await stub.push_inbound(

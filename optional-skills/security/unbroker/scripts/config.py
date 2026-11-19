@@ -37,8 +37,7 @@ VALID = {
     #                  webmail via browser_* tools (NO password stored; needs a browser the
     #                  operator's inbox is signed into)
     #   programmatic - CLI sends via SMTP + reads verify links via IMAP (needs EMAIL_* creds)
-    #   alias        - AgentMail agent-owned inboxes / per-broker aliases
-    "email_mode": {"draft_only", "browser", "programmatic", "alias"},
+    "email_mode": {"draft_only", "browser", "programmatic"},
     "tracker_backend": {"local-json", "google-sheets"},
     "encryption": {"none", "age"},
 }
@@ -61,7 +60,7 @@ def save_config(cfg: dict) -> Path:
 
 def dotenv_env() -> dict:
     """Shell env overlaid on `$HERMES_HOME/.env`, so capability detection sees the creds Hermes
-    loads for its own tools (CAMOFOX_URL, EMAIL_*, AGENTMAIL_API_KEY, ...) even though the
+    loads for its own tools (CAMOFOX_URL, EMAIL_*, ...) even though the
     terminal-tool shell doesn't export them. Shell env wins; the .env only fills gaps."""
     merged: dict = {}
     p = paths.hermes_home() / ".env"
@@ -91,7 +90,6 @@ def detect_capabilities(env: dict | None = None) -> dict:
     mail = emailer.available(env)
     return {
         "camofox": bool(env.get("CAMOFOX_URL")),
-        "agentmail": bool(env.get("AGENTMAIL_API_KEY")),
         "email_imap_smtp": bool(env.get("EMAIL_ADDRESS") and env.get("EMAIL_PASSWORD")),
         "smtp_send": mail["smtp"],      # CLI can SEND opt-out emails itself
         "imap_read": mail["imap"],      # CLI can POLL verification links itself
@@ -104,7 +102,7 @@ def auto_configure(env: dict | None = None) -> dict:
     """Pick the most autonomous configuration this environment supports (no questions).
 
     - email: programmatic when SMTP creds exist (CLI sends + IMAP-verifies itself);
-      alias mode when only AgentMail exists; draft_only as the capability floor.
+      draft_only as the capability floor.
     - encryption: age when the binary is installed (free privacy, zero human cost).
     - tracker: stays local-json (google-sheets needs a sheet id -> a human choice).
     """
@@ -113,8 +111,6 @@ def auto_configure(env: dict | None = None) -> dict:
     cfg["autonomy"] = "full"
     if caps["smtp_send"]:
         cfg["email_mode"] = "programmatic"
-    elif caps["agentmail"]:
-        cfg["email_mode"] = "alias"
     else:
         cfg["email_mode"] = "draft_only"
     if caps["age"]:

@@ -5,14 +5,14 @@ directory layout mirrors `plugins/platforms/`:
 
 ```
 plugins/model-providers/
-├── openrouter/
-│   ├── __init__.py      # registers the ProviderProfile
-│   └── plugin.yaml      # manifest: name, kind, version, description
-├── anthropic/
-│   ├── __init__.py
-│   └── plugin.yaml
-└── ...
+└── custom/              # LiteLLM and other OpenAI-compatible endpoints (custom:litellm)
+    ├── __init__.py
+    └── plugin.yaml
 ```
+
+This build ships only that plugin. Any other bundled provider name fails closed.
+User plugins under `$HERMES_HOME/plugins/model-providers/<name>/` can still register
+additional profiles.
 
 ## How discovery works
 
@@ -64,7 +64,4 @@ chat_completions transport all auto-wire from the registry.
 ## Non-trivial profiles
 
 Override the `ProviderProfile` hooks in a subclass for per-provider
-quirks — see `plugins/model-providers/openrouter/__init__.py` for
-`build_extra_body` and `build_api_kwargs_extras` examples, and
-`plugins/model-providers/gemini/__init__.py` for `thinking_config`
-translation.
+quirks — see `plugins/model-providers/custom/__init__.py` for the shipped OpenAI-compatible profile.

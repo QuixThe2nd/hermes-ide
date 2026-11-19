@@ -442,15 +442,29 @@ class InProcessCronScheduler(CronScheduler):
         next_tick = time.monotonic()
         while not stop_event.is_set():
             ok = False
+            dispatch_suppressed = False
+
+            tick_gate = None
+            if can_dispatch is not None:
+                dispatch_gate = can_dispatch
+
+                def checked_dispatch():
+                    nonlocal dispatch_suppressed
+                    allowed = dispatch_gate()
+                    if not allowed:
+                        dispatch_suppressed = True
+                    return allowed
+
+                tick_gate = checked_dispatch
             try:
-                if can_dispatch is not None and not can_dispatch():
+                if tick_gate is not None and not tick_gate():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     cron_tick(
                         verbose=False, adapters=adapters, loop=loop, sync=False,
-                        can_dispatch=can_dispatch,
+                        can_dispatch=tick_gate,
                     )
-                ok = True
+                    ok = not dispatch_suppressed
             except BaseException as e:
                 # BaseException, not Exception: a SystemExit must not silently kill the ticker;
                 # KeyboardInterrupt is caught on purpose — shutdown is driven by stop_event.
@@ -563,8 +577,22 @@ class InProcessCronScheduler(CronScheduler):
                 logger.error("Cron profile enumeration error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"
                 consecutive_failures = _note_tick_failure(e, consecutive_failures)
+            dispatch_suppressed = False
+
+            tick_gate = None
+            if can_dispatch is not None:
+                dispatch_gate = can_dispatch
+
+                def checked_dispatch():
+                    nonlocal dispatch_suppressed
+                    allowed = dispatch_gate()
+                    if not allowed:
+                        dispatch_suppressed = True
+                    return allowed
+
+                tick_gate = checked_dispatch
             try:
-                if can_dispatch is not None and not can_dispatch():
+                if tick_gate is not None and not tick_gate():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for _pname, home in cycle_homes:
@@ -572,7 +600,7 @@ class InProcessCronScheduler(CronScheduler):
                             with _profile_cron_scope(home):
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
-                                    sync=False, can_dispatch=can_dispatch,
+                                    sync=False, can_dispatch=tick_gate,
                                 )
                         except CronTickYielded as e:
                             # Yield for THIS profile only; one fresh gateway must not stop others.
@@ -597,7 +625,11 @@ class InProcessCronScheduler(CronScheduler):
             # Completed cycle: each profile's own outcome; aborted cycle: all beats unsuccessful.
             for _, home in cycle_homes:
                 with _profile_cron_scope(home):
-                    _home_ok = _tick_error is None and str(home) not in _profile_errors
+                    _home_ok = (
+                        not dispatch_suppressed
+                        and _tick_error is None
+                        and str(home) not in _profile_errors
+                    )
                     _guarded_store_write(
                         record_ticker_heartbeat, "heartbeat", success=_home_ok
                     )

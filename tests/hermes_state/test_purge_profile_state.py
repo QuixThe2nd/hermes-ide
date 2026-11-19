@@ -21,28 +21,6 @@ def db(tmp_path):
     database.close()
 
 
-def _create_legacy_v2_topic_tables(db):
-    """Create the supported pre-profile-name topic schema without migrating it."""
-    db._write_sql("""
-        CREATE TABLE telegram_dm_topic_mode (
-            chat_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            activated_at REAL NOT NULL, updated_at REAL NOT NULL,
-            has_topics_enabled INTEGER, allows_users_to_create_topics INTEGER,
-            capability_checked_at REAL, intro_message_id TEXT, pinned_message_id TEXT
-        )
-    """)
-    db._write_sql("""
-        CREATE TABLE telegram_dm_topic_bindings (
-            chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
-            session_key TEXT NOT NULL,
-            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            managed_mode TEXT NOT NULL DEFAULT 'auto',
-            linked_at REAL NOT NULL, updated_at REAL NOT NULL,
-            PRIMARY KEY (chat_id, thread_id)
-        )
-    """)
-
 
 def _create_legacy_ledger_without_adapter_profile(db):
     """The delivery_obligations shape before ``adapter_profile`` was added (ledger never reopened)."""
@@ -146,38 +124,6 @@ class TestPurgeProfileState:
         assert db._read_one(
             "SELECT id FROM sessions WHERE id = ?", ("sess_gone",)) is not None
 
-    def test_purges_topic_bindings_matched_by_session_key_namespace(self, db):
-        """The rekey rewrites a binding's ``profile_name`` AND its ``session_key`` namespace, so the
-        purge has to match both — a binding whose ``profile_name`` names somebody else still belongs
-        to the deleted profile by key, and matching on ``profile_name`` alone leaves it routing
-        events for a profile that no longer exists."""
-        db.create_session(
-            "sess_gone", "telegram", session_key="agent:gone:telegram:dm:chatA",
-            profile_name="gone", chat_id="chatA", chat_type="dm",
-        )
-        db.create_session(
-            "sess_keep", "telegram", session_key="agent:keepme:telegram:dm:chatB",
-            profile_name="keepme", chat_id="chatB", chat_type="dm",
-        )
-        db.bind_telegram_topic(
-            chat_id="chatA", thread_id="threadA", user_id="userA",
-            session_key="agent:gone:telegram:dm:chatA", session_id="sess_gone",
-            profile_name="otherholder")
-        db.bind_telegram_topic(
-            chat_id="chatB", thread_id="threadB", user_id="userB",
-            session_key="agent:keepme:telegram:dm:chatB", session_id="sess_keep",
-            profile_name="keepme")
-
-        counts = db.purge_profile_state("gone")
-
-        assert db._read_one(
-            "SELECT COUNT(*) AS n FROM telegram_dm_topic_bindings WHERE chat_id = ?",
-            ("chatA",))["n"] == 0
-        assert db._read_one(
-            "SELECT COUNT(*) AS n FROM telegram_dm_topic_bindings WHERE chat_id = ?",
-            ("chatB",))["n"] == 1
-        assert counts["telegram_dm_topic_bindings"] == 1
-
     def test_underscore_in_profile_name_is_not_a_like_wildcard(self, db):
         db.save_gateway_routing_entry(
             "agent:foo_bar:feishu:dm:chatA",
@@ -191,36 +137,6 @@ class TestPurgeProfileState:
         routing = db.load_gateway_routing_entries(scope="/root/sessions")
         assert "agent:foo_bar:feishu:dm:chatA" not in routing
         assert "agent:fooXbar:feishu:dm:chatB" in routing
-
-    def test_purges_legacy_v2_topic_binding_by_session_key(self, db):
-        """Purge is safe on old tables and leaves unrelated namespace rows intact."""
-        db.create_session(
-            "sess_gone", "telegram", session_key="agent:gone:telegram:dm:chatA",
-            profile_name="gone", chat_id="chatA", chat_type="dm")
-        db.create_session(
-            "sess_keep", "telegram", session_key="agent:keepme:telegram:dm:chatB",
-            profile_name="keepme", chat_id="chatB", chat_type="dm")
-        _create_legacy_v2_topic_tables(db)
-        db._write_sql(
-            "INSERT INTO telegram_dm_topic_bindings "
-            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, 1)",
-            ("chatA", "threadA", "userA", "agent:gone:telegram:dm:chatA", "sess_gone"))
-        db._write_sql(
-            "INSERT INTO telegram_dm_topic_bindings "
-            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, 1)",
-            ("chatB", "threadB", "userB", "agent:keepme:telegram:dm:chatB", "sess_keep"))
-
-        counts = db.purge_profile_state("gone")
-
-        assert counts["telegram_dm_topic_bindings"] == 1
-        assert db._read_one(
-            "SELECT COUNT(*) AS n FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatA",)
-        )["n"] == 0
-        assert db._read_one(
-            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
-        )["session_key"] == "agent:keepme:telegram:dm:chatB"
 
     def test_purges_legacy_ledger_without_adapter_profile_by_session_key(self, db):
         """A ledger created before adapter_profile existed is settled on its namespace alone."""

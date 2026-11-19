@@ -27,6 +27,8 @@ from agent.moa_alternation import destination_key, is_role_alternation_rejection
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
 
+from prompts.load import load
+
 logger = logging.getLogger(__name__)
 
 # Privacy filter (moa.privacy_filter: '' | display | full): PII classes agent.redact
@@ -186,36 +188,7 @@ _REFERENCE_TOOL_RESULT_BUDGET = 4000
 
 # Reference system prompt: without this framing a reference assumes it is the acting
 # agent and refuses ("I can't access repositories") or tries to call tools.
-_REFERENCE_SYSTEM_PROMPT = (
-    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
-    "NOT the acting agent and you do NOT execute anything: you cannot call "
-    "tools, run commands, browse, or access files, repositories, or URLs, and "
-    "you should not try to or apologize for being unable to. A separate "
-    "aggregator/orchestrator model holds those capabilities and will take the "
-    "actual actions.\n\n"
-    "CRITICAL: You must NEVER claim or imply that you have executed a command, "
-    "downloaded a file, accessed a URL, or performed any action. You can only "
-    "analyze and advise based on the conversation context. Examples of what to "
-    "avoid:\n"
-    "- Bad: \"I ran curl and got 404.\"\n"
-    "- Bad: \"I downloaded the file successfully.\"\n"
-    "- Bad: \"I checked the repository and found...\"\n"
-    "- Good: \"Based on the error pattern, a curl request to that URL would likely return 404.\"\n"
-    "- Good: \"The conversation suggests downloading this file may help.\"\n"
-    "- Good: \"From the context, checking the repository would reveal...\"\n\n"
-    "The conversation below is the current state of a task handled by that "
-    "acting agent. Your job is to give your most intelligent analysis of that "
-    "state: understand the goal, reason about the problem, and advise on what "
-    "to do next. Surface the best approach, concrete next steps and tool-use "
-    "strategy, likely pitfalls and risks, and anything the acting agent may "
-    "have missed or gotten wrong. Assume any referenced files, URLs, or "
-    "systems exist and reason about them from the context given rather than "
-    "asking for access.\n\n"
-    "Respond with your advice directly — no preamble, no disclaimers about "
-    "tools or access. Your response is private guidance handed to the "
-    "aggregator, not an answer shown to the user. NEVER claim to have executed "
-    "anything."
-)
+_REFERENCE_SYSTEM_PROMPT = load("moa_reference_system")
 
 
 def _slot_label(slot: dict[str, Any]) -> str:
@@ -637,7 +610,7 @@ def _run_references_parallel(
     total = len(reference_models)
     results: list[tuple[str, str, Any] | None] = [None] * total
     futures: dict[Any, int] = {}
-    # Propagate the turn's contextvars (session callbacks, Nous conversation tag).
+    # Propagate the turn's contextvars (session callbacks and conversation affinity).
     from tools.thread_context import propagate_context_to_thread
     completed = 0
     executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
@@ -1564,18 +1537,18 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
 # turn shares it) and ``session_id`` dispatch kwargs but no route to the
 # agent's progress callback, so a tool cannot report per-invocation progress
 # on its own. This bus is the weakest sufficient bridge: the gateway
-# subscribes per session for the surfaces that render stage cards (Discord),
-# tools publish aggregate-only stage events, and every other surface — CLI,
-# TUI, ACP, direct calls, tests — sees nothing at all because no subscriber
-# exists. Nothing here fans out through ``tool_progress_callback``, so no
-# existing event consumer can observe these events.
+# subscribes per profile/session for MoA stage cards or sanitized browser
+# images; surfaces without a subscriber remain no-ops. Nothing here fans out
+# through ``tool_progress_callback``.
 #
-# Safety contract for events placed on the bus: the payload is an allowlist
+# Safety contract for MoA ``tool.stage`` events: the payload is an allowlist
 # (tool name, stage id, optional terminal status, per-invocation correlation
 # id, integer aggregate counts, and an optional per-slot roster snapshot —
 # stable slot index, bounded provider/model identity, a small status enum,
 # and an optional round id). Never a prompt, evidence, an advisor answer, a
 # provider:model slot label, a config blob, or raw tool arguments.
+# ``browser.screenshot`` has a separate profile/path/hash ownership contract
+# in tools/browser_progress.py and never carries page text, OCR, or URLs.
 
 # Per-slot roster snapshot bounds. Statuses are a closed enum (an unrecognized
 # status is rendered as "unknown", never guessed into "responded"); identity
@@ -1634,54 +1607,72 @@ def _stage_slot_rows(slots: Any) -> tuple[list[dict[str, Any]], int]:
     return rows, omitted
 
 _TOOL_STAGE_LOCK = threading.Lock()
-_TOOL_STAGE_SUBSCRIBERS: dict[str, Callable[[dict], None]] = {}
+_TOOL_STAGE_SUBSCRIBERS: dict[tuple[str, str], tuple[str, Callable[[dict], Any], bool]] = {}
+
+
+def _tool_stage_scope(session_id: str) -> tuple[str, str]:
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(), session_id
+
+
+def current_tool_stage_subscriber_token(
+    session_id: str | None, *, browser_progress: bool = False,
+) -> str | None:
+    """Return the live turn token, optionally requiring browser-image capability."""
+    if not session_id:
+        return None
+    with _TOOL_STAGE_LOCK:
+        subscriber = _TOOL_STAGE_SUBSCRIBERS.get(_tool_stage_scope(session_id))
+    if subscriber is None or (browser_progress and not subscriber[2]):
+        return None
+    return subscriber[0]
 
 
 def subscribe_tool_stage_events(
-    session_id: str | None, callback: Callable[[dict], None]
+    session_id: str | None, callback: Callable[[dict], Any], *, browser_progress: bool = False,
 ) -> Callable[[], None]:
-    """Register *callback* as the stage-event deliverer for a session.
-
-    Returns an unsubscribe callable. One subscriber per session, newest
-    wins: turns within a session are serialized, but a queued follow-up
-    recurses into a nested turn while the parent subscription is still
-    live, and without replacement the parent would double-render the
-    nested turn's events. Unsubscribing restores whatever was registered
-    before, so the parent picks its own events back up while unwinding.
-    """
+    """Register one profile-scoped turn callback, restoring its parent on unsubscribe."""
     if not session_id:
         return lambda: None
+    scope = _tool_stage_scope(session_id)
+    subscriber = (uuid.uuid4().hex, callback, browser_progress)
     with _TOOL_STAGE_LOCK:
-        previous = _TOOL_STAGE_SUBSCRIBERS.get(session_id)
-        _TOOL_STAGE_SUBSCRIBERS[session_id] = callback
+        previous = _TOOL_STAGE_SUBSCRIBERS.get(scope)
+        _TOOL_STAGE_SUBSCRIBERS[scope] = subscriber
 
     def _unsubscribe() -> None:
         with _TOOL_STAGE_LOCK:
-            if _TOOL_STAGE_SUBSCRIBERS.get(session_id) is callback:
+            if _TOOL_STAGE_SUBSCRIBERS.get(scope) == subscriber:
                 if previous is None:
-                    _TOOL_STAGE_SUBSCRIBERS.pop(session_id, None)
+                    _TOOL_STAGE_SUBSCRIBERS.pop(scope, None)
                 else:
-                    _TOOL_STAGE_SUBSCRIBERS[session_id] = previous
+                    _TOOL_STAGE_SUBSCRIBERS[scope] = previous
 
     return _unsubscribe
 
 
-def publish_tool_stage(session_id: str | None, event: dict) -> None:
-    """Deliver one stage event to the session's subscriber, fail-soft.
+def publish_tool_stage(
+    session_id: str | None, event: dict, *, subscriber_token: str | None = None
+) -> bool:
+    """Deliver to the expected live subscriber; return whether the event was accepted.
 
-    Called from tool worker threads; subscriber exceptions are swallowed
-    so progress rendering can never fail the tool that reported it.
+    Worker-thread and subscriber failures are fail-soft. A token captured before a
+    tool call prevents its late result from entering a replacement turn.
     """
     if not session_id:
-        return
+        return False
     try:
         with _TOOL_STAGE_LOCK:
-            callback = _TOOL_STAGE_SUBSCRIBERS.get(session_id)
-        if callback is None:
-            return
-        callback(event)
+            subscriber = _TOOL_STAGE_SUBSCRIBERS.get(_tool_stage_scope(session_id))
+        if subscriber is None or (
+            subscriber_token is not None and subscriber[0] != subscriber_token
+        ):
+            return False
+        accepted = subscriber[1](event)
+        return accepted is not False
     except Exception:
         logger.debug("tool stage event delivery failed", exc_info=True)
+        return False
 
 
 def tool_stage_reporter(

@@ -80,7 +80,7 @@ WHERE role = 'tool'
 # (prompt bytes + time window against a durable job artifact), so it
 # may only ever claim a session whose source EXPLICITLY marks a
 # non-human worker run. A human-facing session — CLI, API, Discord,
-# Telegram, the mission-control composer itself — keeps its inbox row
+# the mission-control composer itself — keeps its inbox row
 # even when its first prompt and start time happen to match a job.
 LINEAGE_WORKER_CANDIDATES_SQL = """
 SELECT id, title, display_name, started_at, last_activity_at,
@@ -102,7 +102,6 @@ WHERE hidden = 0
 LINEAGE_WORKER_SOURCES = frozenset((
     "subagent",         # delegate_tool children
     "tool",             # sessions launched by a tool integration
-    "kanban",           # historical kanban board workers
     "research-worker",  # deep_research lane/synthesis runs
 ))
 
@@ -177,7 +176,7 @@ def _read_prompt(path):
     read on the DB side, so a multibyte prompt is judged by its true
     length. An empty prompt matches nothing either."""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             text = fh.read(LINEAGE_PROMPT_MAX_CHARS + 1)
     except (OSError, UnicodeDecodeError):
         return None

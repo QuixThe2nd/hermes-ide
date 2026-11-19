@@ -13,7 +13,6 @@ CHANNEL_KEY_TO_PROVIDER: Dict[str, str] = {
     "kimi": "kimi-coding",
     "zai": "zai",
     "grok": "xai-oauth",
-    "cursor": "cursor",
 }
 
 # Providers with a manual usage-limit resets API — the only ones whose

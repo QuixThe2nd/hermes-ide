@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from prompts.load import load
+
 from hermes_cli import profiles as profiles_mod
 from agent.skill_utils import is_excluded_skill_path
 
@@ -22,34 +24,7 @@ logger = logging.getLogger(__name__)
 MAX_SKILLS_FOR_PROMPT = 60
 
 
-_SYSTEM_PROMPT = """You are a profile-describer for Hermes Agent.
-
-A user runs multiple "profiles" — distinct agent identities, each with their
-own skills, model, and configuration. A short, concrete description helps
-people and automation choose the right profile for a task.
-
-You are given a profile's:
-  - Name
-  - Model / provider
-  - List of installed skill names (a strong signal of role / domain)
-
-Produce a single JSON object with exactly one key:
-
-  {
-    "description": "<1-2 sentence description, plain prose, no preamble>"
-  }
-
-Rules:
-  - The description should communicate where this profile is most useful.
-    Lead with its strongest capability.
-  - Stay concrete. Bad: "an AI agent that helps users."
-                  Good: "Reads and modifies Python codebases — runs tests,
-                         refactors functions, opens GitHub PRs."
-  - 1-2 sentences, <= 280 characters total.
-  - Never invent capabilities the skills don't suggest.
-  - Never write "Hermes Agent profile" or other meta-narration.
-  - No code fences, no preamble, no closing remarks. Output only JSON.
-"""
+_SYSTEM_PROMPT = load("profile_describer_system")
 
 
 _USER_TEMPLATE = """Profile name: {name}

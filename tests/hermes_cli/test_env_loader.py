@@ -402,7 +402,7 @@ def test_known_keys_absent_from_user_env_are_cleared(tmp_path, monkeypatch):
 
     # Inherited known keys from parent process / other profile
     monkeypatch.setenv("OPENAI_BASE_URL", "https://stale.example/v1")
-    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "api_token")
     monkeypatch.setenv("COPILOT_CLI_PATH", "/usr/bin/claude-code")
     # Unrelated shell var must NOT be touched
     monkeypatch.setenv("MY_SHELL_ONLY_VAR", "keep-me")
@@ -430,7 +430,7 @@ def test_empty_assignment_in_user_env_is_preserved(tmp_path, monkeypatch):
     home.mkdir()
     (home / ".env").write_text("HERMES_ACP_AUTH_METHOD=\n", encoding="utf-8")
 
-    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "api_token")
     monkeypatch.setenv("COPILOT_CLI_PATH", "/usr/bin/sneaky")  # NOT in .env → cleared
 
     load_hermes_dotenv(hermes_home=home)
@@ -451,12 +451,12 @@ def test_no_user_env_does_not_clear_anything(tmp_path, monkeypatch):
     home.mkdir()
     # No .env in home — bare profile
 
-    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "api_token")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
     load_hermes_dotenv(hermes_home=home)
 
-    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "cursor_login"
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "api_token"
     assert os.getenv("PATH") == "/usr/bin:/bin"
 
 
@@ -470,7 +470,7 @@ def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
         "HERMES_ACP_AUTH_METHOD=claude_code_cli\n", encoding="utf-8"
     )
 
-    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "api_token")
 
     load_hermes_dotenv(hermes_home=home)
 
@@ -488,7 +488,7 @@ def test_export_prefixed_known_key_in_user_env_is_kept(tmp_path, monkeypatch):
     (home / ".env").write_text(
         "export HERMES_ACP_AUTH_METHOD=claude_code_cli\n", encoding="utf-8"
     )
-    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "api_token")
     load_hermes_dotenv(hermes_home=home)
     assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"
 
@@ -510,15 +510,15 @@ def test_shell_exported_credentials_survive_cleanup(tmp_path, monkeypatch):
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-shell")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-shell")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "12345:token-from-shell")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "12345:token-from-shell")
     # A profile-managed routing key inherited alongside them IS cleared.
-    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "api_token")
 
     load_hermes_dotenv(hermes_home=home)
 
     assert os.getenv("OPENAI_API_KEY") == "sk-from-shell"
     assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-from-shell"
-    assert os.getenv("TELEGRAM_BOT_TOKEN") == "12345:token-from-shell"
+    assert os.getenv("DISCORD_BOT_TOKEN") == "12345:token-from-shell"
     assert "HERMES_ACP_AUTH_METHOD" not in os.environ
 
 

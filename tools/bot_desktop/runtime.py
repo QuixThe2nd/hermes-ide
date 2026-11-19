@@ -130,7 +130,7 @@ class DesktopStatus:
 
 def _read(path: Path) -> Optional[str]:
     try:
-        return path.read_text(encoding="utf-8").strip() or None
+        return path.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
@@ -180,7 +180,7 @@ _X_LOCK_DIR = Path("/tmp")  # where X servers write .X<n>-lock (tests point it a
 
 def _x_lock_pid(num: int) -> Optional[int]:
     try:
-        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8").strip())
+        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 

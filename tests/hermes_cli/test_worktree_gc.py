@@ -9,7 +9,7 @@ the entire value of these tests is exercising actual git verdicts):
 - unique unpushed commits          → keep
 - patch-equivalent commits (rebase/squash-merge leak) → reap
 - live-locked tree                 → keep
-- legacy kanban t_<hex> tree       → keep (old user worktree safety)
+- legacy t_<hex> tree (removed Kanban ownership) → classified like any other tree
 - branch GC: merged branch deleted, unique-commit branch kept,
   checked-out branch kept, protected names kept
 - reclaim operates ONLY on the frozen audit list (concurrent-session trap)
@@ -191,12 +191,16 @@ class TestAuditVerdicts:
         assert record.verdict == "keep"
         assert "in use" in record.reason
 
-    def test_kanban_tree_untouched(self, repo):
-        _add_worktree(repo, "t_deadbeef", branch="kanban/t_deadbeef")
+    def test_legacy_t_hex_tree_no_longer_exempt(self, repo):
+        """``t_<hex>`` trees were owned by the removed Kanban lifecycle and kept
+        unconditionally; with that lifecycle gone they classify like any other
+        tree: clean and fully merged → reap."""
+        _add_worktree(repo, "t_deadbeef")
         records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
         record = _verdict(records, "t_deadbeef")
-        assert record.verdict == "keep"
-        assert "kanban" in record.reason
+        assert record.verdict == "reap"
+        worktree_gc.reclaim_worktrees(str(repo), records=records)
+        assert not (repo / ".worktrees" / "t_deadbeef").exists()
 
 
 class TestReclaim:

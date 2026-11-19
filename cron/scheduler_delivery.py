@@ -892,27 +892,27 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
-# Audio routing is centralized in gateway.platforms.base.should_send_media_as_audio().
+# Media routing is by extension (audio goes out as an ordinary document).
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
 def _send_media_via_adapter(
-    adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict, platform=None,
+    adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict,
 ) -> list:
     """Send MEDIA files as native attachments (routed by extension, as in
     _process_message_background). Returns per-file error strings so a dropped attachment surfaces
     in run status, not just the gateway log."""
     from gateway.platforms.base import (
-        BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
+        BasePlatformAdapter, validate_media_delivery_path)
     from agent.async_utils import safe_schedule_threadsafe
     job_ref = {"id": job.get("id", "?")}
     errors: list = []
-    requested = [(str(p), v) for p, v in (media_files or [])]
+    requested = [str(p) for p in (media_files or [])]
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Report paths the safety filter dropped (missing file, denied prefix, strict-mode miss).
-    kept = {p for p, _ in media_files}
-    for raw_path, _v in requested:
+    kept = set(media_files)
+    for raw_path in requested:
         try:
             dropped = validate_media_delivery_path(raw_path) not in kept
         except Exception:
@@ -920,13 +920,10 @@ def _send_media_via_adapter(
         if dropped:
             errors.append(f"attachment dropped by media path policy: {raw_path}")
 
-    route_platform = platform if platform is not None else getattr(adapter, "platform", None)
-    for media_path, _is_voice in media_files:
+    for media_path in media_files:
         try:
             ext = _sched.Path(media_path).suffix.lower()
-            if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
-                method, path_kw = "send_voice", "audio_path"
-            elif ext in _VIDEO_EXTS:
+            if ext in _VIDEO_EXTS:
                 method, path_kw = "send_video", "video_path"
             elif ext in _IMAGE_EXTS:
                 method, path_kw = "send_image_file", "image_path"
@@ -1275,7 +1272,6 @@ def _live_send_media(
                 routed_media_metadata["scope_id"] = channel.scope_id
     _media_errors = _send_media_via_adapter(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
-        platform=t.platform,
     )
     # Surface per-file failures into run status: text delivered but attachment lost is not ok.
     for _me in _media_errors:

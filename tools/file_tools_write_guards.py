@@ -194,43 +194,16 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
-
-
-
-
-def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
-    """Return the container-side Hermes mirror prefix for persistent Docker file tools."""
-    try:
-        from tools.terminal_tool import (
-            _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
-        container_key = _resolve_container_task_id(task_id)
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        if env is not None:
-            persistent_docker = (env.__class__.__name__ == "DockerEnvironment"
-                                 and bool(getattr(env, "_persistent", False)))
-            return "/root/.hermes" if persistent_docker else None
-        config = _get_env_config()
-    except Exception:
-        return None
-    if config.get("env_type") == "docker" and config.get("container_persistent", True):
-        return "/root/.hermes"
-    return None
-
-
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
-    """Soft-guard: warn when ``filepath`` lands on a host-side or Docker sandbox MIRROR of
+    """Soft-guard: warn when ``filepath`` lands on a host-side sandbox MIRROR of
     Hermes state (a write the host never reads). Not profile isolation — that guard was
     removed; ``cross_profile=True`` keeps bypassing this one for replay compat. Fails open."""
     try:
-        from agent.file_safety import get_container_mirror_warning, get_sandbox_mirror_warning
+        from agent.file_safety import get_sandbox_mirror_warning
     except Exception:
         return None
     resolved = _resolved_or_raw(filepath, task_id)
-    warning = get_sandbox_mirror_warning(resolved)
-    if warning is not None:
-        return warning
-    return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
+    return get_sandbox_mirror_warning(resolved)
 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:

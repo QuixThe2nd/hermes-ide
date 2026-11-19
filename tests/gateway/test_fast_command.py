@@ -73,14 +73,13 @@ def _make_runner():
         get_or_create_session=lambda source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda session_id: [],
     )
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner._enrich_message_with_vision = AsyncMock(return_value="ENRICHED")
     return runner
 
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id="12345",
         chat_type="dm",
         user_id="user-1",

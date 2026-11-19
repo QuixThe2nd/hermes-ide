@@ -179,7 +179,6 @@ class Platform(Enum):
     """Supported messaging platforms. Plugin platforms are dynamic members created on
     demand by ``_missing_`` and cached so ``Platform("photon") is Platform("photon")`` holds."""
     LOCAL = "local"
-    TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     WHATSAPP_CLOUD = "whatsapp_cloud"
@@ -239,6 +238,12 @@ class Platform(Enum):
             }
         except Exception:
             return set()
+
+    def __str__(self) -> str:
+        # Render as the wire value ("discord"), not "Platform.DISCORD": platform
+        # names cross into logs, session keys and config as plain strings, and
+        # every str(platform) reader previously had to remember to call .value.
+        return str(self.value)
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.
@@ -435,7 +440,7 @@ class ResponseGateConfig:
     no wildcard and no global expansion.
     """
 
-    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    #: Judge backend; ``jev`` (Jev Decisions via the litellm proxy) is the only one.
     provider: str = "jev"
     #: Channel IDs (or exact channel names / ``#names``) opted in. Empty ⇒ gate off
     #: unless ``echo_channels`` is set.
@@ -458,7 +463,7 @@ class ResponseGateConfig:
     #: Total character budget for the buffered context block.
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
-    model: str = "typesafe/jev-1.13"
+    model: str = "jev-1.14.0"
     #: Optional loopback-only override for the Decisions endpoint, so judge calls can
     #: traverse a local metering proxy. ``None`` (default) keeps the fixed endpoint
     #: and its exact request shape. Anything non-loopback is refused at load: the
@@ -557,7 +562,7 @@ class ResponseGateConfig:
         context_chars = _response_gate_int(
             data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "response_gate.context_chars",
         )
-        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        model = str(data.get("model", "jev-1.14.0")).strip()
         if not model:
             raise ValueError("response_gate: model must be a non-empty model slug")
         decisions_url = data.get("decisions_url")
@@ -775,7 +780,7 @@ class ReactionGateConfig:
     differently, and neither ever changes the other's verdicts.
     """
 
-    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    #: Judge backend; ``jev`` (Jev Decisions via the litellm proxy) is the only one.
     provider: str = "jev"
     #: Master switch. The gate is off unless this is explicitly ``true`` AND
     #: ``channels`` names at least one channel — an omitted block never reacts.
@@ -805,7 +810,7 @@ class ReactionGateConfig:
     #: Total character budget for the buffered context block.
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
-    model: str = "typesafe/jev-1.13"
+    model: str = "jev-1.14.0"
     #: Optional loopback-only override for the Decisions endpoint (see ResponseGateConfig).
     decisions_url: Optional[str] = None
     #: The decision rule: one Boolean expression over ``abstain``/``none``/``other``/
@@ -911,7 +916,7 @@ class ReactionGateConfig:
         context_chars = _response_gate_int(
             data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "reaction_gate.context_chars",
         )
-        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        model = str(data.get("model", "jev-1.14.0")).strip()
         if not model:
             raise ValueError("reaction_gate: model must be a non-empty model slug")
         decisions_url = data.get("decisions_url")
@@ -939,7 +944,6 @@ class ReactionGateConfig:
 # Platforms absent from this map authenticate some other way (session files, port-bound webhooks,
 # api_key-only) and must never be skipped for a missing token. See #64674.
 PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
-    Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
     Platform.DISCORD: "DISCORD_BOT_TOKEN",
     Platform.SLACK: "SLACK_BOT_TOKEN",
     Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
@@ -969,7 +973,7 @@ class PlatformConfig:
     # log. Never serialized by ``to_dict`` (a round-trip must not resurrect them).
     gate_config_warnings: tuple[str, ...] = ()
 
-    # Reply threading mode (Telegram/Slack)
+    # Reply threading mode (Slack)
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
     # - "all": All chunks in multi-part replies thread to user's message
@@ -997,7 +1001,7 @@ class PlatformConfig:
     # assistant:write scope to render) and Google Chat's visible marker
     # message. None keeps each platform's built-in default ("is thinking..." /
     # "Hermes is thinking…"). Platforms with textless indicators (Discord,
-    # Telegram, Matrix, …) ignore it.
+    # Matrix, …) ignore it.
     typing_status_text: Optional[str] = None
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
@@ -1099,7 +1103,7 @@ class PlatformConfig:
         )
 
 
-# Shared by StreamingConfig and StreamConsumerConfig. Tuned for Telegram's ~1 edit/s
+# Shared by StreamingConfig and StreamConsumerConfig. Tuned for a ~1 edit/s
 # flood envelope; the small buffer threshold makes short DM replies feel instant.
 DEFAULT_STREAMING_EDIT_INTERVAL: float = 0.8
 DEFAULT_STREAMING_BUFFER_THRESHOLD: int = 24
@@ -1110,18 +1114,17 @@ DEFAULT_STREAMING_CURSOR: str = " ▉"
 class StreamingConfig:
     """Real-time token streaming to messaging platforms."""
     enabled: bool = False
-    # "auto" prefers native drafts (Telegram sendMessageDraft) with edit fallback (adapters without
+    # "auto" prefers native drafts (e.g. Slack native streams) with edit fallback (adapters without
     # draft support use the edit path unchanged); "draft" / "edit" force one; "off" disables.
     transport: str = "auto"
     edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
     buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = DEFAULT_STREAMING_CURSOR
-    # >0: final edit becomes a fresh message once the preview was visible this long (Telegram only; 0 = off).
+    # >0: final edit becomes a fresh message once the preview was visible this long (0 = off).
     # Ported from openclaw/openclaw#72038. When >0, the final edit for a long-running streamed response is
     # delivered as a fresh message if the original preview has been visible for at least this many seconds,
     # so the platform's visible timestamp reflects completion time instead of the preview creation time.
-    # Currently applied to Telegram only (other platforms ignore the setting). Default 0 disables the
-    # fresh-message replacement path; set >0 to opt in.
+    # Adapters without a fresh-final preference ignore the setting. Default 0 disables the
     fresh_final_after_seconds: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1206,8 +1209,6 @@ class GatewayConfig:
     # Drop outbound "silence narration" (*(silent)*, 🔇, a bare ".") that ping-pongs in bot-to-bot
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
-    stt_enabled: bool = True  # Auto-transcribe inbound voice messages
-    stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
@@ -1228,7 +1229,7 @@ class GatewayConfig:
     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
     # max_strikes ~= 90-120s sustained block; the heartbeat-fsync false positive is fixed at the root
     # (off-loop write + two-witness probe), so raising it would only delay recovery.
-    # On by default; set gateway.loop_watchdog: false in config.yaml to disable. Telegram/Discord reconnect
+    # On by default; set gateway.loop_watchdog: false in config.yaml to disable. Discord reconnect
     # doing synchronous socket I/O during a network blip — so a short block does not force exit code 75 and
     # trigger a restart churn that stalls cron dispatch (recurring fleet incidents on 2026-08-17).
     # A genuine wedge (event loop frozen for the full tolerance window) still
@@ -1246,8 +1247,8 @@ class GatewayConfig:
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
-        "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
-        "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+        "write_sessions_json", "always_log_local", "filter_silence_narration",
+        "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
@@ -1377,10 +1378,6 @@ class GatewayConfig:
                     pass
             return out
 
-        def stt_setting(flat_key: str, nested_key: str) -> Any:
-            value = data.get(flat_key)
-            return _coerce_dict(data.get("stt")).get(nested_key) if value is None else value
-
         def bounded_float(key: str, default: float, lo: float, hi: float) -> float:
             # Out-of-range / non-finite watchdog knobs fall back to the shipped defaults.
             value = _coerce_float(pick(key), default)
@@ -1439,8 +1436,6 @@ class GatewayConfig:
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
-            stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
-            stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,

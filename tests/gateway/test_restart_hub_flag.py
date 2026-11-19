@@ -156,7 +156,6 @@ async def _slash_restart(monkeypatch, tmp_path, text):
         message_type=MessageType.TEXT,
         source=make_restart_source(),
         message_id="m1",
-        platform_update_id=None,
     )
     await runner._handle_restart_command(event)
     return queued
@@ -243,7 +242,7 @@ async def test_queue_user_restart_true_writes_pending_before_request_restart(
     assert isinstance(payload["requested_at"], float)
     # restart_hub never becomes a request_restart kwarg — the file is the hand-off.
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False, restart_platforms=False
+        detached=True, via_service=False
     )
 
 
@@ -274,23 +273,59 @@ async def test_queue_user_restart_already_in_progress_writes_no_pending(
 
 
 @pytest.mark.asyncio
-async def test_queue_user_restart_chained_records_flag_on_chain_marker(
-    queueable_runner,
+async def test_queue_user_restart_draining_forwards_to_newest_generation(
+    queueable_runner, monkeypatch,
 ):
-    """Chained: the dying process stores the flag on the chain payload, never a
-    hub marker of its own — the already-up successor re-hands it to the NEXT one."""
+    """Draining + committed: the request forwards to the newest live
+    generation (which re-queues it with its OWN hub marker) instead of
+    writing a chain file or re-handing the drain — a successor generation
+    replaces the retired chain-marker protocol."""
+    import os
+
+    import gateway.overlap_restart as overlap_restart
+    from gateway.generations import Generation, GenerationArray
+    from gateway.platforms.base import Platform
+
     runner, home = queueable_runner
     runner._draining = True
     runner._restart_requested = True
     runner._restart_task_started = True
+    newer = 202
     runner._overlap_restart_successor_started = True
-    runner._overlap_restart_successor_pid = 202
+    runner._overlap_restart_successor_pid = newer
+
+    array = GenerationArray([
+        Generation(pid=os.getpid(), predecessor=0, spawn_seq=1, draining=True),
+        Generation(pid=newer, predecessor=os.getpid(), spawn_seq=2,
+                   attached=True),
+    ])
+
+    async def fixed_array(_runner):
+        return array
+
+    monkeypatch.setattr(overlap_restart, "generation_array_for_runner",
+                        fixed_array)
+
+    forwarded_kwargs: dict = {}
+
+    class _ForwardAdapter:
+        supports_overlap_restart = True
+        _running = True
+
+        async def forward_restart_to_newest(self, **kwargs):
+            forwarded_kwargs.update(kwargs)
+            return {"status": "restarting", "active_agents": 0}
+
+    runner.adapters[Platform.DISCORD] = _ForwardAdapter()
 
     status = await _queue(runner, restart_hub=True)
 
-    assert status["status"] == "chained"
-    chain = json.loads((home / ".restart_chain.json").read_text(encoding="utf-8"))
-    assert chain["restart_hub"] is True
+    assert status["status"] == "forwarded"
+    assert status["forwarded_to"] == newer
+    # The flag rides the forward — the newest generation writes its own
+    # marker when it re-queues the bounce.
+    assert forwarded_kwargs["restart_hub"] is True
+    assert "requester" in forwarded_kwargs
     assert not (home / PENDING_NAME).exists()
     runner.request_restart.assert_not_called()
 
@@ -299,88 +334,9 @@ async def _queue(runner, *, restart_hub=False, message_id="m1"):
     from gateway.restart import queue_user_restart
 
     return await queue_user_restart(
-        runner, make_restart_source(), message_id,
-        restart_platforms=False, restart_hub=restart_hub,
+        runner, make_restart_source(), message_id, restart_hub=restart_hub,
     )
 
-
-# ── chained restart: the already-up successor re-queues the bounce ───────────
-
-
-def _draining_runner():
-    runner, _adapter = make_restart_runner()
-    runner._draining = True
-    runner._restart_requested = True
-    runner._restart_task_started = True
-    runner._overlap_restart_successor_started = True
-    runner._overlap_restart_successor_pid = 202
-    return runner
-
-
-def test_record_chained_restart_coalesce_keeps_hub_flag(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    from gateway.restart_chain import record_chained_restart
-
-    runner = _draining_runner()
-    assert record_chained_restart(runner) is True
-    marker = tmp_path / ".restart_chain.json"
-    assert "restart_hub" not in json.loads(marker.read_text(encoding="utf-8"))
-
-    # A later --hub request joining the chain must not be lost to coalescing.
-    assert record_chained_restart(runner, restart_hub=True) is True
-    assert json.loads(marker.read_text(encoding="utf-8"))["restart_hub"] is True
-
-
-@pytest.mark.asyncio
-async def test_run_chained_restart_writes_hub_pending_before_request(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.restart_chain.POST_CLAIM_STARTUP_SETTLE_SECONDS", 0.0)
-    marker = tmp_path / ".restart_chain.json"
-    marker.write_text(
-        json.dumps({
-            "requested_at": time.time(),
-            "source": {"kind": "user"},
-            "via_service": False,
-            "restart_hub": True,
-        }),
-        encoding="utf-8",
-    )
-    observed: dict = {}
-
-    def _capture(**kwargs):
-        observed["pending_at_request"] = (tmp_path / PENDING_NAME).exists()
-        return True
-
-    runner = SimpleNamespace(request_restart=MagicMock(side_effect=_capture))
-    from gateway.restart_chain import run_chained_restart
-
-    assert await run_chained_restart(runner) is True
-
-    assert observed["pending_at_request"] is True
-    assert not marker.exists()
-    runner.request_restart.assert_called_once_with(overlap=True, via_service=False)
-
-
-@pytest.mark.asyncio
-async def test_run_chained_restart_without_flag_writes_no_pending(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.restart_chain.POST_CLAIM_STARTUP_SETTLE_SECONDS", 0.0)
-    marker = tmp_path / ".restart_chain.json"
-    marker.write_text(
-        json.dumps({
-            "requested_at": time.time(), "source": {"kind": "user"}, "via_service": False,
-        }),
-        encoding="utf-8",
-    )
-    runner = SimpleNamespace(request_restart=MagicMock(return_value=True))
-    from gateway.restart_chain import run_chained_restart
-
-    assert await run_chained_restart(runner) is True
-    assert not (tmp_path / PENDING_NAME).exists()
 
 
 # ── successor-side bounce (mocked systemctl) ─────────────────────────────────

@@ -132,7 +132,7 @@ class TestOnlyFinalStreamDeliverySuppressesFinalSend:
     stream consumer confirmed the final assistant reply was delivered.
 
     Partial streamed output is not enough. If only already_sent=True,
-    the fallback final send must still happen so Telegram users don't lose
+    the fallback final send must still happen so users don't lose
     the real answer."""
 
     def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):

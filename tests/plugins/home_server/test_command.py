@@ -100,7 +100,7 @@ def stub_reconcile(monkeypatch):
 @pytest.mark.asyncio
 async def test_non_discord_platform_is_rejected(runner, stub_reconcile):
     result = await runner._handle_set_home_server_command(
-        _event(Platform.TELEGRAM, scope_id="g1")
+        _event(Platform.SLACK, scope_id="g1")
     )
     assert "only works on Discord" in result
     assert stub_reconcile == []

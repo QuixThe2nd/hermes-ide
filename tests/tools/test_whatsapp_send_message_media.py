@@ -2,7 +2,7 @@
 
 Covers two layers:
 
-* ``_bridge_media_type`` — extension/voice/force_document -> bridge mediaType.
+* ``_bridge_media_type`` — extension/force_document -> bridge mediaType.
 * ``_standalone_send`` — text-first then per-file ``/send-media`` uploads,
   media-only (skip ``/send``), and missing-file errors. The bridge HTTP calls
   are mocked at the ``aiohttp.ClientSession`` boundary.
@@ -25,31 +25,29 @@ from plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_s
 
 
 @pytest.mark.parametrize(
-    "path,is_voice,force_document,expected",
+    "path,force_document,expected",
     [
-        ("a.png", False, False, "image"),
-        ("a.JPG", False, False, "image"),
-        ("a.jpeg", False, False, "image"),
-        ("a.webp", False, False, "image"),
-        ("a.gif", False, False, "image"),
-        ("a.mp4", False, False, "video"),
-        ("a.mov", False, False, "video"),
-        ("a.webm", False, False, "video"),
-        ("a.ogg", True, False, "audio"),
-        ("a.opus", False, False, "audio"),
-        ("a.mp3", False, False, "audio"),
-        ("a.wav", False, False, "audio"),
-        ("a.pdf", False, False, "document"),
-        ("a.zip", False, False, "document"),
+        ("a.png", False, "image"),
+        ("a.JPG", False, "image"),
+        ("a.jpeg", False, "image"),
+        ("a.webp", False, "image"),
+        ("a.gif", False, "image"),
+        ("a.mp4", False, "video"),
+        ("a.mov", False, "video"),
+        ("a.webm", False, "video"),
+        ("a.ogg", False, "audio"),
+        ("a.opus", False, "audio"),
+        ("a.mp3", False, "audio"),
+        ("a.wav", False, "audio"),
+        ("a.pdf", False, "document"),
+        ("a.zip", False, "document"),
         # force_document overrides everything
-        ("a.png", False, True, "document"),
-        ("a.mp4", False, True, "document"),
-        # is_voice wins over a video extension
-        ("a.mp4", True, False, "audio"),
+        ("a.png", True, "document"),
+        ("a.mp4", True, "document"),
     ],
 )
-def test_bridge_media_type(path, is_voice, force_document, expected):
-    assert _bridge_media_type(path, is_voice, force_document) == expected
+def test_bridge_media_type(path, force_document, expected):
+    assert _bridge_media_type(path, force_document) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +116,7 @@ def test_text_plus_mixed_media_routes_native_types():
                     _pconfig(),
                     "12345",
                     "hello",
-                    media_files=[(img, False), (vid, False), (voice, True)],
+                    media_files=[img, vid, voice],
                 )
             )
         assert res["success"] is True
@@ -144,7 +142,7 @@ def test_missing_captioned_file_falls_back_to_text():
                 _pconfig(),
                 "12345",
                 "",
-                media_files=[("/no/such/file.png", False)],
+                media_files=["/no/such/file.png"],
                 caption="floor plan",
             )
         )

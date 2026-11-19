@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.credits_tracker import AgentNotice
 from agent.status_output import StatusOutputMixin
 from gateway.config import Platform
 from gateway.run import GatewayRunner, _load_gateway_config
@@ -16,6 +15,15 @@ from gateway.turn_context import TurnContext
 
 
 from tests.gateway.test_session_hygiene import HygieneCaptureAdapter
+
+
+class AgentNotice:
+    """Attribute-shaped stand-in for the structured notice payload `_emit_notice` forwards."""
+
+    def __init__(self, text: str = "", level: str = "info", key: str = None):
+        self.text = text
+        self.level = level
+        self.key = key
 
 
 class RecordingAdapter(HygieneCaptureAdapter):
@@ -35,7 +43,7 @@ class Emitter(StatusOutputMixin):
     log_prefix = ""
 
 
-@pytest.mark.parametrize("platform", [Platform.SLACK, Platform.TELEGRAM, Platform.LOCAL])
+@pytest.mark.parametrize("platform", [Platform.SLACK, Platform.DISCORD, Platform.LOCAL])
 @pytest.mark.parametrize("thread_id", [None, "1700.1"])
 @pytest.mark.parametrize("configured,enabled", [
     ("", True), ("display: null", True),
@@ -81,7 +89,7 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
         ("lifecycle", "Content filter terminated stream; switching to fallback..."),
         ("lifecycle", "🔐 Authentication failed and could not be refreshed — switching to fallback provider..."),
         ("lifecycle", "ℹ️ Estimated cost of these empty attempts: ~$1.25"),
-        ("lifecycle", "⏳ Your Nous account has hit its rate limit; it resets in 1m."),
+        ("lifecycle", "⏳ Rate limit reached; it resets in 1m."),
         ("lifecycle", "📐 Compression could not reduce the request further — removed retained vision payloads and retrying..."),
     ]
     for kind, text in diagnostics:

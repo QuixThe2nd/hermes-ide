@@ -77,7 +77,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     """Active session_id for a platform + chat_id pair.
 
     state.db is primary; sessions.json is the pre-migration fallback.  DM keys
-    don't embed the chat_id ("agent:main:telegram:dm"), so match on the persisted
+    don't embed the chat_id ("agent:main:discord:dm"), so match on the persisted
     origin.  With *user_id*, exact sender matches win; several same-chat candidates
     with no user match → None rather than contaminate another participant's session.
 

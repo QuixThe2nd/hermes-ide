@@ -15,7 +15,7 @@ from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
 def _source(chat_id: str = "chat-a") -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_id=chat_id,
         chat_type="dm",
         user_id=f"user-{chat_id}",
@@ -37,7 +37,6 @@ def _runner(store: SessionStore) -> GatewayRunner:
     runner._base_url = ""
     runner._has_setup_skill = lambda: False
     # _handle_reset_command rig (mirrors tests/gateway/test_session_model_reset.py).
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._session_reasoning_overrides = {}

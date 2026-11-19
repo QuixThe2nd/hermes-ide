@@ -6,7 +6,7 @@ adapter's ``_pending_messages`` slot and drained *in-band* by
 ``BasePlatformAdapter._process_message_background``.  The runner-side drain
 must still fire the ``on_processing_start`` / ``on_processing_complete``
 lifecycle hooks, otherwise every platform that renders a read-receipt
-reaction from those hooks (Slack 👀, Discord, Telegram, Feishu, Matrix,
+reaction from those hooks (Slack 👀, Discord, Feishu, Matrix,
 Signal, ...) silently skips the acknowledgement for mid-turn messages.
 """
 
@@ -32,7 +32,7 @@ class HookRecordingAdapter(BasePlatformAdapter):
     """Adapter that records the processing-hook lifecycle it is driven through."""
 
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
         self.started: list = []
         self.completed: list = []
 
@@ -97,7 +97,6 @@ def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
-    runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""
     runner._reasoning_config = None
@@ -133,7 +132,7 @@ def _install_fake_agent(monkeypatch, tmp_path, agent_cls):
     )
 
 
-SESSION_KEY = "agent:main:telegram:dm:4242"
+SESSION_KEY = "agent:main:discord:dm:4242"
 
 
 @pytest.mark.asyncio
@@ -161,7 +160,7 @@ async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp
 
 
 def _source():
-    return SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm")
+    return SessionSource(platform=Platform.DISCORD, chat_id="4242", chat_type="dm")
 
 
 @pytest.mark.asyncio

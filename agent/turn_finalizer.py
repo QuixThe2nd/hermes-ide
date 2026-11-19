@@ -513,11 +513,11 @@ def finalize_turn(
         logger.warning("on_turn_complete notification failed: %s", exc)
 
     # Surrogate chokepoint: RAW SDK text with a lone UTF-16 surrogate crashes downstream
-    # consumers (stdout, Telegram ``utf16_len``, JSON); scrub once where it leaves the loop.
+    # consumers (stdout, platform ``utf16_len``, JSON); scrub once where it leaves the loop.
     # Class-level surrogate chokepoint (#80366, #55143, #55309, #19819): ``final_response`` is often the RAW
     # SDK content (``assistant_message.content``), not the sanitized copy stored in history by
     # ``build_assistant_message``. Any lone UTF-16 surrogate (U+D800–U+DFFF) in it crashes downstream
-    # consumers — oneshot stdout writes, Telegram's ``utf16_len`` length check, Signal formatting, JSON
+    # consumers — oneshot stdout writes, platform ``utf16_len`` length checks, Signal formatting, JSON
     # envelope encodes — on every provider (Ollama, NVIDIA NIM, …). Scrub once here, where model text leaves
     # the conversation loop, so every delivery surface receives valid Unicode.
     if isinstance(final_response, str):

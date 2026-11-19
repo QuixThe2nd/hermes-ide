@@ -46,8 +46,8 @@ FULL_OPS = (
 def make_desc(**kw) -> CapabilityDescriptor:
     base = dict(
         contract_version=CONTRACT_VERSION,
-        platform="telegram",
-        label="Telegram",
+        platform="discord",
+        label="Discord",
         max_message_length=4096,
         supports_draft_streaming=False,
         supports_edit=True,
@@ -75,7 +75,7 @@ def _event(
         text=text,
         message_type=MessageType.COMMAND,
         source=SessionSource(
-            platform="telegram", chat_id=chat_id, chat_type="dm", user_id="u1"
+            platform="discord", chat_id=chat_id, chat_type="dm", user_id="u1"
         ),
         prompt_response=prompt_response,
     )
@@ -312,7 +312,7 @@ def test_minted_prompt_ids_are_instance_scoped_and_callback_safe():
     """Ids carry the minting process's nonce and stay codec-legal.
 
     The connector's promptCodec validates each id as [A-Za-z0-9_.-]{1,32} and
-    caps "hp1:<prompt_id>:<option_id>" at Telegram's 64-byte callback budget.
+    caps "hp1:<prompt_id>:<option_id>" at a 64-byte callback-data budget.
     """
     import re
 

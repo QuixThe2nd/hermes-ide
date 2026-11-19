@@ -27,11 +27,6 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
-    # This turn's resolved tool_progress_codebox flag: accumulated progress
-    # groups render as one unlabelled fenced code block when true. Snapshotted
-    # at turn start like progress_grouping — never read from process-global
-    # config mid-turn.
-    progress_codebox: bool = False
     # This turn's resolved tool_preview_length (0 = unlimited), snapshotted at turn
     # start. Rendering reads this turn-owned value, never the process-global
     # agent.display budget: interleaved turns (Discord unlimited vs a capped
@@ -40,12 +35,11 @@ class TurnContext:
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
-    # Structured tool-stage events (moa_ask / moa_debate round
-    # transitions) for surfaces that render one self-editing card per tool
-    # invocation. None on every platform except Discord-with-embeds, so the
-    # agent.moa_loop stage bus simply has no subscriber elsewhere.
+    # Structured tool-stage events (MoA cards and automatic browser images).
+    # The bus has a subscriber only while this turn owns a queue.
     stage_event_queue: Any = None
     _stage_embed_adapter: Any = None
+    _browser_progress_enabled: bool = False
 
     # --- mutable single-element containers (shared with the outer body) --
     # Monotonic timestamp of this turn's last USER-VISIBLE progress (a delivered
@@ -103,11 +97,10 @@ class TurnContext:
     result_holder: list = field(default_factory=lambda: [None])
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
+    # Streaming-TTS sink for stream deltas (None = no TTS this turn), single-element
+    # so the outer body can wire it after the context is built.
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
     # voice-ack wiring
-    _voice_ack_fired: list = field(default_factory=lambda: [False])
-    _voice_ack_guild: list = field(default_factory=lambda: [None])
-    _voice_ack_loop: Any = None
     # hook / status bridge wiring
     _loop_for_step: Any = None
     _hooks_ref: Any = None
@@ -117,14 +110,13 @@ class TurnContext:
     _status_thread_metadata: Optional[dict] = None
     # bound TurnRunner callbacks read via ctx
     progress_callback: Optional[Callable] = None
-    voice_ack_callback: Optional[Callable] = None
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
     # Slack-native task cards (opt-in); ID-bearing callbacks correlate start/complete by call ID
     # --- Slack-native task-card progress (opt-in; #29483) ------------------ True when the Slack adapter's
     # ``native_task_cards_enabled()`` opt-in is set for this turn's platform. The ID-bearing lifecycle
-    # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
+    # callbacks are published by TurnRunner so tool starts and completions
     # correlate by real tool-call ID instead of tool name.
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None

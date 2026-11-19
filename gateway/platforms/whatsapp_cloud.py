@@ -10,7 +10,6 @@ _WEBHOOK_PORT (8090), _WEBHOOK_PATH (/whatsapp/webhook), _API_VERSION (v20.0).""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import hmac
 import importlib
@@ -19,8 +18,6 @@ import logging
 import mimetypes
 import os
 import re
-import shutil
-import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,7 +36,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult, transcode_to_ogg_opus
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
@@ -75,9 +72,6 @@ _DEFAULT_MIME = {
     "document": "application/octet-stream", "sticker": "image/webp",
 }
 
-# None → MP3 voice falls back to an "audio file attachment" rendering in WhatsApp.
-_FFMPEG_PATH = shutil.which("ffmpeg")
-
 # mimetypes returns RFC-correct but uncommon extensions (audio/ogg → .oga, image/jpeg → .jpe);
 # downstream STT/vision whitelists the in-the-wild forms, so pin the few Meta sends.
 _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
@@ -87,7 +81,7 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
 
 _INBOUND_MEDIA_KINDS = {"image", "video", "audio", "voice", "document", "sticker"}
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
-_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
+_MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Discord/Slack media-inject budget
 _MESSAGE_TYPE_BY_KIND = {
     "text": MessageType.TEXT, "image": MessageType.PHOTO, "video": MessageType.VIDEO,
     "audio": MessageType.VOICE, "voice": MessageType.VOICE, "document": MessageType.DOCUMENT,
@@ -160,6 +154,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 
+    # Owns the WhatsApp webhook TCP port (unless in shared-listener mode):
+    # intake must stop at overlap authority release so the newest
+    # generation can bind it.
+    owns_singleton_listener: bool = True
+
     splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
@@ -199,7 +198,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Webhook dedup state (in-memory, FIFO-evicted) and counters.
         self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
         self._duplicate_count = self._accepted_count = self._rejected_signature_count = 0
-        self._warned_no_ffmpeg: bool = False
         # Latest inbound wamid per chat: Meta's typing/read-receipt API needs a
         # message_id to attach to, and the base send_typing contract has none.
         self._last_inbound_wamid_by_chat: "OrderedDict[str, str]" = OrderedDict()
@@ -296,6 +294,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 logger.exception("[whatsapp_cloud] %s failed", what)
             setattr(self, attr, None)
         self._mark_disconnected()
+
+    async def stop_intake(self) -> None:
+        """Stop the inbound webhook listener; in-flight requests finish.
+
+        Overlap authority release calls this so the newest gateway
+        generation can bind the port immediately while this process
+        finishes the runs it already owns. Outbound Graph delivery is
+        unaffected.
+        """
+        site = getattr(self, "_ingress_site", None)
+        self._ingress_site = None
+        if site is not None:
+            await site.stop()
+            logger.info("[whatsapp_cloud] Listener stopped for overlap authority handoff")
 
     # ------------------------------------------------------------------ outbound
     @staticmethod
@@ -567,38 +579,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chat_id, file_path, "document", caption=caption, filename=file_name or os.path.basename(file_path), reply_to=reply_to,
         )
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        """Voice message: ``audio/ogg; codecs=opus`` renders as a voice bubble, so a
-        local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is."""
-        mime_type: Optional[str] = None
-        if not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3") and os.path.exists(audio_path):
-            opus_path = await self._convert_to_opus(audio_path)
-            if opus_path:
-                try:
-                    return await self._send_media_from_path_or_link(
-                        chat_id, opus_path, "audio", caption=caption, reply_to=reply_to, mime_type="audio/ogg; codecs=opus",
-                    )
-                finally:
-                    with contextlib.suppress(OSError):  # the .ogg is a transient artifact next to the source MP3
-                        os.unlink(opus_path)
-            # No ffmpeg (warn-once logged in _convert_to_opus) → MP3 attachment.
-            mime_type = "audio/mpeg"
-        return await self._send_media_from_path_or_link(chat_id, audio_path, "audio", caption=caption, reply_to=reply_to, mime_type=mime_type)
-
-    async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """MP3 → ``audio/ogg; codecs=opus`` sibling file; None if ffmpeg is missing or fails. The
-        missing-ffmpeg warning fires once per adapter: it is an install hint, not a per-message error."""
-        if not _FFMPEG_PATH:
-            if not self._warned_no_ffmpeg:
-                self._warned_no_ffmpeg = True
-                logger.warning(
-                    "[whatsapp_cloud] ffmpeg not found on PATH — voice messages will be delivered as MP3 audio "
-                    "attachments instead of native voice notes (green waveform bubble). Install ffmpeg to enable: "
-                    "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux package manager."
-                )
-            return None
-        return await asyncio.to_thread(transcode_to_ogg_opus, mp3_path, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
-
     # ------------------------------------------------------------------ inbound media
     async def _graph_get(self, url: str, headers: Dict[str, str], what: str, media_id: str) -> Any:
         """GET with the download path's uniform failure logging; None on exception or non-200."""
@@ -652,7 +632,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return web.json_response({
             "status": "ok", "platform": self.platform.value, "phone_number_id": self._phone_number_id,
             "webhook_path": self._webhook_path, "verify_token_configured": bool(self._verify_token),
-            "app_secret_configured": bool(self._app_secret), "ffmpeg_present": _FFMPEG_PATH is not None,
+            "app_secret_configured": bool(self._app_secret),
             "accepted": self._accepted_count, "duplicates": self._duplicate_count,
             "rejected_signature": self._rejected_signature_count,
         })

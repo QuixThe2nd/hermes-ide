@@ -11,10 +11,15 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from prompts.load import load
+
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
 # Log name parity with the origin module.
 logger = logging.getLogger("agent.context_compressor")
+
+# System role for the micro-summary calls; bytes live in prompts/.
+_SUMMARY_SYSTEM_PROMPT = load("micro_compaction_summarization_system")
 
 
 def _cc():
@@ -109,7 +114,7 @@ class MicroCompactionMixin:
             "Do not include this instruction block in your output."
         )
         return [
-            {"role": "system", "content": "You are a conversation summarization assistant."},
+            {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
 

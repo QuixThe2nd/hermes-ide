@@ -425,7 +425,7 @@ def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
 # known platform, so list(config.platforms.keys()) is always the full ~20-entry catalog
 # regardless of what the instance runs. The arm check must filter to ENABLED platforms
 # (mirroring the connect loop) before asking messaging_is_relay_only_or_absent — passing
-# the bare placeholder keys made it see disabled `discord`/`telegram`/… as live direct
+# the bare placeholder keys made it see disabled `discord`/`slack`/… as live direct
 # platforms and refuse to arm on a real relay-only instance. The pure-helper tests in
 # test_scale_to_zero.py pass bare names so they never exercised this call site.
 
@@ -456,8 +456,8 @@ def test_arm_true_for_relay_only_with_disabled_placeholders(monkeypatch):
     r = _arm_runner(
         monkeypatch,
         {
-            Platform.TELEGRAM: False,
             Platform.DISCORD: False,
+            Platform.WHATSAPP: False,
             Platform.SLACK: False,
             Platform.MATRIX: False,
             Platform.RELAY: True,
@@ -579,7 +579,7 @@ def test_arm_true_with_api_server_enabled(monkeypatch):
         {
             Platform.RELAY: True,
             Platform.API_SERVER: True,
-            Platform.TELEGRAM: False,
+            Platform.DISCORD: False,
         },
     )
     assert r._scale_to_zero_should_arm() is True

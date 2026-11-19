@@ -1,6 +1,4 @@
 import os
-import json
-from datetime import datetime, timedelta, timezone
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
@@ -26,15 +24,15 @@ def test_resolve_managed_tool_gateway_derives_vendor_origin_from_shared_domain()
             "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
         },
         clear=False,
-    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
+    ):
         result = resolve_managed_tool_gateway(
             "firecrawl",
-            token_reader=lambda: "nous-token",
+            token_reader=lambda: "gateway-token",
         )
 
     assert result is not None
     assert result.gateway_origin == "https://firecrawl-gateway.nousresearch.com"
-    assert result.nous_user_token == "nous-token"
+    assert result.gateway_token == "gateway-token"
     assert result.managed_mode is True
 
 
@@ -45,24 +43,24 @@ def test_resolve_managed_tool_gateway_uses_vendor_specific_override():
             "FIRECRAWL_GATEWAY_URL": "http://firecrawl-gateway.localhost:3009/",
         },
         clear=False,
-    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
+    ):
         result = resolve_managed_tool_gateway(
             "firecrawl",
-            token_reader=lambda: "nous-token",
+            token_reader=lambda: "gateway-token",
         )
 
     assert result is not None
     assert result.gateway_origin == "http://firecrawl-gateway.localhost:3009"
 
 
-def test_resolve_managed_tool_gateway_is_inactive_without_nous_token():
+def test_resolve_managed_tool_gateway_is_inactive_without_gateway_token():
     with patch.dict(
         os.environ,
         {
             "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
         },
         clear=False,
-    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
+    ):
         result = resolve_managed_tool_gateway(
             "firecrawl",
             token_reader=lambda: None,
@@ -71,70 +69,13 @@ def test_resolve_managed_tool_gateway_is_inactive_without_nous_token():
     assert result is None
 
 
-def test_resolve_managed_tool_gateway_is_disabled_without_subscription():
-    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False), \
-         patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=False):
-        result = resolve_managed_tool_gateway(
-            "firecrawl",
-            token_reader=lambda: "nous-token",
-        )
+def test_default_token_reader_reads_the_user_token_env(monkeypatch):
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "  explicit-token  ")
+    assert managed_tool_gateway.read_gateway_user_token() == "explicit-token"
+    assert resolve_managed_tool_gateway("firecrawl").gateway_token == "explicit-token"
 
-    assert result is None
-
-
-def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkeypatch):
-    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
-    (tmp_path / "auth.json").write_text(json.dumps({
-        "providers": {
-            "nous": {
-                "access_token": "stale-token",
-                "refresh_token": "refresh-token",
-                "expires_at": expires_at,
-            }
-        }
-    }))
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
-        lambda refresh_skew_seconds=120: "fresh-token",
-    )
-
-    assert managed_tool_gateway.read_nous_access_token() == "fresh-token"
-
-
-def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tmp_path, monkeypatch):
-    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    expired_at = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
-    (tmp_path / "auth.json").write_text(json.dumps({
-        "providers": {
-            "nous": {
-                "access_token": "expired-token",
-                "refresh_token": "refresh-token",
-                "expires_at": expired_at,
-            }
-        }
-    }))
-    refresh_calls = []
-
-    def _record_refresh(*, refresh_skew_seconds=120, **_kwargs):
-        refresh_calls.append(refresh_skew_seconds)
-        return "fresh-token"
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
-        _record_refresh,
-    )
-
-    with patch.dict(
-        os.environ,
-        {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"},
-        clear=False,
-    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-        assert is_managed_tool_gateway_ready("modal") is True
-
-    assert refresh_calls == []
+    monkeypatch.setattr(managed_tool_gateway, "read_gateway_user_token", lambda: None)
+    assert resolve_managed_tool_gateway("firecrawl") is None
 
 
 def test_connector_gateway_origin_pins_the_deployed_connectors_host():
@@ -208,34 +149,3 @@ def test_default_bearer_gate_accepts_both_deployed_hosts_only():
             "http://tool-gateway.nousresearch.com/api/vendorx/generations",
         ):
             assert not managed_gateway_auth.is_managed_nous_gateway_url(untrusted)
-
-
-def test_read_nous_provider_state_reads_only_the_profiles_own_store(tmp_path, monkeypatch):
-    # Every profile owns its credentials (#111724): a named profile with an empty auth.json has
-    # no Nous identity, even when the root is signed in; its own login is what the gate sees.
-    root = tmp_path / ".hermes"
-    profile = root / "profiles" / "hermes-setup"
-    profile.mkdir(parents=True)
-    (root / "auth.json").write_text(json.dumps({
-        "version": 1,
-        "providers": {"nous": {"auth_method": "anonymous", "access_token": "root-tok"}},
-    }))
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-
-    import hermes_constants
-    from hermes_cli import auth as auth_mod
-
-    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
-    monkeypatch.setattr(auth_mod, "get_hermes_home", lambda: profile)
-    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile / "auth.json")
-
-    assert managed_tool_gateway._read_nous_provider_state() is None
-
-    (profile / "auth.json").write_text(json.dumps({
-        "version": 1,
-        "providers": {"nous": {"auth_method": "anonymous", "access_token": "profile-tok"}},
-    }))
-    state = managed_tool_gateway._read_nous_provider_state()
-    assert state is not None and state["access_token"] == "profile-tok"

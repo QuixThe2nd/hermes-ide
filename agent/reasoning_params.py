@@ -48,9 +48,9 @@ class ReasoningParamsMixin:
 
     def _supports_reasoning_extra_body(self) -> bool:
         """True when reasoning extra_body is safe to send: OpenRouter forwards unknown extra_body upstream and
-        some routes 400 on ``reasoning``, so gate to known reasoning-capable families and direct Nous Portal."""
+        some routes 400 on ``reasoning``, so gate to known reasoning-capable families and direct Vercel AI Gateway."""
         url = self._base_url_lower
-        if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
+        if base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
         if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
             try:

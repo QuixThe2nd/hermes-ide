@@ -38,7 +38,7 @@ def _job(job_id):
             "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
 
 
-def _bound_session_key(key="agent:main:telegram:dm:123"):
+def _bound_session_key(key="agent:main:discord:dm:123"):
     """Context manager binding the tool-session ContextVar."""
     import contextlib
 
@@ -94,7 +94,7 @@ class TestBackgroundDispatch:
 
         # The runner executes on a daemon thread — the patches must stay
         # active until the completion event lands, so poll INSIDE the blocks.
-        with _bound_session_key("agent:main:telegram:dm:777"):
+        with _bound_session_key("agent:main:discord:dm:777"):
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
@@ -117,7 +117,7 @@ class TestBackgroundDispatch:
                     process_registry.completion_queue.put(evt)
                     time.sleep(0.05)
         assert found is not None, "completion event never reached the queue"
-        assert found["session_key"] == "agent:main:telegram:dm:777"
+        assert found["session_key"] == "agent:main:discord:dm:777"
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
         assert "Next scheduled run" in found["summary"]
@@ -127,7 +127,7 @@ class TestBackgroundDispatch:
 
         from tools.process_registry import process_registry
 
-        with _bound_session_key("agent:main:telegram:dm:778"):
+        with _bound_session_key("agent:main:discord:dm:778"):
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",

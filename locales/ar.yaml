@@ -92,14 +92,6 @@ gateway:
     full_logs_hint:        "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint:            "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
 
-  footer:
-    status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
-    usage:                 "الاستخدام: `/footer [on|off|status]`"
-    saved:                 "📎 تذييل التشغيل: **{state}**{example}\n_(حُفظ عالميًا — يسري على الرسالة التالية)_"
-    example_line:          "\nمثال: `{preview}`"
-    state_on:              "مُفعّل"
-    state_off:             "مُعطّل"
-
   goal:
     unavailable:           "الأهداف غير متاحة في هذه الجلسة."
     no_goal_set:           "لم يُحدَّد هدف."
@@ -254,17 +246,6 @@ gateway:
     current_with_title:    "📌 الجلسة: `{session_id}`\nالعنوان: **{title}**"
     current_no_title:      "📌 الجلسة: `{session_id}`\nلم يُضبط عنوان. الاستخدام: `/title My Session Name`"
 
-  topic:
-    not_telegram_dm:         "الأمر /topic متاح فقط في محادثات Telegram الخاصة."
-    no_session_db:           "قاعدة بيانات الجلسات غير متاحة."
-    unauthorized:            "غير مصرّح لك باستخدام /topic على هذا البوت."
-    restore_needs_topic:     "لاستعادة جلسة، أنشئ أو افتح موضوع Telegram أولًا، ثم أرسل /topic <session-id> داخل ذلك الموضوع. لإنشاء موضوع جديد، افتح All Messages وأرسل أي رسالة هناك."
-    topics_disabled:         "مواضيع Telegram غير مُفعّلة لهذا البوت بعد.\n\nكيفية تفعيلها:\n1. افتح @BotFather.\n2. اختر البوت الخاص بك.\n3. افتح Bot Settings → Threads Settings.\n4. فعّل Threaded Mode وتأكّد من السماح للمستخدمين بإنشاء خيوط جديدة.\n\nثم أرسل /topic مرة أخرى."
-    topics_user_disallowed:  "مواضيع Telegram مُفعّلة، لكن غير مسموح للمستخدمين بإنشاء مواضيع.\n\nافتح @BotFather → اختر البوت → Bot Settings → Threads Settings، ثم أوقف 'Disallow users to create new threads'.\n\nثم أرسل /topic مرة أخرى."
-    enable_failed:           "فشل تفعيل وضع مواضيع Telegram: {error}"
-    bound_status:            "هذا الموضوع مرتبط بـ:\nالجلسة: {label}\nالمعرّف: {session_id}\n\nاستخدم /new لاستبدال هذا الموضوع بجلسة جديدة.\nللعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
-    thread_ready:            "مواضيع Telegram متعددة الجلسات مُفعّلة.\n\nسيُستخدم هذا الموضوع كجلسة Hermes مستقلة. استخدم /new لاستبدال جلسة هذا الموضوع الحالية. للعمل المتوازي، افتح All Messages وأرسل رسالة هناك لإنشاء موضوع آخر."
-    untitled_session:        "جلسة دون عنوان"
 
   undo:
     nothing:               "لا شيء للتراجع عنه."
@@ -278,41 +259,6 @@ gateway:
     start_failed:            "✗ فشل بدء التحديث: {error}"
     starting:                "☤ جارٍ بدء تحديث Hermes… سأبثّ التقدّم هنا."
 
-  usage:
-    rate_limits:              "⏱️ **حدود المعدّل:** {state}"
-    header_session:           "📊 **استخدام رموز الجلسة**"
-    label_model:              "النموذج: `{model}`"
-    label_input_tokens:       "رموز الإدخال: {count}"
-    label_cache_read:         "رموز قراءة التخزين المؤقت: {count}"
-    label_cache_write:        "رموز كتابة التخزين المؤقت: {count}"
-    label_output_tokens:      "رموز الإخراج: {count}"
-    label_total:              "الإجمالي: {count}"
-    label_api_calls:          "استدعاءات API: {count}"
-    label_cost:               "التكلفة: {prefix}${amount}"
-    label_cost_included:      "التكلفة: مشمولة"
-    label_context:            "السياق: {used} / {total} ({pct}%)"
-    label_compressions:       "عمليات الضغط: {count}"
-    breakdown_header:         "🧩 **تفصيل السياق** _(تقديري)_"
-    breakdown_line:           "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt:        "موجّه النظام"
-    breakdown_cat_tool_definitions:     "تعريفات الأدوات"
-    breakdown_cat_rules:                "القواعد"
-    breakdown_cat_skills:               "المهارات"
-    breakdown_cat_mcp:                  "MCP"
-    breakdown_cat_subagent_definitions: "تعريفات الوكلاء الفرعيين"
-    breakdown_cat_memory:               "الذاكرة"
-    breakdown_cat_conversation:         "المحادثة"
-    header_session_info:      "📊 **معلومات الجلسة**"
-    label_messages:           "الرسائل: {count}"
-    label_estimated_context:  "السياق المُقدّر: ~{count} رمزًا"
-    detailed_after_first:     "_(الاستخدام المُفصّل متاح بعد أول رد من الوكيل)_"
-    no_data:                  "لا تتوفّر بيانات استخدام لهذه الجلسة."
-    unknown_subcommand:       "أمر فرعي غير معروف لـ /usage: `{args}`. جرّب `/usage` أو `/usage reset [--force]`."
-    reset_wrong_provider:     "إعادة تعيين الاستخدام المُدّخر متاحة فقط على مزوّد openai-codex. بدّل عبر `/model` أولًا."
-
-  credits:
-    not_logged_in:            "لم تُسجّل الدخول إلى Nous Portal. سجّل الدخول لرؤية رصيد أرصدتك وإعادة الشحن."
-
   verbose:
     not_enabled:           "الأمر `/verbose` غير مُفعّل لمنصّات المراسلة.\n\nفعّله في `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ تقدّم الأدوات: **مُعطّل** — لا يُعرض نشاط الأدوات."
@@ -322,23 +268,6 @@ gateway:
     mode_log:              "⚙️ تقدّم الأدوات: **LOG** — صامت في المحادثة؛ تُكتب استدعاءات الأدوات إلى ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(حُفظ لـ **{platform}** — يسري على الرسالة التالية)_"
     save_failed:           "_(تعذّر الحفظ في الإعدادات: {error})_"
-
-  voice:
-    enabled_voice_only:    "وضع الصوت مُفعّل.\nسأردّ بالصوت عندما ترسل رسائل صوتية.\nاستخدم /voice tts للحصول على ردود صوتية لكل الرسائل."
-    disabled_text:         "وضع الصوت مُعطّل. ردود نصّية فقط."
-    tts_enabled:           "TTS التلقائي مُفعّل.\nستتضمّن كل الردود رسالة صوتية."
-    status_mode:           "وضع الصوت: {label}"
-    status_channel:        "قناة الصوت: #{channel}"
-    status_participants:   "المشاركون: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (يتحدّث)"
-    enabled_short:         "وضع الصوت مُفعّل."
-    disabled_short:        "وضع الصوت مُعطّل."
-    label_off:             "مُعطّل (نص فقط)"
-    label_voice_only:      "مُفعّل (رد صوتي على الرسائل الصوتية)"
-    label_all:             "TTS (رد صوتي على كل الرسائل)"
-    help:                  "{toggle}\n\n**كيف يعمل /voice**\n• `/voice on` — رد صوتي عند إرسال رسالة صوتية\n• `/voice tts` — رد صوتي على *كل* رسالة\n• `/voice off` — العودة إلى ردود نصّية فقط\n• `/voice status` — عرض الوضع الحالي\n• `/voice` (بدون وسيط) — تبديل سريع بين التفعيل والتعطيل{channels}"
-    help_channels:         "\n\n**قنوات الصوت الحيّة (Discord)**\n• انضمّ إلى قناة صوتية أولًا، ثم `/voice channel` — سأنضمّ وأستمع وأنطق ردودي\n• `/voice leave` — قطع الاتصال بالقناة الصوتية"
 
   shared:
     session_db_unavailable:      "قاعدة بيانات الجلسات غير متاحة."

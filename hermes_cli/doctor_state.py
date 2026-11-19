@@ -15,16 +15,6 @@ from hermes_state_common import FTS_STORAGE_VERSION
 from hermes_state_holders import read_only_db_uri
 
 
-def _honcho_is_configured_for_doctor() -> bool:
-    """Return True when Honcho is configured, even if this process has no active session."""
-    try:
-        from plugins.memory.honcho.client import HonchoClientConfig
-        cfg = HonchoClientConfig.from_global_config()
-        return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
-    except Exception:
-        return False
-
-
 def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
     from hermes_cli.doctor import HERMES_HOME
@@ -451,52 +441,8 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
                    ("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)"))
 
 
-def _memory_provider_honcho(issues: list) -> None:
-    from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-    hcfg = HonchoClientConfig.from_global_config()
-    cfg_path = resolve_config_path()
-    if not cfg_path.exists():
-        # Config file missing — env-var fallback may still have resolved it.
-        check_bool(hcfg.api_key or hcfg.base_url,
-                   ("Honcho configured via environment variables", f"config file {cfg_path} not found, using HONCHO_API_KEY env var"),
-                   ("Honcho config not found", "run: hermes memory setup"))
-    elif not hcfg.enabled:
-        check_info(f"Honcho disabled (set enabled: true in {cfg_path} to activate)")
-    elif not (hcfg.api_key or hcfg.base_url):
-        _fail_and_issue("Honcho API key or base URL not set", "run: hermes memory setup",
-                        "No Honcho API key — run 'hermes memory setup'", issues)
-    else:
-        from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
-        reset_honcho_client()
-        try:
-            get_honcho_client(hcfg)
-            check_ok("Honcho connected", f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}")
-        except Exception as _e:
-            _fail_and_issue("Honcho connection failed", str(_e), f"Honcho unreachable: {_e}", issues)
-
-
-def _memory_provider_mem0(issues: list) -> None:
-    from plugins.memory.mem0 import _load_config as _load_mem0_config
-    mem0_cfg = _load_mem0_config()
-    if mem0_cfg.get("api_key", ""):
-        check_ok("Mem0 API key configured")
-        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
-    else:
-        _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                        "Mem0 is set as memory provider but API key is missing", issues)
-
-
-# provider -> (checker, ImportError row, ImportError issue, label for "check failed")
-_MEMORY_PROVIDER_CHECKS = {
-    "honcho": (_memory_provider_honcho, ("honcho-ai not installed", "pip install honcho-ai"),
-               "Honcho is set as memory provider but honcho-ai is not installed", "Honcho"),
-    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "pip install mem0ai"),
-             "Mem0 is set as memory provider but mem0ai is not installed", "Mem0"),
-}
-
-
 def _memory_provider_generic(name: str) -> None:
-    """Generic check for other memory providers (openviking, hindsight, etc.)."""
+    """Generic per-provider check: plugin present and available, or a clear pointer."""
     from plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
     if _provider and _provider.is_available():
@@ -514,16 +460,10 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
     if not name:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
         return
-    checker, missing_row, missing_issue, label = _MEMORY_PROVIDER_CHECKS.get(name, (None, None, None, name))
     try:
-        checker(f.issues) if checker else _memory_provider_generic(name)
-    except ImportError as _e:
-        if missing_row is None:
-            check_warn(f"{label} check failed", str(_e))
-        else:
-            _fail_and_issue(*missing_row, missing_issue, f.issues)
+        _memory_provider_generic(name)
     except Exception as _e:
-        check_warn(f"{label} check failed", str(_e))
+        check_warn(f"{name} check failed", str(_e))
 
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor

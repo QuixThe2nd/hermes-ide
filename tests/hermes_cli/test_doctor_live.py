@@ -28,7 +28,7 @@ def _clean_env(monkeypatch):
     for var in ("FIRECRAWL_API_KEY", "FAL_KEY", "OPENAI_API_KEY",
                 "ELEVENLABS_API_KEY", "GROQ_API_KEY", "CAMOFOX_URL", "CAMOFOX_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    # Default: empty config, no MCP servers, local tts/stt.
+    # Default: empty config, no MCP servers.
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
 
 
@@ -138,42 +138,6 @@ class TestConfiguredOnlySelection:
         assert sorted(probed) == ["alpha", "beta"]
         assert len(results) == 2
         assert all(r.status == "pass" for r in results)
-
-    def test_tts_local_provider_skipped(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"tts": {"provider": "edge"}})
-        results = {r.name: r for r in run_live_checks([])}
-        assert results["TTS"].status == "skip"
-
-    def test_tts_openai_probed_with_key(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"tts": {"provider": "openai"}})
-        monkeypatch.setattr(
-            doctor_live, "_http_get",
-            lambda *a, **k: SimpleNamespace(status_code=200))
-        results = {r.name: r for r in run_live_checks([])}
-        assert results["TTS"].status == "pass"
-
-    def test_stt_groq_probed_with_key(self, monkeypatch):
-        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"stt": {"provider": "groq"}})
-        monkeypatch.setattr(
-            doctor_live, "_http_get",
-            lambda *a, **k: SimpleNamespace(status_code=200))
-        results = {r.name: r for r in run_live_checks([])}
-        assert results["STT"].status == "pass"
-
-    def test_stt_provider_configured_but_key_missing_warns(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"stt": {"provider": "groq"}})
-        results = {r.name: r for r in run_live_checks([])}
-        assert results["STT"].status == "warn"
 
     def test_browser_probes_authenticated_camofox_health(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://camofox.test:9377/")

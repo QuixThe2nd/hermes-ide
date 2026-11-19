@@ -109,12 +109,8 @@ class CLIModalMixin:
             return
 
         if self._agent_running:
-            # Agent busy → honour the configured busy-input behaviour (interrupt/steer remain
-            # reachable via the normal Enter path).
-            if self.busy_input_mode == "interrupt":
-                self._interrupt_queue.put(text)
-            else:
-                self._pending_input.put(text)
+            # Agent busy → interrupt path (redirect remains reachable via the normal Enter path).
+            self._interrupt_queue.put(text)
             preview = text[:80] + ("..." if len(text) > 80 else "")
             _cprint(f"  Queued for the next turn: {preview}")
         else:

@@ -190,15 +190,6 @@ class TestFallbackChainInit:
 
 
 class TestBusyInputMode:
-    def test_default_busy_input_mode_is_interrupt(self):
-        cli = _make_cli()
-        assert cli.busy_input_mode == "interrupt"
-
-    def test_busy_input_mode_queue_is_honored(self):
-        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
-        assert cli.busy_input_mode == "queue"
-
-
     def test_queue_command_works_while_busy(self):
         """When agent is running, /queue should still put the prompt in _pending_input."""
         cli = _make_cli()
@@ -235,19 +226,6 @@ class TestBusyInputMode:
         cli.process_command("/queue add clear the logs after tests")
         assert cli._pending_input.get_nowait() == "clear the logs after tests"
 
-    def test_queue_edit_preserves_voice_sentinel(self):
-        cli = _make_cli()
-        # Import AFTER _make_cli: the harness reloads the cli module, so the
-        # sentinel class must come from the same (reloaded) module the
-        # instance's handler compares against.
-        import cli as _cli_mod
-        cli._pending_input.put(_cli_mod._VoiceInputMessage("spoken prompt"))
-        cli.process_command("/queue edit 1 corrected prompt")
-        items = cli._pending_input_items()
-        assert len(items) == 1
-        assert isinstance(items[0], _cli_mod._VoiceInputMessage)
-        assert str(items[0]) == "corrected prompt"
-
     def test_queue_out_of_range_indices_leave_queue_untouched(self):
         cli = _make_cli()
         cli.process_command("/queue only item")
@@ -259,15 +237,11 @@ class TestBusyInputMode:
 
 
 
-    def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
-        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
+    def test_busy_enter_routes_to_interrupt_queue(self):
+        """Enter while busy goes to _interrupt_queue (busy mode is hardcoded to interrupt)."""
         cli = _make_cli()
         cli._agent_running = True
-        text = "redirect"
-        if cli.busy_input_mode == "queue":
-            cli._pending_input.put(text)
-        else:
-            cli._interrupt_queue.put(text)
+        cli._interrupt_queue.put("redirect")
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
 
@@ -392,12 +366,9 @@ class TestPromptToolkitTerminalCompatibility:
 
 
 class TestSingleQueryState:
-    def test_voice_and_interrupt_state_initialized_before_run(self):
+    def test_interrupt_state_initialized_before_run(self):
         """Single-query mode calls chat() without going through run()."""
         cli = _make_cli()
-        assert cli._voice_tts is False
-        assert cli._voice_mode is False
-        assert cli._voice_tts_done.is_set()
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
 
@@ -677,29 +648,6 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["base_url"] == "https://example.com/v1"
 
-    def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
-        """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
-        import yaml
-
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("TERMINAL_VERCEL_RUNTIME", raising=False)
-
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(yaml.safe_dump({
-            "terminal": {
-                "backend": "vercel_sandbox",
-                "vercel_runtime": "python3.13",
-            },
-        }))
-
-        import cli
-        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
-        cfg = cli.load_cli_config()
-
-        assert cfg["terminal"]["vercel_runtime"] == "python3.13"
-        assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""

@@ -1,10 +1,8 @@
-"""Discord hub deployments get the busy-steer ⏩ receipt, not a silent skip.
+"""Discord hub client reaction RPCs.
 
-`gateway/run_busy.py::_maybe_react_discord_busy_steer` requires a callable
-`adapter._add_reaction`. The hub-side adapter (`DiscordHubClientAdapter`) lacked
-one, so every busy-steer on a hub deployment got no reaction. These tests drive
-the real receipt helper through a real `DiscordHubClientAdapter` (hub RPC lane
-stubbed at `_call`) and assert the RPC payloads.
+`DiscordHubClientAdapter._add_reaction` / `_remove_reaction` must carry
+reactions over the hub RPC lane (stubbed at `_call`) with the exact payloads,
+decline without a hub message id, and swallow hub failures.
 """
 
 import pytest
@@ -20,45 +18,6 @@ def _hub_adapter() -> DiscordHubClientAdapter:
     adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
     adapter._reactions_enabled = lambda: True
     return adapter
-
-
-def _steer_event():
-    source = SessionSource(platform=Platform.DISCORD, chat_id="c1", user_id="u1", chat_type="dm")
-    event = MessageEvent(text="adjust course", source=source, message_id="m-42")
-    event.raw_message = {"discord_hub_message_id": "m-42", "discord_hub_token": "tk"}
-    return event, source
-
-
-@pytest.mark.asyncio
-async def test_busy_steer_through_hub_client_emits_fast_forward_reaction_rpc(monkeypatch, tmp_path):
-    """BEFORE fix: fails — hub adapter had no _add_reaction, reaction silently skipped."""
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-
-    adapter = _hub_adapter()
-    rpcs = []
-
-    async def fake_call(method, params=None):
-        rpcs.append((method, params))
-        return True
-
-    adapter._call = fake_call
-
-    runner = GatewayRunner(config=GatewayConfig())
-    runner._delivery_adapter_for = lambda source: adapter
-    runner._adapter_for_source = lambda source: adapter
-
-    event, source = _steer_event()
-    reacted = await runner._maybe_react_discord_busy_steer(
-        event, adapter, "key", steered=True, is_steer_mode=True,
-    )
-
-    assert reacted is True
-    assert rpcs == [(
-        "rpc",
-        {"token_key": adapter._token_key, "method": "add_reaction",
-         "message_id": "m-42", "emoji": "⏩"},
-    )]
 
 
 @pytest.mark.asyncio

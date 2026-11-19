@@ -166,12 +166,6 @@
   },
   {
    "facade": "agent.auxiliary_client",
-   "name": "NOUS_EXTRA_BODY",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.auxiliary_client",
    "name": "Path",
    "kind": "import",
    "target": "pathlib"
@@ -209,48 +203,6 @@
   {
    "facade": "agent.background_review",
    "name": "is_background_review_enabled",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "CONTEXT_OVERFLOW_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "OVERLOAD_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "THROTTLE_PATTERNS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "call_converse_stream",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of classify_bedrock_error)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "classify_bedrock_error",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "agent.bedrock_adapter",
-   "name": "is_context_overflow_error",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
   },
@@ -697,18 +649,6 @@
    "name": "re",
    "kind": "import",
    "target": "re"
-  },
-  {
-   "facade": "agent.nous_rate_guard",
-   "name": "atomic_replace",
-   "kind": "moved-lazy",
-   "target": "utils"
-  },
-  {
-   "facade": "agent.nous_rate_guard",
-   "name": "tempfile",
-   "kind": "import",
-   "target": "tempfile"
   },
   {
    "facade": "agent.outbound_webhooks",
@@ -2194,12 +2134,6 @@
   },
   {
    "facade": "gateway.run",
-   "name": "looks_like_telegram_private_chat_id",
-   "kind": "moved-lazy",
-   "target": "gateway.delivery"
-  },
-  {
-   "facade": "gateway.run",
    "name": "loop_heartbeat_forever",
    "kind": "moved-lazy",
    "target": "gateway.shutdown_watchdog"
@@ -2536,18 +2470,6 @@
   },
   {
    "facade": "hermes_cli.auth",
-   "name": "NOUS_INFERENCE_INVOKE_SCOPE",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.auth_constants"
-  },
-  {
-   "facade": "hermes_cli.auth",
-   "name": "NOUS_SHARED_STORE_FILENAME",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.auth_nous"
-  },
-  {
-   "facade": "hermes_cli.auth",
    "name": "OAUTH_OVER_SSH_DOCS_URL",
    "kind": "moved-lazy",
    "target": "hermes_cli.auth_constants"
@@ -2623,12 +2545,6 @@
    "name": "parse_qs",
    "kind": "import",
    "target": "urllib.parse"
-  },
-  {
-   "facade": "hermes_cli.auth",
-   "name": "refresh_nous_oauth_pure",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.auth_nous"
   },
   {
    "facade": "hermes_cli.auth",
@@ -2809,24 +2725,6 @@
    "name": "subprocess",
    "kind": "import",
    "target": "subprocess"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "telegram_bot_commands",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "telegram_menu_commands",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "telegram_menu_max_commands",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
   },
   {
    "facade": "hermes_cli.commands",
@@ -3226,24 +3124,6 @@
   },
   {
    "facade": "hermes_cli.model_setup_flows",
-   "name": "BEDROCK_GEO_PREFIXES",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "bedrock_model_routable_from_region",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
-   "name": "bedrock_region_geo_prefix",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.model_setup_flows_bedrock"
-  },
-  {
-   "facade": "hermes_cli.model_setup_flows",
    "name": "custom_provider_slug",
    "kind": "moved-lazy",
    "target": "hermes_cli.providers"
@@ -3346,12 +3226,6 @@
   },
   {
    "facade": "hermes_cli.models",
-   "name": "compute_sale_discount",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
-  },
-  {
-   "facade": "hermes_cli.models",
    "name": "ensure_lmstudio_model_loaded",
    "kind": "moved-lazy",
    "target": "hermes_cli.models_local"
@@ -3382,12 +3256,6 @@
   },
   {
    "facade": "hermes_cli.models",
-   "name": "get_cached_nous_inference_base_url",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
-  },
-  {
-   "facade": "hermes_cli.models",
    "name": "get_close_matches",
    "kind": "import",
    "target": "difflib"
@@ -3412,33 +3280,9 @@
   },
   {
    "facade": "hermes_cli.models",
-   "name": "is_nous_free_tier",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.models",
    "name": "lmstudio_model_reasoning_options",
    "kind": "moved-lazy",
    "target": "hermes_cli.models_local"
-  },
-  {
-   "facade": "hermes_cli.models",
-   "name": "nous_catalog_url",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_reasoning_caps"
-  },
-  {
-   "facade": "hermes_cli.models",
-   "name": "nous_model_reasoning_capabilities",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_reasoning_caps"
-  },
-  {
-   "facade": "hermes_cli.models",
-   "name": "nous_policy_allowed_ids",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
   },
   {
    "facade": "hermes_cli.models",
@@ -3496,12 +3340,6 @@
   },
   {
    "facade": "hermes_cli.models",
-   "name": "restrict_to_nous_policy",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_pricing"
-  },
-  {
-   "facade": "hermes_cli.models",
    "name": "should_use_ollama_native_catalog",
    "kind": "moved-lazy",
    "target": "hermes_cli.models_local"
@@ -3520,27 +3358,9 @@
   },
   {
    "facade": "hermes_cli.models",
-   "name": "warm_nous_reasoning_caps_async",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.models_reasoning_caps"
-  },
-  {
-   "facade": "hermes_cli.models",
    "name": "warm_openrouter_reasoning_caps_async",
    "kind": "moved-lazy",
    "target": "hermes_cli.models_reasoning_caps"
-  },
-  {
-   "facade": "hermes_cli.nous_billing",
-   "name": "BILLING_MANAGE_SCOPE",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.nous_subscription",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "hermes_cli.observability.relay_shared_metrics",
@@ -3868,12 +3688,6 @@
   },
   {
    "facade": "hermes_cli.setup",
-   "name": "get_nous_subscription_features",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_subscription"
-  },
-  {
-   "facade": "hermes_cli.setup",
    "name": "get_optional_skills_dir",
    "kind": "moved-lazy",
    "target": "hermes_constants"
@@ -3883,12 +3697,6 @@
    "name": "json",
    "kind": "import",
    "target": "json"
-  },
-  {
-   "facade": "hermes_cli.setup",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "hermes_cli.setup",
@@ -3910,30 +3718,6 @@
   },
   {
    "facade": "hermes_cli.status",
-   "name": "format_nous_portal_entitlement_message",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_account"
-  },
-  {
-   "facade": "hermes_cli.status",
-   "name": "get_nous_portal_account_info",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_account"
-  },
-  {
-   "facade": "hermes_cli.status",
-   "name": "get_nous_subscription_features",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_subscription"
-  },
-  {
-   "facade": "hermes_cli.status",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "hermes_cli.status",
    "name": "redact_key",
    "kind": "moved-lazy",
    "target": "hermes_cli.config"
@@ -3943,102 +3727,6 @@
    "name": "subprocess",
    "kind": "import",
    "target": "subprocess"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "DEFAULT_MANAGER_BOT",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "auto_setup_telegram_bot",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "secrets",
-   "kind": "restored-import",
-   "target": "secrets"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "_USERNAME_SLUG_ALPHABET",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of generate_bot_username)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_username_slug",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of generate_bot_username)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_bot_username",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "urllib",
-   "kind": "restored-import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_deep_link",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_pairing_nonce",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "generate_username_slug",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "poll_for_token",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "poll_pairing_once",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "secrets",
-   "kind": "import",
-   "target": "secrets"
-  },
-  {
-   "facade": "hermes_cli.telegram_managed_bot",
-   "name": "urllib",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "hermes_cli.tools_config",
-   "name": "MANAGED_FEATURE_COVERAGE_CATEGORY",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_subscription"
-  },
-  {
-   "facade": "hermes_cli.tools_config",
-   "name": "NOUS_MANAGED_PROVIDER",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "hermes_cli.tools_config",
@@ -4051,12 +3739,6 @@
    "name": "fal_key_is_configured",
    "kind": "moved-lazy",
    "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "hermes_cli.tools_config",
-   "name": "format_nous_portal_entitlement_message",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.nous_account"
   },
   {
    "facade": "hermes_cli.tools_config",
@@ -4659,204 +4341,6 @@
    "target": "importlib"
   },
   {
-   "facade": "plugins.memory.honcho",
-   "name": "CONCLUDE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "CONTEXT_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "PROFILE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "REASONING_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "SEARCH_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.honcho",
-   "name": "TRIVIAL_PROMPT_RE",
-   "kind": "moved-lazy",
-   "target": "agent.memory_provider"
-  },
-  {
-   "facade": "plugins.memory.honcho.client",
-   "name": "SingletonSlot",
-   "kind": "moved-lazy",
-   "target": "plugins.plugin_utils"
-  },
-  {
-   "facade": "plugins.memory.honcho.oauth",
-   "name": "Callable",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "Callable",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "hashlib",
-   "kind": "import",
-   "target": "hashlib"
-  },
-  {
-   "facade": "plugins.memory.honcho.session",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "ADD_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "DELETE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "SEARCH_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0",
-   "name": "UPDATE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.mem0._setup",
-   "name": "has_oss_flags",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "CONTEXT_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "Dict",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "FILE_DELETE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "FILE_INGEST_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "FILE_LIST_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "FILE_READ_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "FILE_UPLOAD_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "FORGET_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "List",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "PROFILE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "REMEMBER_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.retaindb",
-   "name": "SEARCH_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.supermemory",
-   "name": "FORGET_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.supermemory",
-   "name": "PROFILE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.supermemory",
-   "name": "SEARCH_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.memory.supermemory",
-   "name": "STORE_SCHEMA",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
    "facade": "plugins.platforms.a2a.protocol",
    "name": "ERR_PUSH_NOT_SUPPORTED",
    "kind": "restored-def",
@@ -5053,30 +4537,6 @@
    "name": "asyncio",
    "kind": "import",
    "target": "asyncio"
-  },
-  {
-   "facade": "plugins.platforms.telegram.adapter",
-   "name": "atomic_replace",
-   "kind": "moved-lazy",
-   "target": "utils"
-  },
-  {
-   "facade": "plugins.platforms.telegram.adapter",
-   "name": "cache_document_from_bytes",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
-  },
-  {
-   "facade": "plugins.platforms.telegram.adapter",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
-   "facade": "plugins.platforms.telegram.telegram_ids",
-   "name": "telegram_chat_id_key",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
   },
   {
    "facade": "plugins.teams_pipeline.cli",
@@ -6940,24 +6400,6 @@
   },
   {
    "facade": "tools.skills_hub",
-   "name": "HERMES_INDEX_TTL",
-   "kind": "moved-lazy",
-   "target": "tools.skills_hub_search"
-  },
-  {
-   "facade": "tools.skills_hub",
-   "name": "HERMES_INDEX_URL",
-   "kind": "moved-lazy",
-   "target": "tools.skills_hub_search"
-  },
-  {
-   "facade": "tools.skills_hub",
-   "name": "HermesIndexSource",
-   "kind": "moved-lazy",
-   "target": "tools.skills_hub_official"
-  },
-  {
-   "facade": "tools.skills_hub",
    "name": "LobeHubSource",
    "kind": "moved-lazy",
    "target": "tools.skills_hub_sources"
@@ -7534,12 +6976,6 @@
   },
   {
    "facade": "tools.terminal_tool",
-   "name": "nous_tool_gateway_unavailable_message",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.terminal_tool",
    "name": "platform",
    "kind": "import",
    "target": "platform"
@@ -7693,18 +7129,6 @@
    "name": "XAI_STT_BASE_URL",
    "kind": "moved-lazy",
    "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "nous_tool_gateway_unavailable_message",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "tools.transcription_tools",
@@ -8116,18 +7540,6 @@
   },
   {
    "facade": "tools.tts_tool",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "nous_tool_gateway_unavailable_message",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.tts_tool",
    "name": "platform",
    "kind": "import",
    "target": "platform"
@@ -8398,21 +7810,9 @@
   },
   {
    "facade": "tools.web_tools",
-   "name": "managed_nous_tools_enabled",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.web_tools",
    "name": "normalize_url_for_request",
    "kind": "moved-lazy",
    "target": "tools.url_safety"
-  },
-  {
-   "facade": "tools.web_tools",
-   "name": "nous_tool_gateway_unavailable_message",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "tools.web_tools",

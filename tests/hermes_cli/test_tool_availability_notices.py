@@ -40,7 +40,7 @@ def test_generic_toolset_lists_vars_and_setup_hint():
 def test_nothing_to_report_returns_no_lines():
     assert tool_availability_warning_lines([], terminal_reason=None, terminal_backend="local") == []
     # A toolset with no env vars and no special notice (e.g. lazy check_fn) stays silent.
-    assert tool_availability_warning_lines([{"name": "honcho", "env_vars": [], "tools": []}],
+    assert tool_availability_warning_lines([{"name": "hindsight", "env_vars": [], "tools": []}],
                                            terminal_reason=None, terminal_backend="local") == []
 
 

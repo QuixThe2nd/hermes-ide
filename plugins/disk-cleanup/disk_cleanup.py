@@ -87,9 +87,7 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "hermes-agent", "backups", "profiles", ".worktrees",
     "patches", "projects", "skins", "themes", "contributors",
     # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
-    "workspace", "plans", "home",
-    # Legacy Kanban data has its own lifecycle; never treat it as disposable plugin state.
-    "kanban"})
+    "workspace", "plans", "home"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
@@ -105,10 +103,7 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace``, ``plans`` and ``home`` are the
     # per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "patches", "projects", "skins", "themes", "contributors",
-    "profiles", "backups", "optional-skills", "workspace", "plans", "home",
-    # Legacy Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
-    # not disposable (#114552).
-    "kanban"})
+    "profiles", "backups", "optional-skills", "workspace", "plans", "home"})
 
 
 def _is_protected_dir(p: Path) -> bool:

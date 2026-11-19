@@ -1,7 +1,7 @@
 """Shared constants, the lazy ``httpx`` proxy and :class:`AuthError` for the auth package.
 
 Pure leaf: imports nothing from ``hermes_cli.auth`` so the per-provider modules
-(``auth_nous``, ``auth_codex``, ...) can import it at module scope without cycles."""
+(``auth_codex``, ...) can import it at module scope without cycles."""
 
 from __future__ import annotations
 
@@ -49,21 +49,7 @@ else:
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
-# Nous Portal defaults
-DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
-DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
-# The free tier's (anonymous account) inference host. NAS hands it to the client on every token
-# exchange (``inference_base_url``); this literal is the fallback when that field is absent or fails
-# the host allowlist, because the paid host cross-refuses an anonymous JWT with a 400.
-DEFAULT_NOUS_WELCOME_URL = "https://welcome-api.nousresearch.com/v1"
-DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
-NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
-NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
-DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
-NOUS_DEVICE_CODE_SOURCE = "device_code"
-NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
-NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 _FORM_JSON_HEADERS = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
@@ -161,7 +147,6 @@ def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
 
 
 # Per-provider AuthError constructors: ``_xai_err(message, code, relogin=True)``.
-_nous_err = _provider_error_factory("nous")
 _xai_err = _provider_error_factory("xai-oauth")
 _codex_err = _provider_error_factory("openai-codex")
 _spotify_err = _provider_error_factory("spotify")

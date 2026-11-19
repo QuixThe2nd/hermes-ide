@@ -95,7 +95,6 @@ StandardOutput=journal
 StandardError=journal
 
 # Environment (optional - can also use .env file)
-# Environment="TELEGRAM_BOT_TOKEN=your_token"
 # Environment="DISCORD_BOT_TOKEN=your_token"
 
 [Install]
@@ -335,7 +334,6 @@ Examples:
 
 Configuration:
     Set environment variables in .env file or system environment:
-    - TELEGRAM_BOT_TOKEN
     - DISCORD_BOT_TOKEN
     - WHATSAPP_ENABLED
     

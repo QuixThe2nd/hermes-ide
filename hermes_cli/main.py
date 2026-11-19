@@ -264,7 +264,6 @@ from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
-from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
@@ -290,20 +289,17 @@ from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
-from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
-from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
 from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
-from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
@@ -444,7 +440,7 @@ def _under_gateway_supervisor(argv: list) -> bool:
     means "the root HERMES_HOME profile". If a supervised default-profile
     child read active_profile, switching the active profile (dashboard,
     ``hermes profile use``) would silently redirect the default gateway into
-    that profile — adopting its credentials and double-polling a Telegram
+    that profile — adopting its credentials and double-polling a bot
     token already owned by that profile's own gateway (#74872).
 
     Markers (see gateway/restart.py ``is_gateway_supervisor_process``):
@@ -623,7 +619,6 @@ from hermes_cli import __version__, __release_date__
 
 from hermes_cli.model_setup_flows import (
     _model_flow_openrouter,
-    _model_flow_nous,
     _model_flow_openai_codex,
     _model_flow_xai_oauth,
     _model_flow_qwen_oauth,
@@ -635,7 +630,6 @@ from hermes_cli.model_setup_flows import (
     _model_flow_copilot_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
-    _model_flow_bedrock,
     _model_flow_vertex,
     _model_flow_api_key_provider,
     _model_flow_anthropic,
@@ -843,9 +837,7 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
-    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
+    """Check if at least one inference provider is usable without creating credentials.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -930,12 +922,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
-    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
-    try:
-        from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
-    except Exception as exc:
-        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1588,18 +1574,14 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
-    # that may create the identity), then the inventory decides whether setup is needed.
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    run_bootstrap(announce=False)
+    # First-run guard: inventory decides whether setup is needed.
     if not _has_any_provider_configured():
         _first_run_setup_guard(args)
         return
 
     _start_chat_background_prefetch()
 
-    # --ignore-rules: skip AGENTS.md/SOUL.md/.cursorrules injection, memory
+    # --ignore-rules: skip AGENTS.md/SOUL.md injection, memory
     # entries and preloaded skills (AIAgent(skip_context_files, skip_memory)).
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"
@@ -1688,7 +1670,6 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
 
 cmd_setup = _forward_command("cmd_setup", "hermes_cli.setup", "run_setup_wizard", doc='Interactive setup wizard.')
-cmd_login = _forward_command("cmd_login", "hermes_cli.auth", "login_command", doc='Authenticate Hermes CLI with a provider.')
 cmd_logout = _forward_command("cmd_logout", "hermes_cli.auth", "logout_command", doc='Clear provider authentication.')
 cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_command", doc='Manage pooled credentials.')
 cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", doc='Show status of all components.')
@@ -1706,7 +1687,6 @@ cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", 
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
 cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
-cmd_claw = _forward_command("cmd_claw", "hermes_cli.claw", "claw_command")
 cmd_import_agent = _forward_command("cmd_import_agent", "hermes_cli.agent_import", "import_agent_command")
 
 
@@ -1737,7 +1717,6 @@ _PROVIDER_MODEL_FLOWS = {
     "openrouter": lambda c, m, a: _model_flow_openrouter(c, m),
     "moa": lambda c, m, a: _model_flow_moa(c, m),
     "ai-gateway": lambda c, m, a: _model_flow_ai_gateway(c, m),
-    "nous": lambda c, m, a: _model_flow_nous(c, m, args=a),
     "openai-codex": lambda c, m, a: _model_flow_openai_codex(c, m),
     "xai-oauth": lambda c, m, a: _model_flow_xai_oauth(c, m, args=a),
     "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
@@ -1748,7 +1727,6 @@ _PROVIDER_MODEL_FLOWS = {
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
     "kimi-coding": lambda c, m, a: _model_flow_kimi(c, m),
     "stepfun": lambda c, m, a: _model_flow_stepfun(c, m),
-    "bedrock": lambda c, m, a: _model_flow_bedrock(c, m),
     "vertex": lambda c, m, a: _model_flow_vertex(c, m),
     "azure-foundry": lambda c, m, a: _model_flow_azure_foundry(c, m),
 }
@@ -1807,7 +1785,7 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
             if exc.code == "no_provider_configured":
                 # The picker that is about to open IS the fix; a warning that says
                 # "run `hermes model`" from inside `hermes model` is circular.
-                print("No provider is set up yet — pick one below. (Nous Portal works without an API key.)")
+                print("No provider is set up yet — pick one below.")
             elif effective_provider == "auto":
                 print(f"Warning: {format_auth_error(exc)} Falling back to auto provider detection.")
             active = None  # no provider yet; default to first in list
@@ -2242,11 +2220,11 @@ def _coalesce_session_name_args(argv: list) -> list:
     are collected until the next flag (``-*``) or known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
+        "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "logout",
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile",
-        "honcho", "claw", "plugins", "security", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
+        "plugins", "security", "webhook", "peer",
+        "memory", "dump", "debug", "backup", "import", "completion", "logs",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2322,19 +2300,19 @@ def cmd_console(args):
 # entry would let a plugin command silently fail to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
+        "auth", "backup", "bundles", "checkpoints", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "goals", "hooks", "import", "import-agent", "insights",
-        "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "dump", "fallback", "gateway", "goals", "hooks", "import", "import-agent", "insights",
+        "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "plugins", "pm", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "plugins", "pm", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "usage", "vault",
+        "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
@@ -2791,8 +2769,6 @@ def _build_cli_parser():
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)
     build_secrets_parser(subparsers)
-    # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
-    build_egress_parser(subparsers)
     build_migrate_parser(subparsers)
     build_codex_runtime_parser(subparsers)
     build_gateway_parser(
@@ -2813,7 +2789,6 @@ def _build_cli_parser():
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
-    build_login_parser(subparsers, cmd_login=cmd_login)
     build_logout_parser(subparsers, cmd_logout=cmd_logout)
     build_auth_parser(subparsers, cmd_auth=cmd_auth)
     build_status_parser(subparsers, cmd_status=cmd_status)
@@ -2824,9 +2799,6 @@ def _build_cli_parser():
 
     from hermes_cli.subcommands.peer import build_peer_parser
     build_peer_parser(subparsers)
-
-    from hermes_cli.portal_cli import add_parser as _add_portal_parser
-    _add_portal_parser(subparsers)
 
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
     _build_project_parser(subparsers).set_defaults(func=cmd_project)
@@ -2860,9 +2832,7 @@ def _build_cli_parser():
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
     build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
-    build_usage_parser(subparsers)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
-    build_claw_parser(subparsers, cmd_claw=cmd_claw)
     build_vault_parser(subparsers)
     build_update_parser(subparsers, cmd_update=cmd_update)
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)

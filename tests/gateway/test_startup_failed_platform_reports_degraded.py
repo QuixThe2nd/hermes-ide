@@ -46,7 +46,7 @@ class _HealthyAdapter(BasePlatformAdapter):
     """The messaging platform that keeps the gateway useful — and used to hide the failure."""
 
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -66,7 +66,7 @@ def _runner_with_one_parked_platform(monkeypatch, tmp_path) -> GatewayRunner:
     config = GatewayConfig(
         platforms={
             Platform.API_SERVER: PlatformConfig(enabled=True, extra={"port": 8642}),
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
         },
         sessions_dir=tmp_path / "sessions",
     )
@@ -104,7 +104,7 @@ async def test_parked_platform_is_logged_at_error_and_the_run_is_degraded(monkey
         assert state["gateway_state"] == "degraded"
         assert state["platforms"]["api_server"]["state"] == "fatal"
         assert state["platforms"]["api_server"]["error_code"] == "api_server_port_in_use"
-        assert state["platforms"]["telegram"]["state"] == "connected"
+        assert state["platforms"]["discord"]["state"] == "connected"
     finally:
         await runner.stop()
 
@@ -114,7 +114,7 @@ async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, 
     """Protection: a clean startup keeps the normal ``running`` state and logs no ERROR."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")},
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
@@ -131,7 +131,7 @@ async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, 
         assert ok is True
         state = read_runtime_status()
         assert state["gateway_state"] == "running"
-        assert state["platforms"]["telegram"]["state"] == "connected"
+        assert state["platforms"]["discord"]["state"] == "connected"
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
             "a healthy startup must not log ERROR"
         )

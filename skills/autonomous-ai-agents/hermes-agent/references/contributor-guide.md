@@ -19,10 +19,9 @@ hermes-agent/
 ├── tools/                # One file per tool
 │   └── registry.py       # Central tool registry
 ├── gateway/              # Messaging gateway
-│   └── platforms/        # Platform adapters (telegram, discord, etc.)
+│   └── platforms/        # Platform adapters (discord, slack, etc.)
 ├── cron/                 # Job scheduler
-├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
-└── website/              # Docusaurus docs site
+└── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
 ```
 
 Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
@@ -68,7 +67,7 @@ never hardcode `~/.hermes`. For custom/local-only tools, write a plugin in
 2. Add handler in `cli.py` → `process_command()`
 3. (Optional) Add gateway handler in `gateway/run.py`
 
-All consumers (help text, autocomplete, Telegram menu, Slack mapping) derive from the central registry automatically.
+All consumers (help text, autocomplete, Slack mapping) derive from the central registry automatically.
 
 ### Agent Loop (High Level)
 

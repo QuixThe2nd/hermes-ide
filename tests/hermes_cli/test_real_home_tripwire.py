@@ -74,6 +74,25 @@ def test_opt_out_marker_bypasses_guard(tmp_path):
     assert True
 
 
+def test_repo_and_process_temp_subtrees_do_not_trip():
+    """Layout subtrees inside the guarded root are not operator state.
+
+    A checkout living inside the operator home (default install at
+    ~/.hermes/hermes-agent, harness workspaces under ~/.hermes/cache) and a
+    TMPDIR under the home must NOT trip the guard: pytest's assertion
+    rewriter writes .pyc under the venv there and tempfile users mkdir
+    scratch dirs — guarding those fails test setup without protecting any
+    production state (config.yaml / .env / state.db live directly under the
+    root, never in these subtrees)."""
+    from tests.conftest import _GUARD_EXEMPT_SUBTREES, _path_hits_real_home
+
+    repo_root, temp_root = _GUARD_EXEMPT_SUBTREES
+    assert not _path_hits_real_home(repo_root / ".venv" / "lib" / "__pycache__")
+    assert not _path_hits_real_home(temp_root / "hermes-discord-hub-abc123" / "discord-hub.sock")
+    # Direct production state stays guarded in every layout.
+    assert _path_hits_real_home(Path.home() / ".hermes" / "state.db")
+
+
 def test_sqlite_connect_to_real_home_fails():
     """sqlite3 bypasses builtins.open (C-level) — the dedicated hook must
     catch a state.db-shaped leak under ~/.hermes."""

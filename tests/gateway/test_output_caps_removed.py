@@ -38,7 +38,6 @@ def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
 
 def test_optional_wire_caps_omitted_required_and_internal_preserved():
     from agent.transports.chat_completions import ChatCompletionsTransport
-    from agent.transports.bedrock import BedrockTransport
     from agent.transports.anthropic import AnthropicTransport
 
     messages = [{"role": "user", "content": "fixture"}]
@@ -53,8 +52,6 @@ def test_optional_wire_caps_omitted_required_and_internal_preserved():
         max_tokens_param_fn=lambda value: {"max_tokens": value},
     )
     assert "max_tokens" not in custom
-    bedrock = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", messages)
-    assert "maxTokens" not in bedrock.get("inferenceConfig", {})
     native = AnthropicTransport().build_kwargs("claude-sonnet-4-5", messages)
     assert native["max_tokens"] > 0
     bounded = ChatCompletionsTransport().build_kwargs(

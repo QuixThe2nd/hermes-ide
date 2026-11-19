@@ -128,6 +128,34 @@ def _live_runner(monkeypatch, gateway_loop, **overrides):
     return runner
 
 
+def _install_forwardable_newest(monkeypatch, runner, *, pid: int):
+    """Attach a live newer generation + hub adapter so the request forwards."""
+    import os
+
+    import gateway.overlap_restart as overlap_restart
+    from gateway.generations import Generation, GenerationArray
+    from gateway.platforms.base import Platform
+
+    array = GenerationArray([
+        Generation(pid=os.getpid(), predecessor=0, spawn_seq=1, draining=True),
+        Generation(pid=pid, predecessor=os.getpid(), spawn_seq=2, attached=True),
+    ])
+
+    async def fixed_array(_runner):
+        return array
+
+    monkeypatch.setattr(overlap_restart, "generation_array_for_runner", fixed_array)
+
+    class _ForwardAdapter:
+        supports_overlap_restart = True
+        _running = True
+
+        async def forward_restart_to_newest(self, **kwargs):
+            return {"status": "restarting", "active_agents": 0}
+
+    runner.adapters[Platform.DISCORD] = _ForwardAdapter()
+
+
 def _bind_session(runner, **kwargs):
     """Bind tool context and seed the runner's cached comeback source."""
     set_session_vars(**kwargs)
@@ -144,11 +172,11 @@ def _bind_session(runner, **kwargs):
 
 
 # A gateway chat session: platform + chat + session key all bound.
-_TELEGRAM_SESSION = {
-    "platform": "telegram",
+_CHAT_SESSION = {
+    "platform": "discord",
     "chat_id": "42",
     "chat_type": "dm",
-    "session_key": "tg-42",
+    "session_key": "chat-42",
 }
 
 
@@ -247,6 +275,40 @@ def test_schema_describes_successor_tool_result_and_single_bounce():
     assert "Continue the interrupted task" in description
     assert "do not call restart again for the same restart" in description.lower()
     assert "ends this turn immediately" not in description.lower()
+    # Queued is not completed: the immediate result must say so itself.
+    assert "only means the restart was queued" in description
+    assert "never completed" in description
+
+
+def test_queued_result_json_marks_queued_and_names_old_process():
+    from plugins.gateway_restart.tool import _result_json
+
+    payload = json.loads(_result_json(
+        SimpleNamespace(_draining=True),
+        {"status": "chained", "active_agents": 1, "via_service": True},
+    ))
+
+    assert payload["success"] is True
+    assert payload["queued"] is True
+    assert payload["process"] == f"pid {os.getpid()}"
+    # The payload must be self-describing: 'process' is the OLD gateway, the
+    # successor rewrite — not this reply — is the completion claim.
+    assert "not completed" in payload["note"]
+    assert "OLD gateway" in payload["note"]
+    assert "Restarted successfully" in payload["note"]
+
+
+def test_socket_result_json_marks_queued_and_names_ack_process():
+    from plugins.gateway_restart.tool import _socket_result_json
+
+    payload = json.loads(_socket_result_json(
+        {"queued": True, "status": "chained", "pid": 1438,
+         "active_agents": 1, "via_service": True}))
+
+    assert payload["queued"] is True
+    assert payload["process"] == "pid 1438"
+    assert "not completed" in payload["note"]
+    assert "OLD gateway" in payload["note"]
 
 
 def test_plugin_discovery_loads_tool_on_gateway_toolset(_isolate_hermes_home):
@@ -330,7 +392,7 @@ def test_handler_refuses_cron_sessions(gateway_loop, monkeypatch):
 
     runner = _live_runner(monkeypatch, gateway_loop)
 
-    _bind_session(runner, cron_session="1", **_TELEGRAM_SESSION)
+    _bind_session(runner, cron_session="1", **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -347,7 +409,7 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     runner = _live_runner(monkeypatch, gateway_loop)
     monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "1")
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -358,7 +420,7 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     assert result["via_service"] is True
     assert "active_agents" in result
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True, restart_platforms=True
+        detached=False, via_service=True
     )
 
 
@@ -367,7 +429,7 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
 
     runner = _live_runner(monkeypatch, gateway_loop)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -377,7 +439,7 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
     assert result["status"] == "restarting"
     assert result["via_service"] is False
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False, restart_platforms=True
+        detached=True, via_service=False
     )
 
 
@@ -387,7 +449,7 @@ def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
     runner = _live_runner(monkeypatch, gateway_loop)
     monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: True)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -396,7 +458,7 @@ def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
     assert result["success"] is True
     assert result["via_service"] is True
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True, restart_platforms=True
+        detached=False, via_service=True
     )
 
 
@@ -407,7 +469,7 @@ def test_handler_reports_committed_restart_without_second_restart(
 
     runner = _live_runner(monkeypatch, gateway_loop, _restart_requested=True)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -420,7 +482,7 @@ def test_handler_reports_committed_restart_without_second_restart(
     assert not (tmp_path / ".restart_notify.json").exists()
 
 
-def test_handler_chains_committed_restart_with_pending_successor(
+def test_handler_forwards_committed_restart_to_newest_generation(
     gateway_loop, monkeypatch, tmp_path
 ):
     from plugins.gateway_restart.tool import handle_restart
@@ -432,17 +494,46 @@ def test_handler_chains_committed_restart_with_pending_successor(
         _draining=True,
         _overlap_restart_successor_started=True,
     )
+    _install_forwardable_newest(monkeypatch, runner, pid=202)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
         clear_session_vars(None)
 
     assert result["success"] is True
-    assert result["status"] == "chained"
-    assert (tmp_path / ".restart_chain.json").exists()
+    assert result["status"] == "forwarded"
+    assert result["forwarded_to"] == 202
+    assert not (tmp_path / ".restart_notify.json").exists()
     runner.request_restart.assert_not_called()
+
+def test_handler_forwarded_restart_names_newest_generation(
+    gateway_loop, monkeypatch, tmp_path
+):
+    """A forwarded restart is performed by the NEWEST generation, not this
+    superseded one: the result's ``process`` must name the forward target."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _restart_requested=True,
+        _draining=True,
+        _overlap_restart_successor_started=True,
+    )
+    _install_forwardable_newest(monkeypatch, runner, pid=202)
+
+    _bind_session(runner, **_CHAT_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "forwarded"
+    assert result["process"] == "pid 202"
+    assert "newest" in result["note"]
 
 
 def test_handler_refuses_generic_shutdown_drain(gateway_loop, monkeypatch):
@@ -465,7 +556,7 @@ def test_handler_persists_restart_notify_from_session_context(
 
     _bind_session(
         runner,
-        platform="telegram",
+        platform="discord",
         chat_id="99",
         chat_type="group",
         thread_id="topic-7",
@@ -483,7 +574,7 @@ def test_handler_persists_restart_notify_from_session_context(
     notify_path = tmp_path / ".restart_notify.json"
     assert notify_path.exists()
     data = json.loads(notify_path.read_text(encoding="utf-8"))
-    assert data["platform"] == "telegram"
+    assert data["platform"] == "discord"
     assert data["chat_id"] == "99"
     assert data["chat_type"] == "group"
     assert data["thread_id"] == "topic-7"
@@ -496,7 +587,7 @@ def test_handler_persists_restart_notify_from_session_context(
     assert source.chat_id == "99"
     assert source.message_id == "m5"
 
-    # The tool is not a Telegram update — the redelivery dedup marker stays
+    # The tool is not a slash-command restart — the redelivery dedup marker stays
     # a /restart-slash-path-only write.
     assert not (tmp_path / ".restart_last_processed.json").exists()
 
@@ -528,7 +619,7 @@ def test_notify_marker_write_is_synchronous_on_the_gateway_loop(
 
     monkeypatch.setattr(gateway_restart, "atomic_json_write", _sync_only_write)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -595,9 +686,8 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     _no_runner(monkeypatch)
     requested = {}
 
-    def _fake_restart(home, *, restart_platforms=True, restart_hub=False, timeout=15.0):
+    def _fake_restart(home, *, restart_hub=False, timeout=15.0):
         requested["home"] = home
-        requested["restart_platforms"] = restart_platforms
         requested["restart_hub"] = restart_hub
         return {
             "queued": True,
@@ -624,11 +714,10 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     # the tool executor ends the turn identically on either transport.
     expected_fields = {
         "success", "status", "process", "active_agents", "via_service",
-        *turn_control_field_for("restarting"),
+        "queued", "note", *turn_control_field_for("restarting"),
     }
     assert set(result) == expected_fields
     assert requested["home"] == get_hermes_home()
-    assert requested["restart_platforms"] is True
     assert requested["restart_hub"] is False
 
 
@@ -638,7 +727,7 @@ def test_handler_socket_request_includes_worker_chat_identity(monkeypatch):
     _no_runner(monkeypatch)
     requested = {}
 
-    def _fake_restart(home, *, restart_platforms=True, restart_hub=False, timeout=15.0, requester=None):
+    def _fake_restart(home, *, restart_hub=False, timeout=15.0, requester=None):
         requested["requester"] = requester
         requested["restart_hub"] = restart_hub
         return {"queued": True, "status": "restarting"}
@@ -695,6 +784,370 @@ def test_handler_socket_ack_already_in_progress_is_success(monkeypatch):
     # One request — the ack itself said no second queue was needed.
     assert len(calls) == 1
 
+
+def _bind_serving_stamp(serving_pid="1531038", start="19048"):
+    """Bind the session's serving-identity stamp exactly as the gateway does
+    (contextvars via set_session_vars; caller clears in a finally)."""
+    set_session_vars(gateway_pid=serving_pid, gateway_start_time=start)
+
+
+def _legacy_socket_owner(monkeypatch):
+    """A pre-overlap answerer (the live incident: draining predecessor owns
+    the socket, reports no overlap state, and acks with its own pid)."""
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: {"pid": 709505, "start_time": 850305},
+    )
+
+
+def test_handler_socket_refuses_when_owner_is_not_the_serving_process(monkeypatch):
+    """Live incident: the turn was served by the overlap successor while the
+    control socket was owned by the draining predecessor running pre-overlap
+    code. Queueing there chained a restart that could never fire; the tool
+    must refuse and name the serving process."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _legacy_socket_owner(monkeypatch)
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda *a, **kw: requested.append(1) or {"queued": True, "pid": 709505})
+    _bind_serving_stamp()
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+    dumped = json.dumps(result)
+    assert "1531038" in dumped and "709505" in dumped
+    assert "served" in dumped
+
+
+def test_handler_socket_refuses_unattested_successor_chain(monkeypatch):
+    """The answerer attests a successor that is not yet hub-ready: chaining
+    onto its drain is still a guess. Refuse until the handoff is proven."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _bind_serving_stamp()
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: {
+            "pid": 709505, "start_time": 850305,
+            "overlap": {
+                "role": "draining-predecessor",
+                "successor_pid": 1531038,
+                "successor_start_time": 19048,
+                "successor_ready": False,
+            },
+        },
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda *a, **kw: requested.append(1) or {"queued": True, "pid": 709505})
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+    assert "1531038" in json.dumps(result)
+
+
+def test_handler_socket_chained_restart_names_the_serving_process(monkeypatch):
+    """A proven handoff (draining predecessor attests THIS serving process as
+    its hub-ready successor): the chain is correct, but the result must name
+    the process that will actually restart, not the socket owner."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _bind_serving_stamp()
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: {
+            "pid": 709505, "start_time": 850305,
+            "overlap": {
+                "role": "draining-predecessor",
+                "successor_pid": 1531038,
+                "successor_start_time": 19048,
+                "successor_ready": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 709505, "status": "chained",
+            "active_agents": 1, "via_service": False,
+        })
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "chained"
+    assert result["process"] == "pid 1531038"
+    assert "709505" in result["note"]
+
+def test_handler_socket_forwarded_restart_names_newest_generation(monkeypatch):
+    """Array overlap: the draining answerer forwards the restart to the
+    newest generation, and the ack's own ``forwarded_to`` is the proof —
+    the result names that generation, never the draining socket owner,
+    with no serving stamp needed to see it."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_GATEWAY_PID", raising=False)
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: pytest.fail("identify must not run without a serving stamp"))
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 709505, "status": "forwarded",
+            "forwarded_to": 1531038, "active_agents": 1, "via_service": False,
+        })
+
+    result = json.loads(handle_restart({}))
+
+    assert result["success"] is True
+    assert result["status"] == "forwarded"
+    assert result["process"] == "pid 1531038"
+    assert result["forwarded_to"] == 1531038
+    assert "709505" in result["note"]
+
+
+def _live_registry_rows(monkeypatch, rows):
+    """Point the hub's live generation-registry mirror read at fixed rows
+    (spawn order — the shape gateway.overlap_registry.read_live_rows
+    yields: live fingerprint-verified successor records)."""
+    monkeypatch.setattr("gateway.overlap_registry.read_live_rows", lambda *a, **kw: rows)
+
+
+# The #844 live incident shape: generation 134659 drained into 424242,
+# which drained into the newest 557728 — and the conversation is still
+# served by the OLDEST one while the NEWEST owns the control socket.
+_DRAINING_FORWARD_IDENTIFY = {
+    "pid": 557728, "start_time": 910339, "code_sha": "c638cb7f02b",
+    "overlap": {"role": "serving"},
+}
+_DRAINING_FORWARD_ROWS = [
+    {"pid": 424242, "start_time": 910211, "predecessor_pid": 134659,
+     "state": "attached"},
+    {"pid": 557728, "start_time": 910339, "predecessor_pid": 424242,
+     "state": "attached"},
+]
+
+
+def test_handler_socket_restart_from_draining_generation_forwards_to_newest(monkeypatch):
+    """Live #844 incident: the conversation is served by an OLDER draining
+    generation while the NEWEST owns the socket and reports role 'serving'.
+    The generation registry proves the array line, so the request proceeds
+    against the newest and the result names IT as the process that will
+    restart, noting the conversation's own process is superseded."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _live_registry_rows(monkeypatch, _DRAINING_FORWARD_ROWS)
+    _bind_serving_stamp(serving_pid="134659")
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: dict(_DRAINING_FORWARD_IDENTIFY),
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: requested.append(1) or {
+            "queued": True, "pid": 557728, "status": "restarting",
+            "active_agents": 2, "via_service": False,
+        })
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert requested == [1], "the proven forward must queue through the newest"
+    assert result["process"] == "pid 557728"
+    assert "newest" in result["note"]
+    assert "134659" in result["note"], "the note must name the draining asker"
+
+
+def test_handler_socket_forward_refuses_when_requester_not_in_array(monkeypatch):
+    """The registry proves nothing about a requester it does not list: an
+    unrelated serving pid must never borrow the newest's socket."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _live_registry_rows(monkeypatch, [
+        {"pid": 424242, "start_time": 910211, "predecessor_pid": 999001,
+         "state": "attached"},
+        {"pid": 557728, "start_time": 910339, "predecessor_pid": 424242,
+         "state": "attached"},
+    ])
+    _bind_serving_stamp(serving_pid="134659")
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: dict(_DRAINING_FORWARD_IDENTIFY),
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: requested.append(1) or {"queued": True, "pid": 557728})
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+    dumped = json.dumps(result)
+    assert "134659" in dumped and "557728" in dumped
+    assert "predates overlap reporting" not in dumped
+
+
+def test_handler_socket_forward_refuses_when_answerer_not_newest(monkeypatch):
+    """A serving-role answerer that is NOT the newest registered generation
+    (a newer row exists) is not the authoritative forward target."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _live_registry_rows(monkeypatch, [
+        {"pid": 557728, "start_time": 910339, "predecessor_pid": 134659,
+         "state": "attached"},
+        {"pid": 888999, "start_time": 910444, "predecessor_pid": 557728,
+         "state": "attached"},
+    ])
+    _bind_serving_stamp(serving_pid="134659")
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: dict(_DRAINING_FORWARD_IDENTIFY),
+    )
+    requested = []
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: requested.append(1) or {"queued": True, "pid": 557728})
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert requested == []
+
+
+def test_socket_owner_action_forward_matrix():
+    """The pure decision over registry evidence: only a serving-role
+    answerer proven the NEWEST listed generation forwards; junk and empty
+    rows tolerate without proving."""
+    from plugins.gateway_restart.tool import socket_owner_action
+
+    identify = dict(_DRAINING_FORWARD_IDENTIFY)
+    assert socket_owner_action(134659, identify, _DRAINING_FORWARD_ROWS) == "attested-forward"
+    # Same array, but the answerer sits mid-array with a newer live row.
+    assert socket_owner_action(134659, identify, [
+        {"pid": 557728, "predecessor_pid": 134659},
+        {"pid": 888999, "predecessor_pid": 557728},
+    ]) == "refuse"
+    # No registry evidence / junk rows: unprovable keeps refusing.
+    assert socket_owner_action(134659, identify, None) == "refuse"
+    assert socket_owner_action(134659, identify, []) == "refuse"
+    assert socket_owner_action(134659, identify, ["junk", {"pid": 0}, 42]) == "refuse"
+    # The requester listed only as a predecessor (the original gateway).
+    assert socket_owner_action(134659, identify, [{"pid": 557728, "predecessor_pid": 134659}]) == "attested-forward"
+    # Registry proof never overrides the draining-predecessor rules.
+    assert socket_owner_action(134659, {
+        "pid": 557728, "overlap": {"role": "draining-predecessor"},
+    }, _DRAINING_FORWARD_ROWS) == "refuse"
+
+
+def test_socket_owner_refusal_wording_per_role():
+    """The refusal clause must tell the truth about the answerer's role:
+    'predates overlap reporting' ONLY for an answerer with no overlap
+    block, never for a current-build serving answerer."""
+    from plugins.gateway_restart.tool import socket_owner_refusal
+
+    serving = socket_owner_refusal(134659, dict(_DRAINING_FORWARD_IDENTIFY))
+    assert "is serving, not draining for a restart" in serving
+    assert "predates overlap reporting" not in serving
+
+    successor = socket_owner_refusal(134659, {
+        "pid": 557728,
+        "overlap": {"role": "overlap-successor", "predecessor_pid": 134659},
+    })
+    assert "overlap successor" in successor
+    assert "predates overlap reporting" not in successor
+
+    unknown = socket_owner_refusal(134659, {
+        "pid": 557728, "overlap": {"role": "unknown"},
+    })
+    assert "could not classify" in unknown
+    assert "predates overlap reporting" not in unknown
+
+    # A role the twins do not know still refuses honestly.
+    foreign = socket_owner_refusal(134659, {
+        "pid": 557728, "overlap": {"role": "banana"},
+    })
+    assert "could not classify" in foreign
+
+    # Legacy answerer (no overlap block at all) keeps its truthful clause.
+    legacy = socket_owner_refusal(134659, {"pid": 709505})
+    assert "predates overlap reporting" in legacy
+
+
+def test_handler_socket_owner_is_the_serving_process_proceeds(monkeypatch):
+    """Steady state: the socket owner is the serving process — unchanged
+    queue path, identify consulted, ack rendered as before."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    _bind_serving_stamp()
+    probed = []
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: probed.append(1) or {"pid": 1531038, "start_time": 19048})
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 1531038, "status": "restarting",
+            "active_agents": 0, "via_service": False,
+        })
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert probed == [1]
+    assert result["process"] == "pid 1531038"
+
+
+def test_handler_socket_without_serving_identity_keeps_today_behavior(monkeypatch):
+    """A gateway that never stamped the serving identity (pre-fix): no owner
+    probe, ack passthrough — refusing there would break every old install."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_GATEWAY_PID", raising=False)
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, **kw: pytest.fail("identify must not run without a serving stamp"))
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {
+            "queued": True, "pid": 709505, "status": "chained",
+            "active_agents": 0, "via_service": False,
+        })
+
+    result = json.loads(handle_restart({}))
+
+    assert result["process"] == "pid 709505"
 
 def test_handler_socket_ack_refusal_surfaces_reason(monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
@@ -831,7 +1284,7 @@ def test_other_session_live_queues_the_drain_immediately(gateway_loop, monkeypat
     slept = MagicMock()
     monkeypatch.setattr(time, "sleep", slept)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -845,7 +1298,7 @@ def test_other_session_live_queues_the_drain_immediately(gateway_loop, monkeypat
 
     expected_fields = {
         "success", "status", "process", "active_agents", "via_service",
-        *turn_control_field_for("restarting"),
+        "queued", "note", *turn_control_field_for("restarting"),
     }
     assert set(result) == expected_fields
     assert result["process"] == f"pid {os.getpid()}"
@@ -888,7 +1341,7 @@ def test_extra_cron_or_api_work_queues_drain_immediately(
     slept = MagicMock()
     monkeypatch.setattr(time, "sleep", slept)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -961,7 +1414,7 @@ def test_plugin_to_stop_route_spawns_exactly_one_direct_watcher(
     )
     monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -1034,7 +1487,7 @@ def test_plugin_to_stop_route_supervised_spawns_no_watcher(
     popen = MagicMock()
     monkeypatch.setattr(subprocess, "Popen", popen)
 
-    _bind_session(runner, **_TELEGRAM_SESSION)
+    _bind_session(runner, **_CHAT_SESSION)
     try:
         result = json.loads(handle_restart({}))
     finally:
@@ -1091,7 +1544,11 @@ def test_terminal_block_message_mentions_restart_tool(monkeypatch, tmp_path):
             "local_persistent": False,
         },
     )
-    monkeypatch.setattr(tt, "_resolve_task_host_cwd", lambda config, task_id: None)
+    # The lifecycle guard resolves the command cwd through the current seam
+    # (tools/terminal_tool_guards.py → _resolve_command_cwd); pin it to the
+    # isolated tmp cwd so no host/session cwd record leaks into the scan.
+    monkeypatch.setattr(tt, "get_session_cwd", lambda _session_key: None)
+    monkeypatch.setattr(tt, "_resolve_command_cwd", lambda **_kw: str(tmp_path))
     monkeypatch.setattr(
         process_registry, "_is_supervised_gateway_process", lambda: True
     )
@@ -1172,11 +1629,11 @@ else:
         assert result["active_agents"] == 3
         assert result["process"] == "pid 3376901"
         assert "draining" not in result
-        assert acks == [{"restart_platforms": True, "restart_hub": False}], acks
+        assert acks == [{"restart_hub": False}], acks
         from agent.turn_control import turn_control_field_for
         assert set(result) == {
             "success", "status", "process", "active_agents", "via_service",
-            *turn_control_field_for("restarting"),
+            "queued", "note", *turn_control_field_for("restarting"),
         }, sorted(result)
         print("SOCKET-OK")
     finally:

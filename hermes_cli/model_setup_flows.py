@@ -2,7 +2,7 @@
 
 main / config / auth / models helpers are imported lazily inside bodies: avoids the main.py import
 cycle and lets tests patch ``hermes_cli.config.load_config`` etc. at call time. The shared skeleton
-lives in :mod:`hermes_cli.model_setup_flows_common`; the custom / Azure / Bedrock flows live in their
+lives in :mod:`hermes_cli.model_setup_flows_common`; the custom / Azure flows live in their
 own ``model_setup_flows_*`` modules.
 """
 
@@ -21,7 +21,6 @@ from hermes_cli.model_setup_flows_common import (
     _run_login, _say, _show_curated)
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
-from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
 
 
 def _env_base_url(base_url_env: str) -> str:
@@ -163,202 +162,6 @@ def _model_flow_moa(config, current_model=""):
     print(
         f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
     )
-
-
-def _nous_login_args(args) -> argparse.Namespace:
-    return argparse.Namespace(
-        portal_url=getattr(args, "portal_url", None), inference_url=getattr(args, "inference_url", None),
-        client_id=getattr(args, "client_id", None), scope=getattr(args, "scope", None),
-        no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None) or 15.0,
-        ca_bundle=getattr(args, "ca_bundle", None), insecure=bool(getattr(args, "insecure", False)))
-
-
-def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, pricing: dict):
-    """Free/paid-tier catalog for the Nous picker: ``(model_ids, pricing, unavailable_models,
-    unavailable_message, policy_narrowed)`` or None (message already printed) when nothing is selectable."""
-    from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
-    from hermes_cli.models import (
-        partition_nous_models_by_tier,
-        union_with_portal_free_recommendations,
-        union_with_portal_paid_recommendations,
-    )
-
-    # Free users: union with the Portal's freeRecommendedModels (newly launched free models appear
-    # before the curated list catches up), then partition selectable/unavailable by Portal pricing.
-    # Paid users: paidRecommendedModels, no partition. Org policy narrows BEFORE the tier split so a
-    # rescued id still has to pass the free/paid predicate.
-    unavailable_models: list[str] = []
-    unavailable_message = ""
-    _policy_allowed = nous_policy_allowed_ids()
-    if free_tier:
-        try:
-            from hermes_cli.nous_account import format_nous_portal_entitlement_message, get_nous_portal_account_info
-            _account_info = get_nous_portal_account_info(force_fresh=True)
-            unavailable_message = format_nous_portal_entitlement_message(_account_info, capability="paid Nous models") or ""
-        except Exception:
-            unavailable_message = ""
-        model_ids, pricing = union_with_portal_free_recommendations(model_ids, pricing, portal_url)
-    else:
-        model_ids, pricing = union_with_portal_paid_recommendations(model_ids, pricing, portal_url)
-    _before_policy = model_ids
-    model_ids = restrict_to_nous_policy(model_ids, _policy_allowed, rescue_empty=True)
-    _policy_narrowed = model_ids != _before_policy
-    if free_tier:
-        model_ids, unavailable_models = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
-
-    if not model_ids and not unavailable_models:
-        print("No models available for Nous Portal after filtering.")
-        return None
-    if free_tier and not model_ids:
-        print("No free models currently available.")
-        if unavailable_models:
-            from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
-            _url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-            print(unavailable_message or f"Upgrade at {_url} to access paid models.")
-        return None
-    return model_ids, pricing, unavailable_models, unavailable_message, _policy_narrowed
-
-
-def _nous_verified_credentials(creds_or_none=None):
-    """Resolve Nous runtime credentials; on failure print the diagnosis (re-login when the
-    session expired) and return None."""
-    from hermes_cli.auth import (
-        AuthError, PROVIDER_REGISTRY, _login_nous, format_auth_error, resolve_nous_runtime_credentials)
-
-    try:
-        return resolve_nous_runtime_credentials()
-    except Exception as exc:
-        relogin = isinstance(exc, AuthError) and exc.relogin_required
-        msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
-        if relogin:
-            _say(f"Session expired: {msg}", "Re-authenticating with Nous Portal...\n")
-            try:
-                _login_nous(_nous_login_args(None), PROVIDER_REGISTRY["nous"])
-            except Exception as login_exc:
-                print(f"Re-login failed: {login_exc}")
-            return None
-        print(f"Could not verify credentials: {msg}")
-        return None
-
-
-def _nous_persist_selection(selected: str, creds: dict) -> dict:
-    """Nous persist step: model choice + provider state, then rewrite ``model`` on a fresh
-    config (the caller's may carry stale custom-provider fields) and clear a conflicting
-    OPENAI_BASE_URL / OPENAI_API_KEY. Returns the saved config."""
-    from hermes_cli.auth import _save_model_choice, _update_config_for_provider
-    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
-    _save_model_choice(selected)
-    inference_url = creds.get("base_url", "")
-    _update_config_for_provider("nous", inference_url)
-    config = load_config()
-    current_model_cfg = config.get("model")
-    if isinstance(current_model_cfg, dict):
-        model_cfg = dict(current_model_cfg)
-    elif isinstance(current_model_cfg, str) and current_model_cfg.strip():
-        model_cfg = {"default": current_model_cfg.strip()}
-    else:
-        model_cfg = {}
-    model_cfg["provider"] = "nous"
-    model_cfg["default"] = selected
-    if inference_url and inference_url.strip():
-        model_cfg["base_url"] = inference_url.rstrip("/")
-    else:
-        model_cfg.pop("base_url", None)
-    clear_model_endpoint_credentials(model_cfg)
-    config["model"] = model_cfg
-    if get_env_value("OPENAI_BASE_URL"):
-        save_env_value("OPENAI_BASE_URL", "")
-        save_env_value("OPENAI_API_KEY", "")
-    save_config(config)
-    return config
-
-
-def _model_flow_nous(config, current_model="", args=None):
-    """Nous Portal provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import get_provider_auth_state, _prompt_model_selection, _login_nous, PROVIDER_REGISTRY
-    from hermes_cli.config import load_config
-    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
-    state = get_provider_auth_state("nous")
-    if not state or not state.get("access_token"):
-        _say("Not logged into Nous Portal. Starting login...", "")
-
-        def _login_then_offer_gateway(login_args, pconfig):
-            _login_nous(login_args, pconfig)
-            # Offer Tool Gateway enablement for paid subscribers
-            with contextlib.suppress(Exception):
-                prompt_enable_tool_gateway(load_config() or {})
-
-        # login_nous already handles model selection + config update
-        _run_login(_login_then_offer_gateway, _nous_login_args(args), PROVIDER_REGISTRY["nous"])
-        return
-
-    # Already logged in — the curated list (agentic models users know from OpenRouter)
-    # instead of the hundreds returned by the live /models endpoint.
-    from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
-    from hermes_cli.models_pricing import get_pricing_for_provider
-    from hermes_cli.model_switch_providers import _free_tier_nous_row
-    tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
-    if tier_row is None:
-        print("The Nous free tier is off for this install; sign in with `hermes auth upgrade` to use Nous models.")
-        return
-    if tier_row["models"]:
-        # Free-tier identity: the welcome host serves the single pinned model; no Portal catalog,
-        # pricing, or account lookups apply.
-        creds = _nous_verified_credentials()
-        if creds is None:
-            return
-        selected = tier_row["models"][0]
-        _nous_persist_selection(selected, creds)
-        print(f"Default model set to: {selected} (via {tier_row['name']})")
-        return
-    model_ids = get_curated_nous_model_ids()
-    if not model_ids:
-        print("No curated models available for Nous Portal.")
-        return
-
-    # Verify credentials are still valid (catches expired sessions early)
-    creds = _nous_verified_credentials()
-    if creds is None:
-        return
-
-    pricing = get_pricing_for_provider("nous")
-    # Force fresh account data so recent credit purchases are reflected immediately.
-    free_tier = check_nous_free_tier(force_fresh=True)
-    if not free_tier:
-        from hermes_cli.auth import resolve_nous_runtime_credentials
-        try:
-            creds = resolve_nous_runtime_credentials(force_refresh=True) or creds
-        except Exception:
-            # Runtime inference has its own paid-entitlement recovery; don't block.
-            pass
-
-    # Portal URL is needed for upgrade links and the recommendations endpoints.
-    _nous_portal_url = ""
-    with contextlib.suppress(Exception):
-        _nous_portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "")
-
-    catalog = _nous_model_catalog(free_tier, _nous_portal_url, model_ids, pricing)
-    if catalog is None:
-        return
-    model_ids, pricing, unavailable_models, unavailable_message, _policy_narrowed = catalog
-
-    from hermes_cli.nous_account import nous_policy_notice
-    _policy_notice = nous_policy_notice(removed=_policy_narrowed)
-    if _policy_notice:
-        print(_policy_notice)
-    print(f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.')
-
-    selected = _prompt_model_selection(
-        model_ids, current_model=current_model, pricing=pricing, unavailable_models=unavailable_models,
-        portal_url=_nous_portal_url, unavailable_message=unavailable_message, confirm_provider="nous",
-        confirm_base_url=creds.get("base_url", ""), confirm_api_key=creds.get("api_key", ""))
-    if not selected:
-        print("No change.")
-        return
-    config = _nous_persist_selection(selected, creds)
-    print(f"Default model set to: {selected} (via Nous Portal)")
-    # Offer Tool Gateway enablement for paid subscribers
-    prompt_enable_tool_gateway(config)
 
 
 def _model_flow_openai_codex(config, current_model=""):
@@ -798,7 +601,7 @@ _GEMINI_FREE_TIER_NOTICE = (
     "   an agent session.", "",
     "   To use Gemini with Hermes, enable billing on your Google Cloud project and regenerate",
     "   the key in a billing-enabled project: https://aistudio.google.com/apikey", "",
-    "   Alternatives with workable free usage: DeepSeek, OpenRouter (free models), Groq, Nous.", "",
+    "   Alternatives with workable free usage: DeepSeek, OpenRouter (free models), Groq.", "",
     "Not saving Gemini as the default provider.")
 
 
@@ -1055,9 +858,6 @@ import urllib.parse  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'BEDROCK_GEO_PREFIXES': ('hermes_cli.model_setup_flows_bedrock', 'BEDROCK_GEO_PREFIXES'),
-    'bedrock_model_routable_from_region': ('hermes_cli.model_setup_flows_bedrock', 'bedrock_model_routable_from_region'),
-    'bedrock_region_geo_prefix': ('hermes_cli.model_setup_flows_bedrock', 'bedrock_region_geo_prefix'),
     'custom_provider_slug': ('hermes_cli.providers', 'custom_provider_slug'),
     'line_input': ('hermes_cli.cli_output', 'line_input'),
 }

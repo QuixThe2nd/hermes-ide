@@ -15,7 +15,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
-def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
+def _make_event(text="/reasoning", platform=Platform.DISCORD, user_id="12345", chat_id="67890"):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
@@ -42,7 +42,6 @@ def _make_runner():
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
     runner._session_db = None
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     return runner
 
 

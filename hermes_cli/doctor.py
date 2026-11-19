@@ -59,7 +59,7 @@ from hermes_cli.doctor_state import (
 
 _PROVIDER_ENV_HINTS = (
     "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "OPENAI_BASE_URL", "NOUS_API_KEY", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "KIMI_API_KEY",
+    "OPENAI_BASE_URL", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "KIMI_API_KEY",
     "KIMI_CN_API_KEY", "GMI_API_KEY", "FIREWORKS_API_KEY", "ACTUAL_API_KEY", "ACTUAL_BASE_URL", "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY", "KILOCODE_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "HF_TOKEN",
     "AI_GATEWAY_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY", "COMMANDCODE_API_KEY", "XIAOMI_API_KEY",
@@ -70,8 +70,7 @@ _PROVIDER_ENV_HINTS = (
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
     with warn_on_error("Auth provider status", "(could not check: {e})"):
-        from hermes_cli.auth import get_nous_auth_status_local, get_codex_auth_status, get_minimax_oauth_auth_status
-        _login_row("Nous Portal auth", get_nous_auth_status_local())
+        from hermes_cli.auth import get_codex_auth_status, get_minimax_oauth_auth_status
         # Native OAuth is Hermes' own device-code flow; the Codex CLI only imports existing ~/.codex/auth.json
         # tokens, so the hint sits under the Codex row (not as another provider's remedy).
         if not _login_row("OpenAI Codex auth", get_codex_auth_status(), show_error=True) and not _safe_which("codex"):
@@ -318,7 +317,6 @@ _PLUGIN_COMPAT_LAZY = {
     'collect_deprecated_config_keys': ('hermes_cli.doctor_config', 'collect_deprecated_config_keys'),
     'collect_deprecated_env_vars': ('hermes_cli.doctor_config', 'collect_deprecated_env_vars'),
     'collect_relay_plugin_cutover_findings': ('hermes_cli.doctor_config', 'collect_relay_plugin_cutover_findings'),
-    'describe_vercel_auth': ('hermes_cli.vercel_auth', 'describe_vercel_auth'),
     'detect_install_method': ('hermes_cli.config', 'detect_install_method'),
     'is_nix_install_method': ('hermes_cli.config', 'is_nix_install_method'),
     'managed_scope_check': ('hermes_cli.doctor_config', 'managed_scope_check'),

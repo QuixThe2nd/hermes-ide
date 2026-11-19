@@ -322,9 +322,8 @@ caption
             {"role": "assistant", "content": "Use a standalone media message."},
         ]
 
-        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        tags = _collect_auto_append_media_tags(messages, history_offset=0)
         assert tags == []
-        assert voice is False
 
 
     def test_collect_history_media_paths_includes_image_generate_json(self):
@@ -452,7 +451,7 @@ caption
         # (larger than the shrunken message list), so the collector rescans
         # the full list. With the dedup set populated, the already-delivered
         # image must NOT be re-emitted.
-        tags, _ = _collect_auto_append_media_tags(
+        tags = _collect_auto_append_media_tags(
             history, history_offset=9999, history_media_paths=history_paths
         )
         assert tags == [], f"generated image re-emitted after compression: {tags}"
@@ -571,5 +570,25 @@ class TestStaleToolMediaLeak:
         )
 
 
+def test_run_turn_binds_media_repair_for_background_task_path():
+    """gateway.run_turn must import the media-repair helper it calls.
+
+    The background-task completion path (_run_background_task_inner in
+    gateway/run_turn.py) calls repair_explicit_computer_use_media_paths as a
+    module global; dropping the import turns every /bg completion into a
+    NameError at runtime. Global-name lookup resolves through the module
+    __dict__, so asserting the binding (and identity with the real
+    gateway.media_repair function) proves the call site resolves.
+    """
+    import gateway.media_repair
+    import gateway.run_turn
+
+    bound = getattr(gateway.run_turn, "repair_explicit_computer_use_media_paths", None)
+    assert bound is gateway.media_repair.repair_explicit_computer_use_media_paths, (
+        "gateway.run_turn must bind repair_explicit_computer_use_media_paths "
+        "to the gateway.media_repair implementation"
+    )
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+

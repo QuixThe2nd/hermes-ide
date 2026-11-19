@@ -1,8 +1,8 @@
-"""Off-reply-path gateway scheduling for auto-goal intent (``goals.auto.mode``).
+"""Off-reply-path gateway scheduling for auto-goal intent.
 
-Only this sibling owns message eligibility, profile-scoped task lifetime, the
-mode notice, and — for ``mode=on`` — the pending-decision slot consumed at turn
-end by ``run_goals._run_post_turn_hooks``. ``run_inbound.py`` has exactly one
+Only this sibling owns message eligibility, profile-scoped task lifetime, and
+the pending-decision slot consumed at turn end by
+``run_goals._run_post_turn_hooks``. ``run_inbound.py`` has exactly one
 hook; the classifier, JSONL audit trail and papercuts live in
 ``hermes_cli/goal_intent.py``; decision application lives in
 ``gateway/run_goal_auto.py``.
@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
-
-from hermes_constants import get_hermes_home
 
 if TYPE_CHECKING:
     from gateway.run import GatewayRunner
@@ -23,44 +22,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("gateway.run")
 
 
-_ON_MODE_NOTICE = (
-    "goals.auto.mode=on: automatic goal creation is active — task-like messages can "
-    "start or extend a goal at the end of the turn (say \"stop\" or \"just answer\" "
-    "to keep a turn goal-free)."
-)
-
-
 class GatewayGoalIntentMixin:
-    """Classify eligible human messages off-path; park on-mode decisions for turn end."""
-
-    def _goal_intent_mode(self: "GatewayRunner") -> str:
-        """Return ``off``, ``shadow`` (default), or ``on``."""
-        from gateway.run import _load_gateway_config
-
-        try:
-            cfg = _load_gateway_config()
-        except Exception:
-            cfg = {}
-        goals = cfg.get("goals") if isinstance(cfg, dict) else {}
-        auto = goals.get("auto") if isinstance(goals, dict) else {}
-        raw_mode = auto.get("mode", "shadow") if isinstance(auto, dict) else "shadow"
-        # YAML 1.1 parses bare ``on``/``off`` as booleans; retain their explicit meaning.
-        if isinstance(raw_mode, bool):
-            mode = "on" if raw_mode else "off"
-        else:
-            mode = str(raw_mode).strip().lower()
-        if mode not in {"off", "shadow", "on"}:
-            mode = "shadow"
-        if mode == "on":
-            # The notice is one-time per runner/profile, not one per message.
-            notices = getattr(self, "_goal_intent_on_notice_homes", None)
-            if notices is None:
-                notices = self._goal_intent_on_notice_homes = set()
-            home = str(get_hermes_home())
-            if home not in notices:
-                notices.add(home)
-                logger.info("%s", _ON_MODE_NOTICE)
-        return mode
+    """Classify eligible human messages off-path; park decisions for turn end."""
 
     def _auto_goal_pending_slot(self: "GatewayRunner") -> Dict[str, asyncio.Task]:
         pending = getattr(self, "_auto_goal_pending", None)
@@ -76,7 +39,7 @@ class GatewayGoalIntentMixin:
         ``create_task`` snapshots the contextvars here, so the worker (and its
         executor hops) run under the right profile's secret scope even when
         scheduled from a multiplexed inbound path. ``park`` additionally slots
-        the task for the turn-boundary apply (on-mode classification only).
+        the task for the turn-boundary apply.
         """
         try:
             with self._profile_scope_for_source(source):
@@ -91,10 +54,30 @@ class GatewayGoalIntentMixin:
             coro.close()
             raise
 
-    def _schedule_goal_intent_shadow(
+    def _auto_goals_enabled(self: "GatewayRunner", source) -> bool:
+        """``goals.auto.enabled`` (default on) from the routed profile home, never the default's.
+        A leftover ``goals.auto.mode`` (or scalar ``goals.auto``) keeps auto-goals on."""
+        from gateway.run import _load_gateway_config
+        from hermes_cli.config import cfg_get
+        from utils import is_truthy_value
+
+        home = Path(self._resolve_profile_home_for_source(source))
+        enabled = cfg_get(_load_gateway_config(home / "config.yaml"), "goals", "auto", "enabled")
+        return is_truthy_value(enabled, default=True)
+
+    def _schedule_auto_goal_intent(
         self: "GatewayRunner", event, session_key: str
     ) -> None:
-        """Retain a fail-safe background classification for an eligible inbound event."""
+        """Classify an eligible inbound message off-path; park the decision.
+
+        Eligibility is PROVENANCE-based, never content-based: internal events
+        and bot-authored sources are excluded (a gateway-generated diagnostic —
+        including the 🔎 jev notice lines — must never classify itself), while
+        a human-authored copy of diagnostic text is a fresh human message and
+        IS classified: quoting a notice is human speech, not autonomous
+        recursion, so no prefix suppression exists here. The owning profile's
+        ``goals.auto.enabled: false`` skips everything below; explicit ``/goal`` is unaffected.
+        """
         coro = None
         try:
             source = event.source
@@ -106,53 +89,32 @@ class GatewayGoalIntentMixin:
                 or text.lstrip().startswith("/")
             ):
                 return
-            mode = self._goal_intent_mode()
-            if mode == "off":
+            if not self._auto_goals_enabled(source):
                 return
             platform = str(getattr(getattr(source, "platform", None), "value", "") or "")
 
-            if mode == "on":
-                from hermes_cli.goal_intent import auto_goal_suppression
+            from hermes_cli.goal_intent import auto_goal_suppression
 
-                suppression = auto_goal_suppression(text)
-                if suppression == "stop":
-                    # Pause before the turn runs; the judge must not continue
-                    # past a stop turn. No classification, no pending decision.
-                    coro = self._pause_goal_for_stop(source)
-                    self._spawn_goal_intent_task(source, coro, session_key, park=False)
-                    return
-                if suppression is not None:
-                    return  # "just answer": no Jev call, no pending decision
-                coro = self._run_auto_goal_evaluation(text, source, platform)
-                self._spawn_goal_intent_task(source, coro, session_key, park=True)
+            suppression = auto_goal_suppression(text)
+            if suppression == "stop":
+                # Pause before the turn runs; the judge must not continue
+                # past a stop turn. No classification, no pending decision.
+                coro = self._pause_goal_for_stop(source)
+                self._spawn_goal_intent_task(source, coro, session_key, park=False)
                 return
-
-            from hermes_cli.goal_intent import record_goal_intent_shadow
-
-            coro = self._run_goal_intent_shadow(
-                record_goal_intent_shadow, text, session_key, platform
-            )
-            self._spawn_goal_intent_task(source, coro, session_key, park=False)
+            if suppression is not None:
+                return  # "just answer": no Jev call, no pending decision
+            coro = self._run_auto_goal_evaluation(text, source, platform)
+            self._spawn_goal_intent_task(source, coro, session_key, park=True)
         except Exception as exc:
             if coro is not None:
                 coro.close()
             logger.debug("auto-goal intent scheduling failed: %s", exc)
 
-    async def _run_goal_intent_shadow(
-        self: "GatewayRunner", record, text: str, session_key: str, platform: str
-    ) -> None:
-        """Shadow worker boundary: all imports/I/O are fail-safe and never reach the reply path."""
-        try:
-            await self._run_in_executor_with_context(record, text, session_key, platform)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.debug("auto-goal shadow worker failed: %s", exc)
-
     async def _run_auto_goal_evaluation(
         self: "GatewayRunner", text: str, source, platform: str
     ) -> Optional[Dict[str, Any]]:
-        """On-mode worker: resolve the real session id, classify off-loop, return the decision.
+        """Worker: resolve the real session id, classify off-loop, return the decision.
 
         The decision task is parked by the caller; awaiting it at the turn
         boundary yields this dict. Goal state is keyed by the session id (the
@@ -169,9 +131,11 @@ class GatewayGoalIntentMixin:
             sid = str(getattr(session_entry, "session_id", "") or "")
         except Exception as exc:
             logger.debug("auto-goal session resolution failed: %s", exc)
+        loop = asyncio.get_running_loop()
+        on_attempt = self._jev_attempt_notifier(source, loop)
         try:
             decision = await self._run_in_executor_with_context(
-                evaluate_goal_intent, text, sid, platform
+                evaluate_goal_intent, text, sid, platform, on_attempt
             )
         except asyncio.CancelledError:
             raise
@@ -183,3 +147,52 @@ class GatewayGoalIntentMixin:
             decision.setdefault("message", text)
             return decision
         return None
+
+    def _jev_attempt_notifier(self: "GatewayRunner", source, loop: asyncio.AbstractEventLoop):
+        """Per-attempt Jev notice callback for one inbound message's classification.
+
+        Runs on the executor thread (inside the source's profile scope, carried
+        by ``_run_in_executor_with_context``); each real HTTP attempt posts one
+        concise line back to the originating chat through a DIRECT outbound
+        send on the source's owning adapter — outbound-only, never model
+        context, and a delivery failure is logged without touching the
+        classification or the turn.
+
+        Deliberately NOT the post-delivery registry: the registry slot is
+        keyed by session while the classifier is detached from the turn, so
+        ordering behind the turn's delivery boundary both strands late
+        notices (no live boundary left to fire them) and silently drops the
+        older notice when two overlapped turns each register one. A status
+        line may therefore arrive before the answer; that is intended.
+        """
+        # Captured on the loop: display.jev_notices belongs to the profile owning the source.
+        profile_home = self._resolve_profile_home_for_source(source)
+
+        def on_attempt(attempt: int, attempts: int, label, confidence, error) -> None:
+            # attempt/attempts/label stay in the callback contract (the
+            # classifier owns retry numbering) but the fenced status renders
+            # none of them.
+            from gateway.jev_notice import format_notice, goal_intent_attempt_record
+
+            line = format_notice(
+                goal_intent_attempt_record(confidence=confidence, error=error),
+                profile_home,
+            )
+            if line is None:
+                return  # notices off for this profile, or no formatter binary: never a local twin
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._send_goal_status_notice(source, line, non_conversational=True),
+                    loop,
+                )
+
+                def _drain(fut) -> None:
+                    exc = fut.exception()
+                    if exc is not None:
+                        logger.debug("jev notice delivery failed: %s", exc)
+
+                future.add_done_callback(_drain)
+            except Exception as exc:
+                logger.debug("jev notice delivery scheduling failed: %s", exc)
+
+        return on_attempt

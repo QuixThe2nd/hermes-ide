@@ -20,11 +20,11 @@ Stock Hermes needs a lot of config. It does not arrive wheels-included, so you s
 
 This repo is part of an effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree, the dev pipelines come prebuilt, and capability that makes the out-of-box experience better belongs here instead of in a pile of private scripts. Upstream keeps its repo slim and ships capability externally, Debian to this fork's Ubuntu; this fork is deliberately the opposite. So on top of the agent you get the machinery around it: coding lanes, a Discord home server, model quota routing, safer restarts, and the small things you normally discover after losing an afternoon. Most of it exists to cut down on wiring and checking.
 
-The biggest piece of that machinery is Discord. This fork is **Discord First**: Discord isn't just another gateway adapter here, it is the primary operator surface, where the work gets driven from. Telegram, Slack, WhatsApp, Signal, and the CLI still work. Discord is where the house is. An optional per-channel response gate (OpenRouter Decisions, provider `jev`) decides whether unprompted messages deserve an answer, and its judge sees the bot's own recent replies too, so follow-ups to an ongoing conversation are recognized instead of denied. Its three confidence cutoffs (`addresses_bot_min`, `continues_bot_thread_min`, `noise_max`) are settable per profile — defaults keep the historical behavior exactly, and a change takes effect on the next restart. A sibling reaction gate, scoped and switched on separately, asks the same judge which single whitelisted emoji fits each eligible message and adds it when the combined probability of "no reaction" and "no fitting emoji" stays strictly below one half, or when one emoji's probability strictly outscores the runner-up emoji's by more than five times — reacting without ever speaking. That decision rule is a `decision_formula` key: a small comparison-only expression over the abstention mass, the top two emoji probabilities and the whitelist size, interpreted safely (never evaluated as code), so operators can tighten the boundary or change the runaway ratio without a code change. Edits to that gate's config block are picked up live, so the whitelist and the formula can change without a restart. The live read resolves the block exactly as a reconnect would — managed-scope pins and all supported spellings included — and an invalid edit keeps the running gate until a valid one lands. In a listed channel's threads, both gates stay silent until the bot has already participated in the thread (`threads_require_membership`, on by default and settable per gate).
+The biggest piece of that machinery is Discord. This fork is **Discord First**: Discord isn't just another gateway adapter here, it is the primary operator surface, where the work gets driven from. Slack, WhatsApp, Signal, and the CLI also work. Discord is where the house is. An optional per-channel response gate (OpenRouter Decisions, provider `jev`) decides whether unprompted messages deserve an answer, and its judge sees the bot's own recent replies too, so follow-ups to an ongoing conversation are recognized instead of denied. Its three confidence cutoffs (`addresses_bot_min`, `continues_bot_thread_min`, `noise_max`) are settable per profile — defaults keep the historical behavior exactly, and a change takes effect on the next restart. A sibling reaction gate, scoped and switched on separately, asks the same judge which single whitelisted emoji fits each eligible message and adds it when the combined probability of "no reaction" and "no fitting emoji" stays strictly below one half, or when one emoji's probability strictly outscores the runner-up emoji's by more than five times — reacting without ever speaking. That decision rule is a `decision_formula` key: a small comparison-only expression over the abstention mass, the top two emoji probabilities and the whitelist size, interpreted safely (never evaluated as code), so operators can tighten the boundary or change the runaway ratio without a code change. Edits to that gate's config block are picked up live, so the whitelist and the formula can change without a restart. The live read resolves the block exactly as a reconnect would — managed-scope pins and all supported spellings included — and an invalid edit keeps the running gate until a valid one lands. In a listed channel's threads, both gates stay silent until the bot has already participated in the thread (`threads_require_membership`, on by default and settable per gate).
 
 ## Discord First
 
-Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Honcho Memory, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
+Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
 
 The home_server plugin keeps that layout in sync. It checks at most hourly, but the template fingerprint bypasses the wait when the layout changes, so new or reordered channels appear straight away. It is idempotent, keeps categories and channels in template order, never deletes anything, renames legacy Quotas and Chat categories to Models and Lounges in place, and does not clobber existing home, notification, or rename targets.
 
@@ -36,17 +36,17 @@ Hermes Starts is what lets the agent speak first. It creates and pins its own Di
 
 Discord History provides read-only search over an owner-authorized PostgreSQL archive of Discord messages. It is opt-in and off by default. Papercuts keeps a structured journal of workflow friction, and its optional daily autofix cron, installed with `hermes papercuts autofix install`, turns small mechanical fixes into PRs.
 
-Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats. That includes the memory and user-profile blocks injected into the system prompt: a session's first turn shows their redacted content in the same tool-style card, and the card reappears only when the content changes, so steady-state turns stay quiet. The injection card respects `display.context_injection_content`: the default keeps the redacted full-content card, `false` collapses it to a single `🧠 memory context injected` line, and multiplexed profiles plus `display.platforms.<platform>` overrides each resolve their own value. When the providers behind an injection report a discrete count, the card's heading is `🧠 Injecting N memories` (singular for one) instead of `🧠 Injecting Memory` — Hindsight's `recall_indicator: false` suppresses only the status line, never this count. Hindsight's separate `👁️ Hindsight — recalled N memories` status line is off by default (the counted card already reports the recall); set the `recall_indicator` plugin setting to `true` to opt back in. It is display-only — the injected context still reaches the model unchanged.
+Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats. That includes the memory and user-profile blocks injected into the system prompt: a session's first turn shows their redacted content in the same tool-style card, and the card reappears only when the content changes, so steady-state turns stay quiet. The injection card respects `display.context_injection_content`: the default keeps the redacted full-content card, `false` collapses it to its heading line alone (`🧠 Injecting memory`, or the counted form below), and multiplexed profiles plus `display.platforms.<platform>` overrides each resolve their own value. When the providers behind an injection report a discrete count, the card's heading is `🧠 Injecting N memories` (singular for one) instead of `🧠 Injecting memory` — Hindsight's `recall_indicator: false` suppresses only the status line, never this count. Hindsight's separate `👁️ Hindsight — recalled N memories` status line is off by default (the counted card already reports the recall); set the `recall_indicator` plugin setting to `true` to opt back in. It is display-only — the injected context still reaches the model unchanged.
 
-The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates Discord voice channels under a Models category — one row each for Codex, Kimi, Cursor, and Grok, and one row per Z.AI credential-pool wallet (`z.ai 1`, `z.ai 2`, …) — ordered with the same score used by fallback routing:
+The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates Discord voice channels under a Models category — one row each for Codex, Kimi, and Grok, and one row per Z.AI credential-pool wallet (`z.ai 1`, `z.ai 2`, …) — ordered with the same score used by fallback routing:
 
 `quota_frac × (168h / hours_to_reset) + one full wallet per pending usage-limit reset (Codex/Grok/z.ai), all × uptime_24h × uptime_1h`
 
-Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
+Codex and z.ai get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
 
 `cache_trace` adds opt-in, metadata-only request tracing for cache and latency diagnosis. Enable it per profile with `hermes plugins enable cache_trace` to correlate request-component fingerprints, observed cache-field presence and API timing without storing prompt text, tool arguments or response content. Local traces are bounded and private; missing cache telemetry stays unknown rather than becoming a cache miss. See the [cache trace guide](plugins/cache_trace/README.md).
 
-X search, xAI speech, and Codex image generation can each pin a named proxy provider with profile-scoped credentials; an invalid pin fails closed, while leaving it unset preserves native routing. The speech and image provider pickers recognize a valid pin as ready and skip native sign-in; a broken pin reports a setup failure. The Desktop profile editor checks X search readiness using the selected profile's own credentials.
+X search and Codex image generation can each pin a named proxy provider with profile-scoped credentials; an invalid pin fails closed, while leaving it unset preserves native routing. The image provider pickers recognize a valid pin as ready and skip native sign-in; a broken pin reports a setup failure. The Desktop profile editor checks X search readiness using the selected profile's own credentials.
 
 The Codex rotation default is `gpt-6-astra` (config migration v42 advances older `gpt-5.6-sol` entries; Sol stays manually selectable). `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
 
@@ -68,33 +68,31 @@ display:
       tool_progress: compact
 ```
 
-Tool-progress groups can render as one fenced code box per group via `display.tool_progress_codebox` or `display.platforms.<platform>.tool_progress_codebox`; normal commentary, finals, and status notices stay standalone plain messages.
+Tool-progress groups always render as one fenced code box per group (not configurable); normal commentary, finals, and status notices stay standalone plain messages.
 
 The smaller edges are handled too. Tool progress can also use **describe** mode (`tool_progress: describe`): each tool call renders as one short human phrase — and tools that accept an optional `description` argument fold that intent into the phrase, e.g. `Fetching recent Discord messages in channel 1234 to find the deploy report`. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit. Quote-replies in auto-threaded channels get their own thread by default, keeping the parent channel clean; set `discord.auto_thread_replies: false` to answer them inline instead.
 
-Every final reply can carry a one-line runtime footer — model, context %, per-turn timing breakdown, call counts, and the effective reasoning effort (e.g. `glm-5.3-flash · 12% · 16s · 1 call · medium`) — so you can see at a glance which model answered and how deep it thought. It is on by default; trim or disable it with `display.runtime_footer` (`/footer off` works from any chat), per-platform overrides included.
+Every final reply can carry a one-line runtime footer — model, context %, per-turn timing breakdown, call counts, and the effective reasoning effort (e.g. `glm-5.3-flash · 12% · 16s · 1 call · medium`) — so you can see at a glance which model answered and how deep it thought.
 
 Multiplexed profiles use their own `display.show_reasoning`. When enabled, a single `💭 Reasoned about <describe>` line summarizes the first non-empty reasoning line, using Discord subtext or italic text elsewhere. Streaming previews and interim updates stay standalone, and only the completed final answer reply-pings you. If an auto-threaded root turn cannot attach a reply reference, the final message uses an inline mention instead — with a masked jump link to the message that started the thread, so you can hop straight back to it; when the guild id is unavailable it degrades to the plain mention.
 
-Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out. A `resolve_ticket` proposal is terminal: the confirmation embed is the reply, and Hermes does not add another message underneath it.
+Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out.
 
-The typing indicator stays on while a background delegated task is still running. MoA consult and debate progress uses one self-editing embed per call that names every configured advisor model and shows each one waiting, responded, failed, or skipped as results arrive — round by round for debates — with live N/T advisor counts on `moa_ask`. Cursor runs post a Cursor-branded progress embed with a "Watch live session" link instead of dumping a URL, and Claude runs post a Claude-branded embed that links into the local viewer after the delegation tool-progress message, in the same order as Cursor.
+The typing indicator stays on while a background delegated task is still running. MoA consult and debate progress uses one self-editing embed per call that names every configured advisor model and shows each one waiting, responded, failed, or skipped as results arrive — round by round for debates — with live N/T advisor counts on `moa_ask`. Claude runs post a Claude-branded progress embed that links into the local viewer after the delegation tool-progress message.
 
 ## Coding delegated from chat
-
-Coding jobs leave the chat and run against the target checkout. `delegate_agent(backend="cursor")` sends small and medium jobs to a Cursor My Machines Cloud Agent. Cursor builds its checkout from pushed refs only, so the tool refuses to start when your local HEAD has unpushed commits. It does not quietly run against yesterday's code.
 
 `delegate_agent(backend="claude")` handles medium and large jobs through the Claude Code CLI, with headless `/goal` as the default lane. Give it a `/goal <condition>` and it keeps going until a model judge, verified through the claude-glm wrapper — bundled with Hermes and installed alongside the `hermes` command, primary glm-5.2 with a glm-5.3-flash fallback — says the condition has been met. If the goal is too long for Claude Code's 4000-character limit, Hermes puts it in a brief inside the workdir instead of aborting the run. Claude writes stream-json output to the `claude-runs` logs while it works, so you can tail the run instead of staring at a silent chat.
 
 Neither delegate tool has a stall watchdog or a default wall-clock limit, though a positive `timeout_seconds` still applies when you set one. `delegate_agent action='list'` shows the current tool, iteration, time since activity, and whether a child looks stalled. Slow and dead are different problems. Both delegate tools and the dev-pipeline lanes use the same agent-CLI runner underneath.
 
-All the delegate tools (`delegate_agent` with its `subagent`/`claude`/`cursor` backends, and `delegate_assistant`) share one lifecycle: an omitted `background` runs the work in the background — the call returns a handle immediately and delivers exactly one completion later — unless the session cannot receive a late completion (cron jobs, one-shot runs, stateless HTTP endpoints), where it blocks to completion inline instead. `background=false` always blocks inline for that turn, and `background=true` always detaches, refused up front with no work started where late delivery is impossible. Set `delegation.default_background: false` in config to make an omitted argument block again. `delegate_task` still dispatches as a hidden alias of the renamed tool.
+All the delegate tools (`delegate_agent` with its `subagent`/`claude` backends, and `delegate_assistant`) share one lifecycle: an omitted `background` runs the work in the background — the call returns a handle immediately and delivers exactly one completion later — unless the session cannot receive a late completion (cron jobs, one-shot runs, stateless HTTP endpoints), where it blocks to completion inline instead. `background=false` always blocks inline for that turn, and `background=true` always detaches, refused up front with no work started where late delivery is impossible. Set `delegation.default_background: false` in config to make an omitted argument block again. `delegate_task` still dispatches as a hidden alias of the renamed tool.
 
-Optional delegation lanes add `delegate_ui_dev`, `delegate_client_dev`, `delegate_backend_dev`, and `delegate_reverse_engineer` for focused implementation and static-analysis work. A non-empty `delegation.lanes` config opts into all four without changing the default tool surface; each lane combines a short soul, ordered model fallback, and optional skills, MCP, and tool restrictions over OMP or an existing delegation harness. Every result carries a receipt naming the lane, harness, winning model, reviewer, and verdict. See [the lane guide](skills/dev-lanes/README.md) for configuration and safety boundaries.
+Delegation lanes add `delegate_ui_dev`, `delegate_client_dev`, `delegate_backend_dev`, and `delegate_reverse_engineer` for focused implementation and static-analysis work. All four are always registered — each stays visible while its harness can run, and the bundled OMP default falls back to the Claude wrapper, then the in-process subagent, when the `omp` binary is missing — with `delegation.lanes` acting as a per-lane override overlay (models, soul, skills, MCP, and tool restrictions) over OMP or an existing delegation harness. Every result carries a receipt naming the lane, harness, winning model, reviewer, and verdict. See [the lane guide](skills/dev-lanes/README.md) for configuration and safety boundaries.
 
 While a background delegation runs, the parent model automatically receives a bounded, current snapshot of its workers' observed state (accepted vs. actually started vs. active, from harness runtime evidence) with each of its own model requests — no manual status checks, log tails, or process searches needed; the one completion message still arrives on its own.
 
-Sometimes you want the whole coding process handed off, including the paperwork. The dev-pipeline plugin takes a repo and task through MoA planning, Cursor execution, mechanical verification, dual-model review, and a draft PR. It reports each stage back to chat in plain English and skips useless same-stage heartbeats. A separate claude-endurance lane uses Claude Code through claude-glm for broad or long builds.
+Sometimes you want the whole coding process handed off, including the paperwork. The dev-pipeline plugin takes a repo and task through MoA planning, delegated execution, mechanical verification, dual-model review, and a draft PR. It reports each stage back to chat in plain English and skips useless same-stage heartbeats. A separate claude-endurance lane uses Claude Code through claude-glm for broad or long builds.
 
 Planning normally uses a consult; `delegate_development plan_mode=debate` runs the multi-round adversarial council instead. Reviews use a Russian-language kimi and grok pair, and `open_pr=false` skips the draft PR when you do not want one. `delegate_development` itself is currently parked and not registered.
 
@@ -123,7 +121,7 @@ Encrypted openings preserve encryption in the child or fail closed. Replay/resta
 
 ## Memory and profiles
 
-Memory should fail loudly. Honcho memory tools return dead API keys, 401s, and timeouts as real errors instead of pretending there was simply nothing to store or recall.
+Memory should fail loudly. Memory-provider tools return dead API keys, 401s, and timeouts as real errors instead of pretending there was simply nothing to store or recall.
 
 Hindsight can use `{chat}` inside `bank_id_template`, which gives one profile a separate bank for each messaging chat. It also skips memory lines already injected earlier in the same session. On the first bank init, Hermes seeds a `retain_mission` that ignores transient task state and two recall rules: prefer newer facts and ignore session dumps.
 
@@ -157,7 +155,9 @@ A session the bounce kills mid-turn — drain timeout, crash, anything it did no
 
 Discord recovery keeps the original message identity across interrupted-turn resume, missed-message backfill, and startup queue drain. A message already being recovered or answered is not dispatched again by those replay paths; failed work stays retryable, and background completion notices do not count as answers to earlier human messages.
 
-Agents can call the `restart` tool as well. It queues immediately through the same drain path as `/restart`, including when other sessions or background jobs are active. The drain refuses new work and waits for every in-flight turn to finish naturally before the gateway bounces and sends the requesting chat its comeback notice. Restart lifecycle notices provide the user-facing status, without a second progress bubble sitting beside them. An opt-in hub bounce is available on both surfaces — `/restart --hub` or `restart_hub: true` on the tool: the successor gateway process restarts `hermes-discord-hub.service` after it comes up (never the dying process); if the unit or systemctl is missing, the restart reports a warning and continues rather than failing.
+Agents can call the `restart` tool as well. It queues immediately through the same drain path as `/restart`, including when other sessions or background jobs are active. The drain refuses new work and waits for every in-flight turn to finish naturally before the gateway bounces and sends the requesting chat its comeback notice. Restart lifecycle notices provide the user-facing status, without a second progress bubble sitting beside them. An opt-in hub bounce is available on both surfaces — `/restart --hub` or `restart_hub: true` on the tool: the successor gateway process restarts `hermes-discord-hub.service` after it comes up (never the dying process); if the unit or systemctl is missing, the restart reports a warning and continues rather than failing. The tool's socket transport verifies the answerer against the session's serving stamp: it proceeds when the answerer is that process, attests it as a hub-ready successor, or is the newest generation of the conversation's own array (proven by the hub's generation registry — a restart asked from an older draining generation forwards to the newest, the array design); anything unprovable is a refusal naming both pids with a truthful per-role reason, and the ack it renders names the process that will actually restart, never a dying forwarder.
+
+Restart handoffs no longer hide the serving process: every gateway turn carries a concise runtime note naming the pid that actually serves it (a successor is credited only on hub-attested readiness), and when the serving process changes mid-conversation the first turn after the handoff adds a transition note — the old process's pid and start fingerprint, what carried over (persisted history and task context stay valid) and what did not (terminal sessions, background processes, kernels, sockets, caches, tool handles: revalidate before reuse) — so a handoff never reads as a new task. A durable per-session `served_by` record makes the predecessor knowable even on the successor's first turn. `hermes gateway status` prints a "Serving gateway identity" block that is green only for a proven serving role: an answerer without restart-handoff state (a legacy build) is never green — alone it is "unknown", beside a second live gateway process it is "ambiguous" — and a chained-restart marker from a dead process generation is reported as stale ("will not run"), never as queued. The `restart` tool queues onto the control socket only through an owner proven for this conversation (the serving process itself, a hub-ready attestation of it, or the registry-proven newest generation of its array) and rewrites an overlap ack to name the process that will actually restart. The whole contract ships twice — the Python implementation and a Go twin (`internal/servingidentity`) — pinned case-for-case against one shared JSON honesty table.
 
 Lifecycle messages can go to a dedicated channel per platform with `/setnotify` and `/clearnotify`, which keeps startup and shutdown noise out of the home chat. The system prompt also tells the agent its own platform display name; on Discord that means the server nickname or global name appears as `**Your name:**` in session context.
 
@@ -196,14 +196,14 @@ The material below is retained from [NousResearch/hermes-agent](https://github.c
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Discord while it works on a cloud VM.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
+Use any model you want — OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Cross-platform conversation continuity.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
 <tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
@@ -234,7 +234,7 @@ The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **a
 
 If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
 
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible dependencies.
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
@@ -290,9 +290,8 @@ hermes model        # Choose your LLM provider and model
 hermes tools        # Configure which tools are enabled
 hermes config set   # Set individual config values
 hermes config get   # Print individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
+hermes gateway      # Start the messaging gateway (Discord, Slack, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
@@ -301,28 +300,9 @@ hermes doctor       # Diagnose any issues
 
 ---
 
-## Skip the API-key collection — Nous Portal
-
-Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
-
-- **300+ models** — pick any of them with `/model <name>`
-- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), all routed through your sub. No extra accounts.
-
-One command from a fresh install:
-
-```bash
-hermes setup --portal
-```
-
-That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
-
-You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
-
----
-
 ## CLI vs Messaging Quick Reference
 
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
 
 | Action                         | CLI                                           | Messaging platforms                                                              |
 | ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -331,7 +311,7 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
 | Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
 | Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
+| Compress context / check usage | `/compress`, `/insights [--days N]`            | `/compress`, `/insights [days]`                                                 |
 | Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
 | Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
 | Platform-specific status       | `/platforms`                                  | `/status`, `/platform`                                                           |
@@ -349,7 +329,7 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)                 | Install → setup → first conversation in 2 minutes          |
 | [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                              | Commands, keybindings, personalities, sessions             |
 | [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
+| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Discord, Slack, WhatsApp, Signal, Home Assistant |
 | [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
 | [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
 | [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
@@ -361,38 +341,6 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
 | [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
 | [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
-
----
-
-## Migrating from OpenClaw
-
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
-
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
-
-**Anytime after install:**
-
-```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-```
-
-What gets imported:
-
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
-
----
 
 ## Contributing
 
@@ -433,7 +381,6 @@ scripts/run_tests.sh
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
 
 ---
 

@@ -232,7 +232,7 @@ class TestToolsetConsistency:
         on hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
         the invariant is that the core set is identical across platforms.
         """
-        platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
+        platforms = ["hermes-cli", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
         # All platforms must contain the shared core; platform-specific
         # extras are OK (subset check, not equality).
@@ -261,9 +261,11 @@ class TestDiscordApproveActionRemoved:
 
     def test_discord_siblings_remain(self):
         discover_builtin_tools()
-        for tool in ("discord", "resolve_ticket"):
+        for tool in ("discord", "discord_admin"):
             assert registry.get_entry(tool) is not None
-            assert tool in TOOLSETS["discord"]["tools"]
+        assert "discord" in TOOLSETS["discord"]["tools"]
+        assert "discord_admin" in TOOLSETS["discord_admin"]["tools"]
+        for tool in ("discord", "discord_admin"):
             assert tool in TOOLSETS["hermes-discord"]["tools"]
 
 

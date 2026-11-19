@@ -133,7 +133,7 @@ def _cron_summary(hermes_home: Path) -> str:
 
 
 _PLATFORM_ENV_VARS = {
-    "telegram": "TELEGRAM_BOT_TOKEN", "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
+    "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
     "whatsapp": "WHATSAPP_ENABLED", "signal": "SIGNAL_HTTP_URL", "email": "EMAIL_ADDRESS",
     "sms": "TWILIO_ACCOUNT_SID", "weixin": "WEIXIN_ACCOUNT_ID",
     "qqbot": "QQ_APP_ID",
@@ -152,10 +152,10 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
 _INTERESTING_PATHS = (
     ("agent", "max_turns"), ("agent", "gateway_timeout"), ("agent", "session_stall_timeout"),
     ("agent", "sanitizer_heal_escalation_threshold"), ("agent", "tool_use_enforcement"),
-    ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "docker_image"),
-    ("terminal", "persistent_shell"), ("browser", "allow_private_urls"), ("compression", "enabled"),
+    ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "persistent_shell"),
+    ("browser", "allow_private_urls"), ("compression", "enabled"),
     ("compression", "threshold"), ("compression", "in_place"), ("display", "streaming"),
-    ("display", "skin"), ("display", "show_reasoning"), ("tts", "provider"),
+    ("display", "skin"), ("display", "show_reasoning"),
 )
 
 
@@ -184,7 +184,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
 _API_KEYS = [
     ("OPENROUTER_API_KEY", "openrouter"), ("OPENAI_API_KEY", "openai"),
     ("ANTHROPIC_API_KEY", "anthropic"), ("ANTHROPIC_TOKEN", "anthropic_token"),
-    ("NOUS_API_KEY", "nous"), ("GOOGLE_API_KEY", "google/gemini"), ("GEMINI_API_KEY", "gemini"),
+    ("GOOGLE_API_KEY", "google/gemini"), ("GEMINI_API_KEY", "gemini"),
     ("GLM_API_KEY", "glm/zai"), ("ZAI_API_KEY", "zai"), ("KIMI_API_KEY", "kimi"),
     ("MINIMAX_API_KEY", "minimax"), ("DEEPSEEK_API_KEY", "deepseek"),
     ("DASHSCOPE_API_KEY", "dashscope"), ("HF_TOKEN", "huggingface"), ("NVIDIA_API_KEY", "nvidia"),

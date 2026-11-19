@@ -9,7 +9,7 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
     """Attach the ``tools`` subcommand to ``subparsers``."""
     tools_parser = subparsers.add_parser(
         "tools", help="Configure which tools are enabled per platform",
-        description="Enable, disable, or list tools for CLI, Telegram, Discord, etc.\n\n"
+        description="Enable, disable, or list tools for CLI, Discord, etc.\n\n"
             "Built-in toolsets use plain names (e.g. web, memory).\n"
             "MCP tools use server:tool notation (e.g. github:create_issue).\n\n"
             "Run 'hermes tools' with no subcommand for the interactive configuration UI.")
@@ -39,12 +39,11 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         "post-setup", help="Run a provider's post-setup install hook (npm/pip/binary)",
         description="Run the install/bootstrap hook a tool backend declares — the\n"
             "same step `hermes tools` runs after you pick a provider that\n"
-            "needs extra dependencies (Camofox, cua-driver, KittenTTS/Piper,\n"
-            "ddgs, Spotify, Langfuse, xAI, Codex). Stable, non-interactive\n"
-            "target the dashboard spawns to drive backend setup. Keys: camofox,\n"
-            "cua_driver, kittentts, piper, ddgs, spotify, langfuse, xai_grok,\n"
-            "openai_codex.")
+            "needs extra dependencies (Camofox, cua-driver, ddgs, Spotify,\n"
+            "Langfuse, xAI, Codex). Stable, non-interactive target the\n"
+            "dashboard spawns to drive backend setup. Keys: camofox,\n"
+            "cua_driver, ddgs, spotify, langfuse, xai_grok, openai_codex.")
     tools_postsetup_p.add_argument(
         "post_setup_key", metavar="KEY",
-        help="Post-setup hook key (e.g. camofox, kittentts)")
+        help="Post-setup hook key (e.g. camofox, ddgs)")
     tools_parser.set_defaults(func=cmd_tools)

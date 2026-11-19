@@ -38,7 +38,6 @@ MAX_QUESTIONS = 8
 
 @dataclass(frozen=True)
 class DeepResearchConfig:
-    enabled: bool = True
     worker_profile: str = DEFAULT_WORKER_PROFILE
     default_timeout_minutes: int = DEFAULT_TIMEOUT_MINUTES
     max_parallel: int = DEFAULT_MAX_PARALLEL
@@ -102,7 +101,6 @@ def load_deep_research_config(raw: Dict[str, Any] | None = None) -> DeepResearch
     )
 
     return DeepResearchConfig(
-        enabled=bool(raw.get("enabled", True)),
         worker_profile=worker_profile,
         default_timeout_minutes=_coerce_int(
             raw.get("default_timeout_minutes"), DEFAULT_TIMEOUT_MINUTES,

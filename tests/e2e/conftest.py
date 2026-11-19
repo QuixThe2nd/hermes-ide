@@ -118,7 +118,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
         platforms={platform: PlatformConfig(enabled=True, token="e2e-test-token")}
     )
     runner.adapters = {}
-    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
 
     runner.session_store = MagicMock()
@@ -148,7 +147,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._running_agents_ts = {}
     runner._pending_model_notes = {}
     runner._update_prompt_pending = {}
-    runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -160,7 +158,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
 
     # Disable destructive slash confirm gate so /new executes immediately
@@ -170,7 +167,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     # credentials and may probe model context length over the network. CI has no
     # credentials, so resolution walks the whole fallback chain and can exceed
     # send_and_capture's poll window on slow runners (flaked in run 28856659216,
-    # telegram param only — first parametrization pays the cold-resolution cost).
+    # the first parametrization only — it pays the cold-resolution cost
     runner._reset_notice_session_info = lambda source: ""
 
     # Keep the agent-turn path hermetic: _run_post_turn_hooks runs the /goal
@@ -179,7 +176,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     # state.db init can exceed send_and_capture's 2s poll window, so the send
     # lands after the assertion — the "Expected 'mock' to have been called
     # once. Called 0 times." flake on
-    # test_plaintext_restart_gateway_in_group_stays_plain_text[telegram]
+    # test_plaintext_restart_gateway_in_group_stays_plain_text[slack]
     # (issue #92130; e.g. runs 32802504263 / 32799192528 / 32796821900).
     # e2e tests exercise gateway command dispatch, not post-turn goal hooks.
     runner._run_post_turn_hooks = AsyncMock()

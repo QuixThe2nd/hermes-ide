@@ -1,7 +1,7 @@
 # Slash Commands (In-Session)
 
 Registry of record: `hermes_cli/commands.py` (`COMMAND_REGISTRY`) — every
-consumer (autocomplete, `/help`, Telegram menu, Slack mapping) derives from
+consumer (autocomplete, `/help`, Slack mapping) derives from
 it. New commands land often; `/help` in-session is always authoritative.
 (CLI) = interactive CLI/TUI only. (GW) = gateway platforms only.
 
@@ -35,10 +35,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 ```
 /config                  Show config (CLI)
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
-/voice [on|off|tts]      Voice mode
-/busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
 /indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
-/footer [on|off]         Gateway runtime-metadata footer on replies
 /skin [name]             Change theme (CLI)
 /statusbar (/sb)         Toggle status bar (CLI)
 /battery [on|off]        Battery indicator in status bar (CLI)
@@ -71,7 +68,6 @@ it. New commands land often; `/help` in-session is always authoritative.
                            --hub: the successor gateway process bounces
                            hermes-discord-hub.service after it comes up; a
                            missing unit warns and never fails the restart
-/topic [off|help]          Telegram DM topic sessions (GW)
 /platform <pause|resume|list> Pause/resume a failing platform (GW)
 /commands [page]           Browse all commands, paginated (GW)
 ```
@@ -79,14 +75,11 @@ it. New commands land often; `/help` in-session is always authoritative.
 ### Info
 ```
 /help                    Show commands
-/usage [reset]           Token usage and rate limits
 /insights [days]         Usage analytics
 /whoami                  Slash-command access level (admin/user)
 /profile                 Active profile info
 /platforms (/gateway)    Platform connection status (CLI)
 /journey (/learning)     Learned skills + memories timeline (CLI)
-/subscription (/upgrade) Nous plan info (CLI)
-/topup                   Nous balance / billing
 /copy [N]                Copy last response to clipboard (CLI)
 /paste                   Attach clipboard image (CLI)
 /image <path>            Attach a local image file (CLI)

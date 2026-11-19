@@ -46,8 +46,7 @@ class _StubAdapter(BasePlatformAdapter):
 def _make_adapter():
     """Create a minimal adapter for testing the active-session guard."""
     config = PlatformConfig(enabled=True, token="test-token")
-    adapter = _StubAdapter(config, Platform.TELEGRAM)
-    adapter._busy_text_mode = ""
+    adapter = _StubAdapter(config, Platform.DISCORD)
     adapter.sent_responses = []
 
     async def _mock_handler(event):
@@ -65,14 +64,14 @@ def _make_adapter():
 
 def _make_event(text="/stop", chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm"
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
 
 def _session_key(chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.DISCORD, chat_id=chat_id, chat_type="dm"
     )
     return build_session_key(source)
 
@@ -112,42 +111,6 @@ class TestCommandBypassActiveSession:
 
         assert sk not in adapter._pending_messages
         assert any("handled:new" in r for r in adapter.sent_responses)
-
-    @pytest.mark.asyncio
-    async def test_reset_bypasses_guard(self):
-        """/reset (alias for /new) must be dispatched directly."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/reset"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:reset" in r for r in adapter.sent_responses)
-
-    @pytest.mark.asyncio
-    async def test_approve_bypasses_guard(self):
-        """/approve must bypass (deadlock prevention)."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/approve"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:approve" in r for r in adapter.sent_responses)
-
-    @pytest.mark.asyncio
-    async def test_deny_bypasses_guard(self):
-        """/deny must bypass (deadlock prevention)."""
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/deny"))
-
-        assert sk not in adapter._pending_messages
-        assert any("handled:deny" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
     async def test_status_bypasses_guard(self):
@@ -218,25 +181,6 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
-    async def test_steer_bypasses_guard(self):
-        """/steer must bypass the Level-1 active-session guard so it reaches
-        the gateway runner's /steer handler and injects into the running
-        agent instead of being queued as user text for the next turn.
-        """
-        adapter = _make_adapter()
-        sk = _session_key()
-        adapter._active_sessions[sk] = asyncio.Event()
-
-        await adapter.handle_message(_make_event("/steer also check auth.log"))
-
-        assert sk not in adapter._pending_messages, (
-            "/steer was queued as a pending message instead of being dispatched"
-        )
-        assert any("handled:steer" in r for r in adapter.sent_responses), (
-            "/steer response was not sent back to the user"
-        )
-
-    @pytest.mark.asyncio
     async def test_help_bypasses_guard(self):
         """/help must bypass so it is not silently dropped as pending slash text."""
         adapter = _make_adapter()
@@ -289,7 +233,7 @@ class TestCommandBypassActiveSession:
 # Tests: non-bypass-set commands (no dedicated Level-2 handler) also bypass
 # instead of interrupting + being discarded.  Regression for the Discord
 # ghost-slash-command bug where /model, /reasoning, /voice, /insights, /title,
-# /resume, /retry, /undo, /compress, /usage, /reload-mcp,
+# /resume, /retry, /undo, /compress, /reload-mcp,
 # /reset silently interrupted the running agent.
 # ---------------------------------------------------------------------------
 
@@ -303,18 +247,12 @@ class TestAllResolvableCommandsBypassGuard:
     @pytest.mark.parametrize(
         "command_text,canonical",
         [
-            ("/model claude-sonnet-4", "model"),
-            ("/model", "model"),
-            ("/reasoning high", "reasoning"),
-            ("/personality default", "personality"),
-            ("/voice on", "voice"),
             ("/insights 7", "insights"),
             ("/title my session", "title"),
             ("/resume yesterday", "resume"),
             ("/retry", "retry"),
             ("/undo", "undo"),
             ("/compress", "compress"),
-            ("/usage", "usage"),
             ("/reload-mcp", "reload-mcp"),
         ],
     )
@@ -340,9 +278,9 @@ class TestAllResolvableCommandsBypassGuard:
         from hermes_cli.commands import should_bypass_active_session
 
         for cmd in (
-            "model", "reasoning", "personality", "voice", "insights", "title",
-            "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "reset",
+            "insights", "title",
+            "resume", "retry", "undo", "compress",
+            "reload-mcp",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"
@@ -434,12 +372,12 @@ class TestPendingCommandSafetyNet:
 
 
 # ---------------------------------------------------------------------------
-# Tests: bypass with @botname suffix (Telegram-style)
+# Tests: bypass with @botname suffix
 # ---------------------------------------------------------------------------
 
 
 class TestBypassWithBotnameSuffix:
-    """Telegram appends @botname to commands. The bypass must still work."""
+    """Some platforms append @botname to commands. The bypass must still work."""
 
     @pytest.mark.asyncio
     async def test_stop_with_botname(self):

@@ -11,7 +11,7 @@ Gateway side is deliberately dumb: no Slack API knowledge, no new config
 keys. Capability is descriptor-driven — an old connector that never
 advertises "draft"/"task_card" gets byte-identical behavior to today.
 
-Semantic bridge: the base send_draft contract is Telegram-shaped (draft
+Semantic bridge: the base send_draft contract is draft-then-send (draft
 clears; final answer is a separate send). Slack native streaming makes the
 stream THE message. The adapter tracks the open draft per chat; the
 turn-final regular send() for that chat converts to draft(final=true) so

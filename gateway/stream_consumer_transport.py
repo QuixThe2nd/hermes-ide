@@ -109,7 +109,7 @@ class StreamTransportMixin:
             try:
                 deleted = await delete_fn(self.chat_id, stale_id)
                 if retry_on_false and deleted is False:
-                    # Telegram's delete_message reports failure by returning False, not raising. The same
+                    # Some platforms' delete_message reports failure by returning False, not raising. The same
                     # flood window that broke the finalize edit can reject this delete too, leaving the
                     # preview bubble next to the fresh final (#71047 Problem B). One short bounded retry
                     # clears the common transient case; a second failure stays best-effort.
@@ -242,7 +242,7 @@ class StreamTransportMixin:
             self._track_preview_id(mid)
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
-        """Adapter's prefers_fresh_final_streaming hook (Telegram's richer send path);
+        """Adapter's prefers_fresh_final_streaming hook (a richer fresh-send path);
         False without a real preview / hook, or on any error."""
         fn = getattr(self.adapter, "prefers_fresh_final_streaming", None)
         if fn is None or not self._has_real_preview():

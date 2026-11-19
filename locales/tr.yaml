@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint:            "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
 
-  footer:
-    status:                "📎 Çalışma zamanı altbilgisi: **{state}**\nAlanlar: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Kullanım: `/footer [on|off|status]`"
-    saved:                 "📎 Çalışma zamanı altbilgisi: **{state}**{example}\n_(genel olarak kaydedildi — sonraki mesajda geçerli olur)_"
-    example_line:          "\nÖrnek: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Bu oturumda hedefler kullanılamıyor."
     no_goal_set:           "Hedef ayarlanmadı."
@@ -252,17 +244,6 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     current_with_title:    "📌 Oturum: `{session_id}`\nBaşlık: **{title}**"
     current_no_title:      "📌 Oturum: `{session_id}`\nBaşlık ayarlanmamış. Kullanım: `/title Oturum Adım`"
 
-  topic:
-    not_telegram_dm:         "/topic komutu yalnızca Telegram özel sohbetlerinde kullanılabilir."
-    no_session_db:           "Oturum veritabanı kullanılamıyor."
-    unauthorized:            "Bu bot üzerinde /topic kullanma yetkiniz yok."
-    restore_needs_topic:     "Bir oturumu geri yüklemek için önce bir Telegram topic oluşturun veya açın, ardından o topic içinde /topic <session-id> gönderin. Yeni bir topic oluşturmak için All Messages'ı açıp orada herhangi bir mesaj gönderin."
-    topics_disabled:         "Bu bot için Telegram topic'leri henüz etkin değil.\n\nNasıl etkinleştirilir:\n1. @BotFather'ı açın.\n2. Botunuzu seçin.\n3. Bot Settings → Threads Settings'ı açın.\n4. Threaded Mode'u açın ve kullanıcıların yeni thread oluşturmasına izin verildiğinden emin olun.\n\nArdından /topic'i tekrar gönderin."
-    topics_user_disallowed:  "Telegram topic'leri etkin, ancak kullanıcıların topic oluşturmasına izin verilmiyor.\n\n@BotFather → botunuz → Bot Settings → Threads Settings yolunu açın ve 'Disallow users to create new threads' seçeneğini kapatın.\n\nArdından /topic'i tekrar gönderin."
-    enable_failed:           "Telegram topic modu etkinleştirilemedi: {error}"
-    bound_status:            "Bu topic şuna bağlı:\nOturum: {label}\nID: {session_id}\n\nBu topic'i yeni bir oturumla değiştirmek için /new kullanın.\nParalel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
-    thread_ready:            "Telegram çok oturumlu topic'leri etkin.\n\nBu topic bağımsız bir Hermes oturumu olarak kullanılacak. Bu topic'in mevcut oturumunu değiştirmek için /new kullanın. Paralel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
-    untitled_session:        "Adsız oturum"
 
   undo:
     nothing:               "Geri alınacak bir şey yok."
@@ -276,41 +257,6 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     start_failed:            "✗ Güncelleme başlatılamadı: {error}"
     starting:                "☤ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
 
-  usage:
-    rate_limits:              "⏱️ **Hız Sınırları:** {state}"
-    header_session:           "📊 **Oturum Token Kullanımı**"
-    label_model:              "Model: `{model}`"
-    label_input_tokens:       "Girdi token'ları: {count}"
-    label_cache_read:         "Önbellek okuma token'ları: {count}"
-    label_cache_write:        "Önbellek yazma token'ları: {count}"
-    label_output_tokens:      "Çıktı token'ları: {count}"
-    label_total:              "Toplam: {count}"
-    label_api_calls:          "API çağrıları: {count}"
-    label_cost:               "Maliyet: {prefix}${amount}"
-    label_cost_included:      "Maliyet: dahil"
-    label_context:            "Bağlam: {used} / {total} ({pct}%)"
-    label_compressions:       "Sıkıştırmalar: {count}"
-    breakdown_header: "🧩 **Bağlam dökümü** _(tahmini)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Sistem istemi"
-    breakdown_cat_tool_definitions: "Araç tanımları"
-    breakdown_cat_rules: "Kurallar"
-    breakdown_cat_skills: "Beceriler"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Alt aracı tanımları"
-    breakdown_cat_memory: "Bellek"
-    breakdown_cat_conversation: "Konuşma"
-    header_session_info:      "📊 **Oturum Bilgisi**"
-    label_messages:           "Mesajlar: {count}"
-    label_estimated_context:  "Tahmini bağlam: ~{count} token"
-    detailed_after_first:     "_(Ayrıntılı kullanım, ilk ajan yanıtından sonra kullanılabilir)_"
-    no_data:                  "Bu oturum için kullanım verisi yok."
-    unknown_subcommand:       "Bilinmeyen /usage alt komutu: `{args}`. `/usage` veya `/usage reset [--force]` deneyin."
-    reset_wrong_provider:     "Biriktirilen limit sıfırlamaları yalnızca openai-codex sağlayıcısında kullanılabilir. Önce `/model` ile geçiş yapın."
-
-  credits:
-    not_logged_in:            "Nous Portal'a giriş yapılmadı. Bakiyenizi görmek ve yükleme yapmak için giriş yapın."
-
   verbose:
     not_enabled:           "`/verbose` komutu mesajlaşma platformlarında etkin değil.\n\n`config.yaml` içinde etkinleştirin:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Araç ilerlemesi: **OFF** — araç etkinliği gösterilmez."
@@ -320,23 +266,6 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     mode_log:              "⚙️ Araç ilerlemesi: **LOG** — sohbette sessiz; araç çağrıları ~/.hermes/logs/tool_calls.log dosyasına yazılır."
     saved_suffix:          "_(**{platform}** için kaydedildi — sonraki mesajda geçerli olur)_"
     save_failed:           "_(yapılandırmaya kaydedilemedi: {error})_"
-
-  voice:
-    enabled_voice_only:    "Sesli mod etkinleştirildi.\nSesli mesaj gönderdiğinizde sesli yanıt vereceğim.\nTüm mesajlara sesli yanıt almak için /voice tts kullanın."
-    disabled_text:         "Sesli mod devre dışı. Yalnızca metin yanıtları."
-    tts_enabled:           "Otomatik TTS etkinleştirildi.\nTüm yanıtlar bir sesli mesaj içerecek."
-    status_mode:           "Sesli mod: {label}"
-    status_channel:        "Ses kanalı: #{channel}"
-    status_participants:   "Katılımcılar: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (konuşuyor)"
-    enabled_short:         "Sesli mod etkinleştirildi."
-    disabled_short:        "Sesli mod devre dışı."
-    label_off:             "Kapalı (yalnızca metin)"
-    label_voice_only:      "Açık (sesli mesajlara sesli yanıt)"
-    label_all:             "TTS (tüm mesajlara sesli yanıt)"
-    help:                  "{toggle}\n\n**/voice nasıl çalışır**\n• `/voice on` — sesli mesaj gönderdiğinde sesli yanıt\n• `/voice tts` — *her* mesaja sesli yanıt\n• `/voice off` — yalnızca metin yanıtlarına dön\n• `/voice status` — geçerli modu göster\n• `/voice` (argümansız) — açık ve kapalı arasında hızlı geçiş{channels}"
-    help_channels:         "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
 
   shared:
     session_db_unavailable:      "Oturum veritabanı kullanılamıyor."

@@ -503,77 +503,6 @@ elif ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
     fi
 fi
 
-# --- Sync deploy-injected Nous routing overrides into every profile .env ---
-# Under multiplex, hermes_cli.auth_nous reads HERMES_PORTAL_BASE_URL (or its
-# NOUS_PORTAL_BASE_URL alias) and NOUS_INFERENCE_BASE_URL through the profile
-# secret scope (agent.secret_scope.get_secret, #108319 / #111809), built from
-# <profile>/.env with no os.environ fallback — a value that lives only in the
-# container env is invisible on every routed turn, the Portal URL heals to
-# production and a non-production login is quarantined. The deploy therefore
-# carries the value into $HERMES_HOME/.env and every profiles/*/.env: the
-# container wins over a stale line, an already-correct line is left alone, and
-# lines written here carry a marker so a boot WITHOUT the variable removes them
-# again (a hand-set line is never touched). Known gap: a profile created while the container
-# runs is synced on the next boot. Interim until the managed scope
-# (/etc/hermes/.env) composition reverted by #111600 is restored.
-_ROUTING_MARK='# stage2-managed'
-# rewrite_env_var FILE NAME DROP_PATTERN [LINE]: drop the lines matching DROP_PATTERN (a BRE),
-# append LINE when given. Rewritten through the existing inode (owner and mode kept — sed -i would
-# re-create the file). `grep -v` exits 1 when nothing remains (fine) and 2 when the file could not
-# be read (then a rewrite would wipe every other secret — refuse). A read-only volume degrades to a
-# warning, never a boot abort.
-rewrite_env_var() {
-    _rc=0
-    _rest=$(grep -v -- "$3" "$1" 2>/dev/null) || _rc=$?
-    if [ "$_rc" -gt 1 ]; then
-        echo "[stage2] Warning: could not read $1 — leaving $2 untouched"
-        return 1
-    fi
-    if [ $# -ge 4 ]; then
-        _rest="${_rest:+$_rest
-}$4"
-    fi
-    if printf '%s' "${_rest:+$_rest
-}" 2>/dev/null > "$1"; then
-        return 0
-    fi
-    echo "[stage2] Warning: could not write $2 to $1 (read-only volume?) — routed turns will fall back to the production Portal"
-    return 1
-}
-sync_routing_overrides() {
-    _file="$1"
-    if refuse_symlinked_path "sync" "$_file"; then
-        return 0
-    fi
-    for _name in HERMES_PORTAL_BASE_URL NOUS_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
-        eval "_value=\${$_name:-}"
-        _managed="^$_name=.* $_ROUTING_MARK\$"
-        if [ -z "$_value" ]; then
-            if grep -q -- "$_managed" "$_file" 2>/dev/null && rewrite_env_var "$_file" "$_name" "$_managed"; then
-                echo "[stage2] Removed $_name from $_file (no longer set in the container environment)"
-            fi
-            continue
-        fi
-        _line="$_name=$_value $_ROUTING_MARK"
-        if grep -qxF -- "$_line" "$_file" 2>/dev/null; then
-            continue
-        fi
-        if [ ! -f "$_file" ] && ! (umask 077 && as_hermes touch "$_file") 2>/dev/null; then
-            echo "[stage2] Warning: could not create $_file — the Nous routing overrides will not reach this profile's secret scope"
-            return 0
-        fi
-        if rewrite_env_var "$_file" "$_name" "^$_name=" "$_line"; then
-            echo "[stage2] Synced $_name from the container environment into $_file"
-        fi
-    done
-}
-sync_routing_overrides "$HERMES_HOME/.env"
-for _profile_dir in "$HERMES_HOME"/profiles/*/; do
-    [ -d "$_profile_dir" ] || continue
-    sync_routing_overrides "${_profile_dir}.env"
-done
-unset _profile_dir _file _name _value _managed _line _rest _rc
-
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was
 # created with a permissive umask gets tightened on every container start.
@@ -630,32 +559,6 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
         printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
         chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/auth.json"
-    fi
-fi
-
-# auth.json: re-seed a TERMINALLY-DEAD Nous bootstrap session (self-heal).
-#
-# The [ ! -f ] guard above deliberately refuses to clobber an existing
-# auth.json, so a container whose Nous bootstrap session took a terminal
-# invalid_grant (tokens cleared, providers.nous.last_auth_error.relogin_required
-# stamped) can NOT recover from a plain restart — it stays unauthenticated until
-# the credential is replaced. An orchestrator that manages the container can
-# supply a freshly-issued session via HERMES_AUTH_JSON_REBOOTSTRAP (distinct
-# from the create-only *_BOOTSTRAP var); this helper swaps ONLY the
-# providers.nous entry when the on-disk entry is provably terminal OR the
-# orchestrator seed has a later obtained_at timestamp. The latter covers the
-# stop/update/start sequence where NAS already revoked the still-healthy-looking
-# local session. Older/incomparable seeds remain no-ops, so leaving the env set
-# cannot roll a healthy rotated token backward. Runs as its own stdlib-only
-# subprocess (no app imports) and always exits 0.
-if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
-    if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
-        :
-    else
-        s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" \
-            "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
-            "$HERMES_HOME/auth.json" \
-            || echo "[stage2] Warning: docker_rebootstrap_nous_session.py failed; continuing"
     fi
 fi
 

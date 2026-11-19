@@ -34,7 +34,7 @@ class TestExtractMediaImages:
         content = "Here is the screenshot:\nMEDIA:/home/user/.hermes/browser_screenshots/shot.png"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "/home/user/.hermes/browser_screenshots/shot.png"
+        assert media[0] == "/home/user/.hermes/browser_screenshots/shot.png"
         assert "MEDIA:" not in cleaned
         assert "Here is the screenshot" in cleaned
 

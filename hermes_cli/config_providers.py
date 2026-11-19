@@ -49,9 +49,7 @@ _API_MODE_ALIASES = {
     "openai-responses": "codex_responses",
     "anthropic": "anthropic_messages",
     "anthropic-messages": "anthropic_messages",
-    "messages": "anthropic_messages",
-    "bedrock": "bedrock_converse",
-    "bedrock-converse": "bedrock_converse"}
+    "messages": "anthropic_messages"}
 
 _FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on"})

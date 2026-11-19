@@ -17,10 +17,10 @@ import pytest
 
 from hermes_state import SessionDB
 
-ROOT_KEY = "agent:main:telegram:dm:100"
-ACME_KEY = "agent:acme:telegram:dm:200"
-BETA_KEY = "agent:beta:telegram:dm:300"
-GHOST_KEY = "agent:ghost:telegram:dm:400"
+ROOT_KEY = "agent:main:discord:dm:100"
+ACME_KEY = "agent:acme:discord:dm:200"
+BETA_KEY = "agent:beta:discord:dm:300"
+GHOST_KEY = "agent:ghost:discord:dm:400"
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def _session(db: SessionDB, sid: str, key: str, *, profile: str, parent=None, messages=2, chat_id=None,
-             source="telegram"):
+             source="discord"):
     db.create_session(sid, source, session_key=key, chat_id=chat_id or key.rsplit(":", 1)[-1],
                       chat_type="dm", profile_name=profile, parent_session_id=parent, system_prompt="sys")
     for i in range(messages):
@@ -56,32 +56,24 @@ def _seed_crossings(homes):
     root.save_gateway_routing_entry(ACME_KEY, json.dumps({"session_key": ACME_KEY, "session_id": "ok-acme"}), scope=scope)
 
     # 1. label ≠ key namespace (row in the right store)
-    _session(acme, "mislabelled", "agent:acme:telegram:dm:201", profile="default")
+    _session(acme, "mislabelled", "agent:acme:discord:dm:201", profile="default")
     # 2. wrong store: acme's key in the root store, with a compressed parent it points at (moves whole)
-    _session(root, "stray-parent", "agent:acme:telegram:dm:202", profile="acme", messages=3)
-    _session(root, "stray-child", "agent:acme:telegram:dm:202", profile="acme", parent="stray-parent")
+    _session(root, "stray-parent", "agent:acme:discord:dm:202", profile="acme", messages=3)
+    _session(root, "stray-child", "agent:acme:discord:dm:202", profile="acme", parent="stray-parent")
     #    …and a legacy agent:main row inside acme's store (reported, not repaired by default)
-    _session(acme, "legacy-main", "agent:main:telegram:dm:203", profile="default")
+    _session(acme, "legacy-main", "agent:main:discord:dm:203", profile="default")
     #    …and a row keyed to a profile that does not exist
     _session(root, "ghost", GHOST_KEY, profile="ghost")
     # 3. parent crossing namespaces inside beta's store: beta's own child forked from an acme row
     #    (which is itself a wrong-store row and moves out — the child must not follow a pointer
     #    into another profile's store)
     _session(beta, "beta-parent", BETA_KEY, profile="beta")
-    _session(beta, "acme-in-beta", "agent:acme:telegram:dm:204", profile="acme")
-    _session(beta, "beta-child", "agent:beta:telegram:dm:301", profile="beta", parent="acme-in-beta")
+    _session(beta, "acme-in-beta", "agent:acme:discord:dm:204", profile="acme")
+    _session(beta, "beta-child", "agent:beta:discord:dm:301", profile="beta", parent="acme-in-beta")
     # 4. routing rows: beta's index row copied into beta's store (#66887) + a ghost row in the root
     beta.save_gateway_routing_entry(BETA_KEY, json.dumps({"session_key": BETA_KEY, "session_id": "beta-parent"}), scope=scope)
     root.save_gateway_routing_entry(GHOST_KEY, json.dumps({"session_key": GHOST_KEY, "session_id": "ghost"}), scope=scope)
-    # 5. profile-less topic binding + voice-mode entry for a chat only acme's bot holds
-    acme.bind_telegram_topic(chat_id="200", thread_id="7", user_id="200", session_key=ACME_KEY,
-                             session_id="ok-acme", profile_name="default")
-    (homes["default"] / "gateway_voice_mode.json").write_text(json.dumps({
-        "telegram:200": "all",        # acme's chat, unprefixed
-        "telegram:100": "voice_only",  # the default bot's chat — legitimately unprefixed
-    }))
-    # 6. sessions.json mirror entry for the ghost namespace
-    (homes["default"] / "sessions").mkdir(exist_ok=True)
+    # 5. sessions.json mirror entry for the ghost namespace
     (homes["default"] / "sessions" / "sessions.json").write_text(json.dumps({
         "_README": "x", GHOST_KEY: {"session_key": GHOST_KEY, "session_id": "ghost"},
         ROOT_KEY: {"session_key": ROOT_KEY, "session_id": "ok-root"},
@@ -122,8 +114,7 @@ def _report() -> dict:
 def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     _seed_crossings(homes)
     before = {name: _dump(home / "state.db") for name, home in homes.items()}
-    files_before = {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
-                                                    homes["default"] / "sessions" / "sessions.json")}
+    files_before = {p.name: p.read_text() for p in (homes["default"] / "sessions" / "sessions.json",)}
 
     report = _report()
 
@@ -135,23 +126,20 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
         ("unclaimed_namespace", "ghost"),
         ("wrong_store", "acme-in-beta"), ("crossed_parent", "beta-child"),
         ("routing_unclaimed", f"{GHOST_KEY} (scope {str((homes['default'] / 'sessions').resolve())!r})"),
-        ("topic_profile_less", "chat 200 thread 7"),
-        ("voice_profile_less", "telegram:200"),
         ("sessions_json_unclaimed", GHOST_KEY),
     } <= kinds
     # beta's own routing row: a standalone gateway's index lives in its own store; nothing recorded a
     # multiplexing verdict here, so it is NOT reported as stray.
     assert not any(f["kind"] == "routing_stray" for f in report["findings"])
     # the healthy controls and the default bot's own voice key are not findings
-    assert not any(f["subject"] in {"ok-root", "ok-acme", "telegram:100", ROOT_KEY} for f in report["findings"])
+    assert not any(f["subject"] in {"ok-root", "ok-acme", ROOT_KEY} for f in report["findings"])
     # the two report-only kinds say why
     by_kind = {f["kind"]: f for f in report["findings"]}
     assert by_kind["legacy_main"]["action"] is None and "--legacy-main" in by_kind["legacy_main"]["reason"]
     assert by_kind["unclaimed_namespace"]["action"] is None and "ghost" in by_kind["unclaimed_namespace"]["reason"]
 
     assert {name: _dump(home / "state.db") for name, home in homes.items()} == before
-    assert {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
-                                            homes["default"] / "sessions" / "sessions.json")} == files_before
+    assert {p.name: p.read_text() for p in (homes["default"] / "sessions" / "sessions.json",)} == files_before
 
 
 def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkeypatch, capsys):
@@ -176,7 +164,7 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
         assert len(acme.get_messages("stray-parent")) == 3 and len(acme.get_messages("stray-child")) == 2
         assert acme.get_session("stray-parent")["system_prompt"] == "sys"
         #    legacy agent:main row and the ghost row are left exactly as they were
-        assert acme.get_session("legacy-main")["session_key"] == "agent:main:telegram:dm:203"
+        assert acme.get_session("legacy-main")["session_key"] == "agent:main:discord:dm:203"
         assert root.get_session("ghost")["session_key"] == GHOST_KEY
         # 3. severed, own identity kept; the acme row it pointed at moved to acme's store
         child = beta.get_session("beta-child")
@@ -186,12 +174,7 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
         scope = str((homes["default"] / "sessions").resolve())
         assert set(root.load_gateway_routing_entries(scope=scope)) == {ACME_KEY}
         assert set(beta.load_gateway_routing_entries(scope=scope)) == {BETA_KEY}
-        # 5. topic binding carries acme; voice key prefixed only for acme's chat
-        assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="acme") is not None
-        assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="default") is None
-        voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text())
-        assert voice == {"acme:telegram:200": "all", "telegram:100": "voice_only"}
-        # 6. ghost mirror entry dropped, the default's kept
+        # 5. ghost mirror entry dropped, the default's kept
         mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text())
         assert set(mirror) == {"_README", ROOT_KEY}
         # controls untouched
@@ -230,7 +213,7 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
     acme = SessionDB(homes["acme"] / "state.db")
     try:
         row = acme.get_session("legacy-main")
-        assert row["session_key"] == "agent:acme:telegram:dm:203" and row["profile_name"] == "acme"
+        assert row["session_key"] == "agent:acme:discord:dm:203" and row["profile_name"] == "acme"
     finally:
         acme.close()
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])

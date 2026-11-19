@@ -86,7 +86,7 @@ class TestWriteUsageAudit:
             "completion_tokens": None,
             "total_tokens": None,
             "response_silent": True,
-            "deliver_target": "telegram",
+            "deliver_target": "discord",
             "model": None,
             "duration_ms": 12,
             "error": "boom",

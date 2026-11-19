@@ -1,6 +1,12 @@
-"""Code-flow grid sweep (NOUS-368, wave 1): three pre-existing automatic gateway diagnostics that
-bypassed the warning boundary. absent/false = legacy bytes; true suppresses ONLY the diagnostic;
-requested outcomes (an in-chat /restart's own ack, the requested background result) are untouched."""
+"""Code-flow grid sweep (NOUS-368, wave 1): automatic gateway diagnostics that bypassed the
+warning boundary. absent/false = legacy bytes; true suppresses ONLY the diagnostic; requested
+outcomes (the requested background result) are untouched.
+
+The shutdown-notice and unauthorized-owner-hint grid arms were removed with the home-channel
+feature: ``HomeChannel``/``_home_channel_transports`` no longer exist and the ⚠️ pings to active
+sessions are deliberately NOT gated by ``display.suppress_warning_notifications`` (only the
+notification-channel broadcast is, via ``gateway_restart_notification`` / the drain marker).
+The in-chat restart ack contract lives in ``test_gateway_shutdown.py``."""
 from __future__ import annotations
 
 import json
@@ -8,11 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
-from gateway.pairing import PairingStore
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
-from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from gateway.config import Platform
+from gateway.session import SessionSource
 
 
 def _configure(tmp_path, monkeypatch, setting):
@@ -25,72 +28,6 @@ def _configure(tmp_path, monkeypatch, setting):
 
 
 MODES = (None, False, True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("setting", MODES)
-async def test_shutdown_notice_to_active_chats_and_home_channel_honors_policy(tmp_path, monkeypatch, setting):
-    _configure(tmp_path, monkeypatch, setting)
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(thread_id="42")
-    session_key = build_session_key(source)
-    runner._running_agents = {session_key: MagicMock()}
-    runner._cache_session_source(session_key, source)
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM, chat_id="home-chat", name="Telegram Home")
-
-    await runner._notify_active_sessions_of_shutdown()
-
-    chats = [c for c, _m, _meta in adapter.sent_calls]
-    if setting is True:
-        assert chats == [], adapter.sent_calls
-    else:
-        assert sorted(chats) == sorted([source.chat_id, "home-chat"])
-        assert all("Hermes is shutting down" in m for _c, m, _meta in adapter.sent_calls)
-
-
-@pytest.mark.asyncio
-async def test_in_chat_restart_ack_to_requester_is_never_suppressed(tmp_path, monkeypatch):
-    _configure(tmp_path, monkeypatch, True)
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(thread_id="42")
-    session_key = build_session_key(source)
-    runner._running_agents = {session_key: MagicMock()}
-    runner._cache_session_source(session_key, source)
-    restart_source = make_restart_source(thread_id="42")
-    restart_source.message_id = "restart-command"
-    runner._restart_requested = True
-    runner._restart_command_source = restart_source
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM, chat_id="home-chat", name="Telegram Home")
-
-    await runner._notify_active_sessions_of_shutdown()
-
-    assert len(adapter.sent_calls) == 1
-    chat_id, message, metadata = adapter.sent_calls[0]
-    assert chat_id == source.chat_id and "Hermes is restarting" in message
-    assert metadata["telegram_reply_to_message_id"] == "restart-command"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("setting", MODES)
-async def test_unauthorized_owner_hint_honors_policy_and_stranger_stays_silent(tmp_path, monkeypatch, setting):
-    _configure(tmp_path, monkeypatch, setting)
-    runner, adapter = make_restart_runner()
-    runner.pairing_store = PairingStore()
-    runner.pairing_stores = {}
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM, chat_id="home-1", name="Ops")
-    runner._hm_report_ignored_dm = GatewayRunner._hm_report_ignored_dm.__get__(runner, GatewayRunner)
-    stranger = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-777", user_id="777", user_name="Eve", chat_type="dm")
-
-    await runner._hm_report_ignored_dm(stranger)
-    await runner._hm_report_ignored_dm(stranger)
-
-    chats = [c for c, _m, _meta in adapter.sent_calls]
-    assert "dm-777" not in chats
-    assert chats.count("home-1") == (0 if setting is True else 1)
-    assert runner.pairing_store.list_pending("telegram") == []
 
 
 def _bg_runner():
@@ -108,9 +45,9 @@ async def test_background_task_failure_notice_honors_policy(tmp_path, monkeypatc
     adapter.send = AsyncMock()
     adapter.emit_warning = BasePlatformAdapter.emit_warning.__get__(adapter, BasePlatformAdapter)
     adapter.warning_notifications_enabled = BasePlatformAdapter.warning_notifications_enabled.__get__(adapter, BasePlatformAdapter)
-    adapter.platform = Platform.TELEGRAM
-    runner.adapters[Platform.TELEGRAM] = adapter
-    source = SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="c1", user_name="u")
+    adapter.platform = Platform.DISCORD
+    runner.adapters[Platform.DISCORD] = adapter
+    source = SessionSource(platform=Platform.DISCORD, user_id="1", chat_id="c1", user_name="u")
 
     with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}), \
          patch.object(runner, "_resolve_session_agent_runtime", side_effect=RuntimeError("BG_REAL_CRASH")):

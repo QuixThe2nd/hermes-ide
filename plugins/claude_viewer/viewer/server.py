@@ -371,7 +371,7 @@ def read_run_prompt(path: Path) -> str | None:
     try:
         resolved = sidecar.resolve()
         if resolved.parent == Path(LOG_DIR).resolve() and resolved.is_file():
-            text = resolved.read_text(encoding="utf-8", errors="replace").strip()
+            text = resolved.read_text(encoding="utf-8-sig", errors="replace").strip()
             if text:
                 return text[:MAX_PROMPT_CHARS]
     except (OSError, ValueError):

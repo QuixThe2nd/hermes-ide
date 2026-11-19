@@ -1,7 +1,7 @@
 """Bounded async Decisions client + per-channel context buffer for the response gate.
 
 This module is the one helper the Discord adapter does not already own: a single
-bounded HTTP call to the OpenRouter Decisions endpoint (provider ``jev``) plus the
+bounded HTTP call to the Jev Decisions endpoint (litellm virtual key) plus the
 small per-channel buffer of recent conversation evidence the request needs. It holds
 no admission policy of its own — the adapter decides when (and whether) to consult it.
 
@@ -32,8 +32,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
-#: Fixed Decisions endpoint; optional loopback ``response_gate.decisions_url`` only.
-JEV_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
+#: Fixed Jev endpoint: the litellm proxy fronting TypeSafe's Jev Decisions,
+#: authenticated with a litellm virtual key; optional loopback
+#: ``response_gate.decisions_url`` override only.
+JEV_DECISIONS_URL = "http://192.168.30.21:4000/jev/decisions"
 
 #: Fixed question keys; the gate asks exactly these four noul questions per consultation,
 #: in one bounded Decisions request.
@@ -218,7 +220,7 @@ class JevDecisionClient:
         if not credential:
             # Constructed without a credential the caller must not consult us; keep the
             # failure explicit so enforce mode denies instead of silently passing.
-            raise ResponseGateError("missing_credential", "No OpenRouter credential for the response gate")
+            raise ResponseGateError("missing_credential", "No litellm virtual key for the response gate")
         if decisions_url is not None:
             url = str(decisions_url).strip()
             try:
@@ -378,7 +380,7 @@ class JevDecisionClient:
         try:
             from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
 
-            return proxy_kwargs_for_aiohttp(resolve_proxy_url(target_hosts=("openrouter.ai",)))
+            return proxy_kwargs_for_aiohttp(resolve_proxy_url(target_hosts=("192.168.30.21",)))
         except Exception:  # pragma: no cover - defensive
             return {}, {}
 

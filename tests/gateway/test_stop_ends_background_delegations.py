@@ -19,11 +19,11 @@ from gateway.session import SessionSource
 
 class _Adapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="x"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="x"), Platform.DISCORD)
 
     @property
     def name(self):
-        return "telegram"
+        return "discord"
 
     async def connect(self, *, is_reconnect=False):
         return True
@@ -57,16 +57,16 @@ def _seed_unit(session_key: str, parent_session_id: str = "") -> MagicMock:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("session_state", ["idle", "busy"])
 async def test_stop_ends_background_delegations_of_the_session(monkeypatch, session_state):
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "u1")
     adapter = _Adapter()
-    runner = GatewayRunner(config=GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="x")}))
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="u1", user_name="tester")
+    runner = GatewayRunner(config=GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")}))
+    runner.adapters = {Platform.DISCORD: adapter}
+    source = SessionSource(platform=Platform.DISCORD, chat_id="c1", chat_type="dm", user_id="u1", user_name="tester")
     key = adapter._event_session_key(MessageEvent(text="", message_type=MessageType.TEXT, source=source))
     stop_fn = _seed_unit(key)
     other_fn = MagicMock()
     with ad._records_lock:
-        ad._records["deleg_other"] = {"delegation_id": "deleg_other", "status": "running", "session_key": "agent:main:telegram:dm:c2",
+        ad._records["deleg_other"] = {"delegation_id": "deleg_other", "status": "running", "session_key": "agent:main:discord:dm:c2",
                                       "origin_ui_session_id": "", "parent_session_id": "", "interrupt_fn": other_fn}
 
     if session_state == "busy":

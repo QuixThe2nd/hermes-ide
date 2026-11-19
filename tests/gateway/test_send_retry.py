@@ -22,7 +22,7 @@ from gateway.platforms.base import Platform, PlatformConfig
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         cfg = PlatformConfig()
-        super().__init__(cfg, Platform.TELEGRAM)
+        super().__init__(cfg, Platform.DISCORD)
         self._send_results = []   # queue of SendResult to return per call
         self._send_calls = []     # record of (chat_id, content) sent
 

@@ -81,7 +81,7 @@ def opencode_session_headers(
     if not is_opencode_target(provider, base_url):
         return {}
     try:
-        from agent.portal_tags import get_affinity_scope, get_conversation_context
+        from agent.conversation_scope import get_affinity_scope, get_conversation_context
         from agent.transports.codex import _cache_scope_from_session_id
 
         key = _cache_scope_from_session_id(

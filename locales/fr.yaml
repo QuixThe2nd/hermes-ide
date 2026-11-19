@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
     share_hint:            "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
 
-  footer:
-    status:                "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"
-    usage:                 "Usage : `/footer [on|off|status]`"
-    saved:                 "📎 Pied de page d'exécution : **{state}**{example}\n_(enregistré globalement — prend effet au prochain message)_"
-    example_line:          "\nExemple : `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Les objectifs ne sont pas disponibles dans cette session."
     no_goal_set:           "Aucun objectif défini."
@@ -252,17 +244,6 @@ Les resynchronisations s'exécutent automatiquement au maximum une fois par heur
     current_with_title:    "📌 Session : `{session_id}`\nTitre : **{title}**"
     current_no_title:      "📌 Session : `{session_id}`\nAucun titre défini. Usage : `/title Mon nom de session`"
 
-  topic:
-    not_telegram_dm:         "La commande /topic n'est disponible que dans les chats privés Telegram."
-    no_session_db:           "Base de données de sessions non disponible."
-    unauthorized:            "Vous n'êtes pas autorisé à utiliser /topic sur ce bot."
-    restore_needs_topic:     "Pour restaurer une session, créez ou ouvrez d'abord un topic Telegram, puis envoyez /topic <session-id> dans ce topic. Pour créer un nouveau topic, ouvrez All Messages et envoyez-y n'importe quel message."
-    topics_disabled:         "Les topics Telegram ne sont pas encore activés pour ce bot.\n\nComment les activer :\n1. Ouvrez @BotFather.\n2. Choisissez votre bot.\n3. Ouvrez Bot Settings → Threads Settings.\n4. Activez Threaded Mode et assurez-vous que les utilisateurs sont autorisés à créer de nouveaux threads.\n\nPuis envoyez /topic à nouveau."
-    topics_user_disallowed:  "Les topics Telegram sont activés, mais les utilisateurs ne peuvent pas en créer.\n\nOuvrez @BotFather → choisissez votre bot → Bot Settings → Threads Settings, puis désactivez 'Disallow users to create new threads'.\n\nPuis envoyez /topic à nouveau."
-    enable_failed:           "Échec de l'activation du mode topic Telegram : {error}"
-    bound_status:            "Ce topic est lié à :\nSession : {label}\nID : {session_id}\n\nUtilisez /new pour remplacer ce topic par une nouvelle session.\nPour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
-    thread_ready:            "Les topics multi-sessions Telegram sont activés.\n\nCe topic sera utilisé comme session Hermes indépendante. Utilisez /new pour remplacer la session actuelle de ce topic. Pour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
-    untitled_session:        "Session sans titre"
 
   undo:
     nothing:               "Rien à annuler."
@@ -276,41 +257,6 @@ Les resynchronisations s'exécutent automatiquement au maximum une fois par heur
     start_failed:            "✗ Échec du démarrage de la mise à jour : {error}"
     starting:                "☤ Démarrage de la mise à jour Hermes… Je diffuserai la progression ici."
 
-  usage:
-    rate_limits:              "⏱️ **Limites de débit :** {state}"
-    header_session:           "📊 **Utilisation des jetons de session**"
-    label_model:              "Modèle : `{model}`"
-    label_input_tokens:       "Jetons d'entrée : {count}"
-    label_cache_read:         "Jetons de lecture du cache : {count}"
-    label_cache_write:        "Jetons d'écriture du cache : {count}"
-    label_output_tokens:      "Jetons de sortie : {count}"
-    label_total:              "Total : {count}"
-    label_api_calls:          "Appels API : {count}"
-    label_cost:               "Coût : {prefix}${amount}"
-    label_cost_included:      "Coût : inclus"
-    label_context:            "Contexte : {used} / {total} ({pct}%)"
-    label_compressions:       "Compressions : {count}"
-    breakdown_header: "🧩 **Répartition du contexte** _(estimée)_"
-    breakdown_line: "• {label} : ~{count} ({pct} %)"
-    breakdown_cat_system_prompt: "Invite système"
-    breakdown_cat_tool_definitions: "Définitions des outils"
-    breakdown_cat_rules: "Règles"
-    breakdown_cat_skills: "Compétences"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Définitions des sous-agents"
-    breakdown_cat_memory: "Mémoire"
-    breakdown_cat_conversation: "Conversation"
-    header_session_info:      "📊 **Infos de session**"
-    label_messages:           "Messages : {count}"
-    label_estimated_context:  "Contexte estimé : ~{count} jetons"
-    detailed_after_first:     "_(Utilisation détaillée disponible après la première réponse de l'agent)_"
-    no_data:                  "Aucune donnée d'utilisation disponible pour cette session."
-    unknown_subcommand:       "Sous-commande /usage inconnue : `{args}`. Essayez `/usage` ou `/usage reset [--force]`."
-    reset_wrong_provider:     "Les réinitialisations de limite en réserve ne sont disponibles qu'avec le fournisseur openai-codex. Changez d'abord avec `/model`."
-
-  credits:
-    not_logged_in:            "Non connecté à Nous Portal. Connecte-toi pour voir ton solde de crédits et recharger."
-
   verbose:
     not_enabled:           "La commande `/verbose` n'est pas activée pour les plateformes de messagerie.\n\nActivez-la dans `config.yaml` :\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progression des outils : **OFF** — aucune activité d'outil affichée."
@@ -320,23 +266,6 @@ Les resynchronisations s'exécutent automatiquement au maximum une fois par heur
     mode_log:              "⚙️ Progression des outils : **LOG** — silencieux dans le chat ; les appels d'outils sont écrits dans ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(enregistré pour **{platform}** — prend effet au prochain message)_"
     save_failed:           "_(impossible d'enregistrer dans la configuration : {error})_"
-
-  voice:
-    enabled_voice_only:    "Mode vocal activé.\nJe répondrai en vocal quand vous envoyez des messages vocaux.\nUtilisez /voice tts pour obtenir des réponses vocales à tous les messages."
-    disabled_text:         "Mode vocal désactivé. Réponses uniquement textuelles."
-    tts_enabled:           "TTS automatique activé.\nToutes les réponses incluront un message vocal."
-    status_mode:           "Mode vocal : {label}"
-    status_channel:        "Canal vocal : #{channel}"
-    status_participants:   "Participants : {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (parle)"
-    enabled_short:         "Mode vocal activé."
-    disabled_short:        "Mode vocal désactivé."
-    label_off:             "Désactivé (texte seulement)"
-    label_voice_only:      "Activé (réponse vocale aux messages vocaux)"
-    label_all:             "TTS (réponse vocale à tous les messages)"
-    help:                  "{toggle}\n\n**Comment fonctionne /voice**\n• `/voice on` — réponse vocale quand vous envoyez un message vocal\n• `/voice tts` — réponse vocale à *chaque* message\n• `/voice off` — retour aux réponses texte uniquement\n• `/voice status` — afficher le mode actuel\n• `/voice` (sans argument) — bascule rapide entre activé et désactivé{channels}"
-    help_channels:         "\n\n**Salons vocaux en direct (Discord)**\n• Rejoignez d'abord un salon vocal, puis `/voice channel` — je rejoins, j'écoute et je parle mes réponses\n• `/voice leave` — se déconnecter du salon vocal"
 
   shared:
     session_db_unavailable:      "Base de données de sessions indisponible."

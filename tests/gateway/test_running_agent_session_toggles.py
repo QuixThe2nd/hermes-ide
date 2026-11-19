@@ -32,7 +32,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -50,12 +50,11 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
 
     session_entry = SessionEntry(
@@ -63,7 +62,7 @@ def _make_runner():
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store = MagicMock()
@@ -86,7 +85,6 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
 
     # Simulate agent actively running for this session so the guard fires.

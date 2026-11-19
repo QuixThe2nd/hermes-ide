@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Для загрузки полных журналов используйте `hermes debug share` из CLI."
     share_hint:            "Поделитесь этими ссылками с командой Hermes для получения поддержки."
 
-  footer:
-    status:                "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
-    usage:                 "Использование: `/footer [on|off|status]`"
-    saved:                 "📎 Нижний колонтитул среды выполнения: **{state}**{example}\n_(сохранено глобально — вступит в силу со следующего сообщения)_"
-    example_line:          "\nПример: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "Цели недоступны в этом сеансе."
     no_goal_set:           "Цель не задана."
@@ -252,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 Сеанс: `{session_id}`\nНазвание: **{title}**"
     current_no_title:      "📌 Сеанс: `{session_id}`\nНазвание не задано. Использование: `/title Название моего сеанса`"
 
-  topic:
-    not_telegram_dm:         "Команда /topic доступна только в личных чатах Telegram."
-    no_session_db:           "База данных сеансов недоступна."
-    unauthorized:            "У вас нет прав использовать /topic в этом боте."
-    restore_needs_topic:     "Чтобы восстановить сеанс, сначала создайте или откройте Telegram topic, затем отправьте /topic <session-id> в этом topic. Чтобы создать новый topic, откройте All Messages и отправьте там любое сообщение."
-    topics_disabled:         "Telegram topics ещё не включены для этого бота.\n\nКак включить:\n1. Откройте @BotFather.\n2. Выберите своего бота.\n3. Откройте Bot Settings → Threads Settings.\n4. Включите Threaded Mode и убедитесь, что пользователям разрешено создавать новые threads.\n\nЗатем снова отправьте /topic."
-    topics_user_disallowed:  "Telegram topics включены, но пользователям не разрешено создавать topics.\n\nОткройте @BotFather → выберите своего бота → Bot Settings → Threads Settings, затем выключите 'Disallow users to create new threads'.\n\nЗатем снова отправьте /topic."
-    enable_failed:           "Не удалось включить режим Telegram topic: {error}"
-    bound_status:            "Этот topic привязан к:\nСеанс: {label}\nID: {session_id}\n\nИспользуйте /new, чтобы заменить этот topic новым сеансом.\nДля параллельной работы откройте All Messages и отправьте там сообщение, чтобы создать другой topic."
-    thread_ready:            "Многосеансовые Telegram topics включены.\n\nЭтот topic будет использоваться как независимый сеанс Hermes. Используйте /new, чтобы заменить текущий сеанс этого topic. Для параллельной работы откройте All Messages и отправьте там сообщение, чтобы создать другой topic."
-    untitled_session:        "Сеанс без названия"
 
   undo:
     nothing:               "Нечего отменять."
@@ -276,41 +257,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     start_failed:            "✗ Не удалось запустить обновление: {error}"
     starting:                "☤ Запуск обновления Hermes… Я буду транслировать прогресс сюда."
 
-  usage:
-    rate_limits:              "⏱️ **Ограничения скорости:** {state}"
-    header_session:           "📊 **Использование токенов сеанса**"
-    label_model:              "Модель: `{model}`"
-    label_input_tokens:       "Входные токены: {count}"
-    label_cache_read:         "Токены чтения кеша: {count}"
-    label_cache_write:        "Токены записи кеша: {count}"
-    label_output_tokens:      "Выходные токены: {count}"
-    label_total:              "Всего: {count}"
-    label_api_calls:          "Вызовы API: {count}"
-    label_cost:               "Стоимость: {prefix}${amount}"
-    label_cost_included:      "Стоимость: включено"
-    label_context:            "Контекст: {used} / {total} ({pct}%)"
-    label_compressions:       "Сжатий: {count}"
-    breakdown_header: "🧩 **Разбивка контекста** _(оценка)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Системный промпт"
-    breakdown_cat_tool_definitions: "Определения инструментов"
-    breakdown_cat_rules: "Правила"
-    breakdown_cat_skills: "Навыки"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Определения субагентов"
-    breakdown_cat_memory: "Память"
-    breakdown_cat_conversation: "Разговор"
-    header_session_info:      "📊 **Информация о сеансе**"
-    label_messages:           "Сообщений: {count}"
-    label_estimated_context:  "Ориентировочный контекст: ~{count} токенов"
-    detailed_after_first:     "_(Подробное использование доступно после первого ответа агента)_"
-    no_data:                  "Данные об использовании для этого сеанса отсутствуют."
-    unknown_subcommand:       "Неизвестная подкоманда /usage: `{args}`. Попробуйте `/usage` или `/usage reset [--force]`."
-    reset_wrong_provider:     "Накопленные сбросы лимитов доступны только с провайдером openai-codex. Сначала переключитесь через `/model`."
-
-  credits:
-    not_logged_in:            "Вы не вошли в Nous Portal. Войдите, чтобы увидеть баланс кредитов и пополнить его."
-
   verbose:
     not_enabled:           "Команда `/verbose` не включена для платформ обмена сообщениями.\n\nВключите в `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Прогресс инструментов: **OFF** — активность инструментов не показывается."
@@ -320,23 +266,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_log:              "⚙️ Прогресс инструментов: **LOG** — тихо в чате; вызовы инструментов записываются в ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(сохранено для **{platform}** — вступит в силу со следующего сообщения)_"
     save_failed:           "_(не удалось сохранить в конфигурацию: {error})_"
-
-  voice:
-    enabled_voice_only:    "Голосовой режим включён.\nЯ буду отвечать голосом, когда вы отправляете голосовые сообщения.\nИспользуйте /voice tts, чтобы получать голосовые ответы на все сообщения."
-    disabled_text:         "Голосовой режим отключён. Только текстовые ответы."
-    tts_enabled:           "Авто-TTS включён.\nВсе ответы будут содержать голосовое сообщение."
-    status_mode:           "Голосовой режим: {label}"
-    status_channel:        "Голосовой канал: #{channel}"
-    status_participants:   "Участники: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (говорит)"
-    enabled_short:         "Голосовой режим включён."
-    disabled_short:        "Голосовой режим отключён."
-    label_off:             "Выкл. (только текст)"
-    label_voice_only:      "Вкл. (голосовой ответ на голосовые сообщения)"
-    label_all:             "TTS (голосовой ответ на все сообщения)"
-    help:                  "{toggle}\n\n**Как работает /voice**\n• `/voice on` — голосовой ответ, когда вы отправляете голосовое сообщение\n• `/voice tts` — голосовой ответ на *каждое* сообщение\n• `/voice off` — вернуться к ответам только текстом\n• `/voice status` — показать текущий режим\n• `/voice` (без аргумента) — быстрое переключение между вкл и выкл{channels}"
-    help_channels:         "\n\n**Живые голосовые каналы (Discord)**\n• Сначала зайдите в голосовой канал, затем `/voice channel` — я подключусь, буду слушать и отвечать голосом\n• `/voice leave` — отключиться от голосового канала"
 
   shared:
     session_db_unavailable:      "База данных сеансов недоступна."

@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint:            "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
 
-  footer:
-    status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
-    usage:                 "사용법: `/footer [on|off|status]`"
-    saved:                 "📎 런타임 푸터: **{state}**{example}\n_(전역 저장됨 — 다음 메시지부터 적용됩니다)_"
-    example_line:          "\n예시: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "이 세션에서는 목표 기능을 사용할 수 없습니다."
     no_goal_set:           "설정된 목표가 없습니다."
@@ -252,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 세션: `{session_id}`\n제목: **{title}**"
     current_no_title:      "📌 세션: `{session_id}`\n제목이 설정되지 않았습니다. 사용법: `/title 내 세션 이름`"
 
-  topic:
-    not_telegram_dm:         "/topic 명령은 Telegram 비공개 채팅에서만 사용할 수 있습니다."
-    no_session_db:           "세션 데이터베이스를 사용할 수 없습니다."
-    unauthorized:            "이 봇에서 /topic을 사용할 권한이 없습니다."
-    restore_needs_topic:     "세션을 복원하려면 먼저 Telegram 토픽을 만들거나 열고, 해당 토픽 안에서 /topic <session-id>를 보내세요. 새 토픽을 만들려면 All Messages를 열고 그곳으로 메시지를 보내세요."
-    topics_disabled:         "이 봇에는 아직 Telegram 토픽이 활성화되어 있지 않습니다.\n\n활성화 방법:\n1. @BotFather를 엽니다.\n2. 봇을 선택합니다.\n3. Bot Settings → Threads Settings를 엽니다.\n4. Threaded Mode를 켜고 사용자가 새 스레드를 만들 수 있도록 허용합니다.\n\n그런 다음 다시 /topic을 보내세요."
-    topics_user_disallowed:  "Telegram 토픽이 활성화되어 있지만, 사용자가 토픽을 만들 수 없습니다.\n\n@BotFather → 봇 선택 → Bot Settings → Threads Settings를 열고 'Disallow users to create new threads'를 끄세요.\n\n그런 다음 다시 /topic을 보내세요."
-    enable_failed:           "Telegram 토픽 모드 활성화에 실패했습니다: {error}"
-    bound_status:            "이 토픽은 다음에 연결되어 있습니다:\n세션: {label}\nID: {session_id}\n\n이 토픽을 새 세션으로 교체하려면 /new를 사용하세요.\n병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    thread_ready:            "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    untitled_session:        "제목 없는 세션"
 
   undo:
     nothing:               "되돌릴 내용이 없습니다."
@@ -276,41 +257,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     start_failed:            "✗ 업데이트 시작 실패: {error}"
     starting:                "☤ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
 
-  usage:
-    rate_limits:              "⏱️ **요청 제한:** {state}"
-    header_session:           "📊 **세션 토큰 사용량**"
-    label_model:              "모델: `{model}`"
-    label_input_tokens:       "입력 토큰: {count}"
-    label_cache_read:         "캐시 읽기 토큰: {count}"
-    label_cache_write:        "캐시 쓰기 토큰: {count}"
-    label_output_tokens:      "출력 토큰: {count}"
-    label_total:              "합계: {count}"
-    label_api_calls:          "API 호출: {count}"
-    label_cost:               "비용: {prefix}${amount}"
-    label_cost_included:      "비용: 포함됨"
-    label_context:            "컨텍스트: {used} / {total} ({pct}%)"
-    label_compressions:       "압축: {count}"
-    breakdown_header: "🧩 **컨텍스트 분석** _(추정치)_"
-    breakdown_line: "• {label}: 약 {count} ({pct}%)"
-    breakdown_cat_system_prompt: "시스템 프롬프트"
-    breakdown_cat_tool_definitions: "도구 정의"
-    breakdown_cat_rules: "규칙"
-    breakdown_cat_skills: "스킬"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "서브에이전트 정의"
-    breakdown_cat_memory: "메모리"
-    breakdown_cat_conversation: "대화"
-    header_session_info:      "📊 **세션 정보**"
-    label_messages:           "메시지: {count}"
-    label_estimated_context:  "예상 컨텍스트: 약 {count} 토큰"
-    detailed_after_first:     "_(자세한 사용량은 첫 에이전트 응답 이후 확인할 수 있습니다)_"
-    no_data:                  "이 세션에 사용 가능한 사용량 데이터가 없습니다."
-    unknown_subcommand:       "알 수 없는 /usage 하위 명령: `{args}`. `/usage` 또는 `/usage reset [--force]`를 사용해 보세요."
-    reset_wrong_provider:     "적립된 사용량 한도 초기화는 openai-codex 공급자에서만 사용할 수 있습니다. 먼저 `/model`로 전환하세요."
-
-  credits:
-    not_logged_in:            "Nous Portal에 로그인되어 있지 않습니다. 로그인하면 크레딧 잔액 확인 및 충전을 할 수 있습니다."
-
   verbose:
     not_enabled:           "`/verbose` 명령은 메시징 플랫폼에서 활성화되어 있지 않습니다.\n\n`config.yaml`에서 활성화하세요:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ 도구 진행 상황: **OFF** — 도구 활동이 표시되지 않습니다."
@@ -320,23 +266,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_log:              "⚙️ 도구 진행 상황: **LOG** — 채팅에는 표시되지 않으며 도구 호출이 ~/.hermes/logs/tool_calls.log에 기록됩니다."
     saved_suffix:          "_(**{platform}**에 저장됨 — 다음 메시지부터 적용됩니다)_"
     save_failed:           "_(설정에 저장할 수 없습니다: {error})_"
-
-  voice:
-    enabled_voice_only:    "음성 모드가 활성화되었습니다.\n음성 메시지를 보내시면 음성으로 답변하겠습니다.\n모든 메시지에 대해 음성으로 응답받으려면 /voice tts를 사용하세요."
-    disabled_text:         "음성 모드가 비활성화되었습니다. 텍스트로만 응답합니다."
-    tts_enabled:           "자동 TTS가 활성화되었습니다.\n모든 응답에 음성 메시지가 포함됩니다."
-    status_mode:           "음성 모드: {label}"
-    status_channel:        "음성 채널: #{channel}"
-    status_participants:   "참가자: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (말하는 중)"
-    enabled_short:         "음성 모드가 활성화되었습니다."
-    disabled_short:        "음성 모드가 비활성화되었습니다."
-    label_off:             "꺼짐 (텍스트 전용)"
-    label_voice_only:      "켜짐 (음성 메시지에 음성으로 응답)"
-    label_all:             "TTS (모든 메시지에 음성으로 응답)"
-    help:                  "{toggle}\n\n**/voice 사용법**\n• `/voice on` — 음성 메시지를 보내면 음성으로 답변\n• `/voice tts` — *모든* 메시지에 음성으로 답변\n• `/voice off` — 텍스트 전용 답변으로 복귀\n• `/voice status` — 현재 모드 표시\n• `/voice` (인자 없음) — 켜기와 끄기를 빠르게 전환{channels}"
-    help_channels:         "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
 
   shared:
     session_db_unavailable:      "세션 데이터베이스를 사용할 수 없습니다."

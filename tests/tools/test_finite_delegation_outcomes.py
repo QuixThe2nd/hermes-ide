@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import threading
+from queue import Empty
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -49,7 +51,15 @@ class _Child:
         self.started.set()
         try:
             if self.outcome == "slow":
-                assert self.interrupted.wait(5), "child never received stop"
+                # A hard stop (parent interrupt) or the test releasing an ADOPTED
+                # worker both end the conversation; either way the unwind happens
+                # before close(). Poll for either release rather than blocking on
+                # one event: an adopted worker is never interrupted.
+                deadline = time.monotonic() + 5
+                while not (self.interrupted.is_set() or self.allow_finish.is_set()):
+                    if time.monotonic() > deadline:
+                        raise AssertionError("child never released")
+                    time.sleep(0.02)
                 self.unwinding.set()
                 assert self.allow_finish.wait(5), "child teardown was not released"
                 return {"final_response": "partial", "completed": False,
@@ -157,12 +167,26 @@ def test_finite_batch_returns_timeout_while_child_unwinds(harness, monkeypatch):
     _joined(result, ["completed", "timeout"])
     assert "timed out" in result["results"][1]["error"]
     assert result["results"][1]["exit_reason"] == "timeout"
+    # The healthy slow worker was adopted onto the rail, not stopped.
+    assert result["results"][1].get("delegation_id"), result["results"][1]["error"]
     slow = children[1]
-    assert slow.unwinding.wait(1)
+    assert not slow.interrupted.is_set()
     assert not slow.finished.is_set()
-    assert not slow.closed.is_set(), "timeout must not close an unwinding child"
+    assert not slow.closed.is_set(), "timeout must not close a still-running adopted child"
     slow.allow_finish.set()
-    assert slow.closed.wait(2)
+    assert slow.finished.wait(2)
+    assert slow.closed.wait(2), "the adopted runner closes the settled child"
+    # Absorb the adopted unit's terminal event here: it lands asynchronously on the
+    # shared completion queue and must not leak into the next test's assertions.
+    adopted_id = result["results"][1]["delegation_id"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+        except Empty:
+            continue
+        if evt.get("type") == "async_delegation" and evt.get("delegation_id") == adopted_id:
+            break
 
 
 def test_finite_batch_returns_parent_interruption(harness):

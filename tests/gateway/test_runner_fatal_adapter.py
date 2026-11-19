@@ -12,12 +12,12 @@ from gateway.session import SessionSource, build_session_key
 
 class _FatalAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="token"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="token"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
-            "telegram_token_lock",
-            "Another local Hermes gateway is already using this Telegram bot token.",
+            "discord_token_lock",
+            "Another local Hermes gateway is already using this Discord bot token.",
             retryable=False,
         )
         return False
@@ -160,7 +160,7 @@ async def test_retryable_fatal_queues_reconnect_after_cancellation_swallowing_di
 async def test_retryable_fatal_queues_before_disconnect_returns(monkeypatch, tmp_path):
     """#80598: reconnect queue must populate before disconnect finishes.
 
-    After a long network outage, Telegram disconnect can wedge on a half-dead
+    After a long network outage, an adapter's disconnect can wedge on a half-dead
     socket. If the fatal handler only queues after disconnect returns, the
     watcher never learns about the failure and the gateway stays permanently
     deaf. Queue first; teardown is best-effort after.
@@ -172,8 +172,8 @@ async def test_retryable_fatal_queues_before_disconnect_returns(monkeypatch, tmp
     runner = GatewayRunner(config)
     adapter = _RuntimeRetryableAdapter()
     adapter._set_fatal_error(
-        "telegram_network_error",
-        "Telegram polling could not reconnect after 10 network error retries.",
+        "whatsapp_network_error",
+        "WhatsApp polling could not reconnect after 10 network error retries.",
         retryable=True,
     )
     runner.adapters = {Platform.WHATSAPP: adapter}

@@ -1119,7 +1119,7 @@ def build_session_key(
         ``thread_sessions_per_user`` is False (default), threads are *shared* across all
         participants — user_id is NOT appended, so every user in the thread
         shares a single session.  This is the expected UX for threaded
-        conversations (Telegram forum topics, Discord threads, Slack threads).
+        conversations (forum topics, Discord threads, Slack threads).
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
@@ -1893,7 +1893,7 @@ class SessionStore:
                     # a newer live child session exists for the exact same gateway
                     # peer, repoint the routing index instead of dropping it. A
                     # hard restart between compression rotation and the next clean
-                    # save otherwise leaves Telegram with no resumable mapping, so
+                    # save otherwise leaves the session with no resumable mapping, so
                     # queued/resume-pending work disappears until the user sends a
                     # fresh message.
                     if recovered_entry is not None and recovered_entry.session_id != entry.session_id:

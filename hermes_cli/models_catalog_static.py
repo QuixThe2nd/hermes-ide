@@ -48,14 +48,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     )
 ]
 
-# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier —
-# ``stealth/union-alpha`` is a $0 stealth SKU without the ``:free`` suffix).
-_OPENROUTER_ONLY = {
-    "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
-    "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
-    "stealth/union-alpha",
-}
-
 
 # Fallback Vercel AI Gateway snapshot (open-weight first, then closed-source by family). Slugs
 # match Vercel's /v1/models catalog (``alibaba/`` for Qwen, ``zai/`` and ``xai/`` without hyphens).
@@ -157,7 +149,6 @@ _XAI_MODELS = _xai_curated_models()
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
-    "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")],
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
@@ -261,15 +252,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-ai/DeepSeek-V3.2", "MiniMaxAI/MiniMax-M2.5", "zai-org/GLM-5",
         "XiaomiMiMo/MiMo-V2-Flash", "moonshotai/Kimi-K2-Thinking", "moonshotai/Kimi-K2.6",
     ],
-    # Static fallback when live discovery (ListFoundationModels + ListInferenceProfiles) is
-    # unavailable. Inference-profile IDs (us.*) because most models require them.
-    "bedrock": [
-        "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6-v1",
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
-        "us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0", "us.amazon.nova-micro-v1:0", "deepseek.v3.2",
-        "us.meta.llama4-maverick-17b-instruct-v1:0", "us.meta.llama4-scout-17b-instruct-v1:0",
-    ],
     # Azure Foundry models depend on the user's endpoint configuration.
     "azure-foundry": [],
     # Vertex's OpenAI-compatible endpoint has no /models route, so without this the /model picker
@@ -304,7 +286,6 @@ class ProviderEntry(NamedTuple):
 
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
-    ("nous", "Nous Portal", "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ("fireworks", "Fireworks AI", "Fireworks AI (OpenAI-compatible direct model API)"),
     ("openrouter", "OpenRouter", "OpenRouter (Pay-per-use API aggregator)"),
     ("moa", "Mixture of Agents", "Mixture of Agents (named presets; aggregator acts after reference models)"),
@@ -338,7 +319,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("kilocode", "Kilo Code", "Kilo Code (Kilo Gateway API)"),
     ("opencode-zen", "OpenCode Zen", "OpenCode Zen (Curated models, pay-as-you-go)"),
     ("opencode-go", "OpenCode Go", "OpenCode Go (Open models subscription)"),
-    ("bedrock", "AWS Bedrock", "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ("azure-foundry", "Azure Foundry", "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ("ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway (Multi-model aggregator)"),
     ("qwen-oauth", "Qwen OAuth (Portal)", "Qwen OAuth (Reuses local Qwen CLI login)"),
@@ -370,7 +350,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # ---------------------------------------------------------------------------
 # Provider groups — DISPLAY ONLY. Vendors with several slugs (global API, China API, OAuth plan,
 # ...) fold under one top-level row in the INTERACTIVE PICKERS (``hermes model``, setup wizard,
-# Telegram ``/model``). They do NOT change CANONICAL_PROVIDERS, slug identity, ``--provider``,
+# gateway ``/model``). They do NOT change CANONICAL_PROVIDERS, slug identity, ``--provider``,
 # ``/model <provider:model>`` or any typed path — every member slug stays individually addressable.
 # ``group_providers()`` is the single fold used by all three surfaces.
 #   group_id -> (display_label, group_description shown on the collapsed row, [member_slug, ...])
@@ -458,8 +438,7 @@ _PROVIDER_ALIASES = dict((
     ("hugging-face", "huggingface"), ("huggingface-hub", "huggingface"), ("novita-ai", "novita"),
     ("novitaai", "novita"), ("mimo", "xiaomi"), ("xiaomi-mimo", "xiaomi"), ("tencent", "tencent-tokenhub"),
     ("tokenhub", "tencent-tokenhub"), ("tencent-cloud", "tencent-tokenhub"), ("tencentmaas", "tencent-tokenhub"),
-    ("tokenplan", "tencent-tokenplan"), ("tencent-lkeap", "tencent-tokenplan"), ("aws", "bedrock"),
-    ("aws-bedrock", "bedrock"), ("amazon-bedrock", "bedrock"), ("amazon", "bedrock"), ("grok", "xai"),
+    ("tokenplan", "tencent-tokenplan"), ("tencent-lkeap", "tencent-tokenplan"), ("grok", "xai"),
     ("grok-oauth", "xai-oauth"), ("xai-oauth", "xai-oauth"), ("x-ai-oauth", "xai-oauth"),
     ("xai-grok-oauth", "xai-oauth"), ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
     ("build-nvidia", "nvidia"), ("nemotron", "nvidia"), ("lmstudio", "lmstudio"), ("lm-studio", "lmstudio"),
@@ -483,7 +462,7 @@ PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
 # Network-free (cache-only) on purpose — this is the hot resolution path. The *interactive* default
 # (GUI onboarding / ``hermes model``) uses the tier-aware ``get_recommended_default_model`` in
 # callers that may hit the Portal.
-_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
+_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"openrouter"})
 
 
 # Retired model IDs kept for /model auto-detect only — not shown in pickers. DeepSeek cut these
@@ -493,7 +472,7 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-_AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
+_AGGREGATOR_PROVIDERS = frozenset({"openrouter", "ai-gateway", "copilot", "kilocode"})
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last
@@ -520,9 +499,9 @@ _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
 # Providers where models.dev is authoritative: the curated list is an offline fallback plus custom
 # additions the registry lacks, merged fresh-first (curated-only names appended) for both the CLI
 # and the gateway /model picker. DELIBERATELY EXCLUDED: "openrouter" (curated list is a hand-picked
-# agentic subset of 400+ models — merging would dump everything), "nous" (curated list + Portal
-# /models are the subscription-tier source of truth), and providers with dedicated live-endpoint
-# branches (copilot, anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
+# agentic subset of 400+ models — merging would dump everything), and providers with dedicated
+# live-endpoint branches (copilot, anthropic, ai-gateway, ollama-cloud, custom, stepfun,
+# openai-codex).
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go", "opencode-zen", "deepseek", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",

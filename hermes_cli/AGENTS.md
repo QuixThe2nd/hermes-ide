@@ -1,12 +1,12 @@
 # hermes_cli/ + cli.py — CLI, slash commands, config, skins, updater, profiles
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cli-internals.md`.
+Applies on top of the root `AGENTS.md`.
 
 ## CLI architecture
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
-`cli_billing_mixin.py`, `cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
+`cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
@@ -19,13 +19,13 @@ Rules: all interactive menu-pickers use curses (`hermes_cli/curses_ui.py`; examp
 `hermes_cli/tools_config.py`). Never emit `\033[K` (ANSI erase-to-EOL) in spinner/display code —
 it leaks as literal `?[K` under prompt_toolkit's `patch_stdout`; space-pad instead:
 `f"\r{line}{' ' * pad}"`. Wrapper CLIs extend via the protected hooks in `cli_tui_mixin.py`
-(`website/docs/developer-guide/extending-the-cli.md`), not by overriding `run()`.
+(see the extending-the-cli developer guide), not by overriding `run()`.
 
 ## Slash command registry (`hermes_cli/commands.py`)
 
 `COMMAND_REGISTRY` (list of `CommandDef`) is the single source; everything derives from it: CLI
 dispatch (`resolve_command()`), gateway `GATEWAY_KNOWN_COMMANDS` + dispatch, `gateway_help_lines()`,
-`telegram_bot_commands()` (BotCommand menu), `slack_subcommand_map()`, `COMMANDS` (autocomplete),
+`slack_subcommand_map()`, `COMMANDS` (autocomplete),
 `COMMANDS_BY_CATEGORY` (`show_help()`). Fields: `name` (no slash), `description`, `category`
 (`Session | Configuration | Tools & Skills | Info | Exit`), `aliases` tuple, `args_hint`,
 `cli_only`, `gateway_only`, `gateway_config_gate` (config dotpath; a `cli_only` command becomes
@@ -57,7 +57,7 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   migrate/transform existing config (rename keys, restructure); new keys deep-merge automatically.
   Top-level sections (non-exhaustive): `model, agent, terminal, compression, display, stt, tts,
   memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
-  gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
+  gateway, logging, cron, profiles, plugins`. `auxiliary` = per-task side-LLM overrides
   (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
   archive_after_days, backup.*`.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with
@@ -94,7 +94,7 @@ from `default`). Built-ins in `_BUILTIN_SKINS`: `default`, `ares`, `mono`, `slat
 (banner border/title/accent/dim/text, response_border), `spinner.*` (waiting/thinking faces,
 thinking_verbs, wings), `tool_prefix`, `tool_emojis`, `branding.*` (agent_name, welcome,
 response_label, prompt_symbol). Consumers: `banner.py`, `display.py`, `cli.py`. Key-by-key table
-and YAML template: `website/docs/user-guide/features/skins.md`.
+and YAML template (see the skins user guide).
 
 ## Update pipeline (`hermes update`) — transactional; every stage guards a real field failure
 
@@ -158,7 +158,7 @@ Process-scan coordination between the updater and the gateway is being replaced 
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
 #92091 before adding any heuristic. Process identity rules (never argv substrings; canonical
 matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87594): root
-`AGENTS.md` and `website/docs/developer-guide/cli-internals.md`.
+`AGENTS.md`.
 
 ## Profiles (multi-instance)
 
@@ -220,32 +220,3 @@ empty environment, so the env override that makes `-p` work interactively does n
 change to install/restart/status regenerates and diffs every kind; both user and system units are
 recorded when both exist. Process liveness is `(pid, start_time)` or the canonical matchers
 (`gateway.status.live_gateway_pid_for_home`), never bare PID existence.
-
-## Nous free tier (`hermes_cli/anon_auth.py`)
-
-Sign-in completion is one function, `settle_after_upgrade`, called by every caller that persists an
-account over a free-tier identity (CLI `upgrade_guest`, the desktop poller): it moves a config on the
-welcome route to the account's host and the tier's recommended default
-(`models.recommended_nous_default_model`, shared with `GET /api/model/recommended-default`).
-
-The shared flow, states, and copy live in `anon_sign_in.py`; CLI rendering lives in
-`anon_sign_in_cli.py`. `anon_auth.py` keeps identity, promotion polling, and settlement, and
-re-exports the existing sign-in API. The flow resolves identity and persistence collaborators
-through `anon_auth` at call time to preserve module-attribute monkeypatch seams.
-
-The sign-in itself is one composition: `anon_auth.run_sign_in()` yields `SignInState`s (`Code`,
-`Waiting`, `Completed`, `Declined`, `Superseded`, `TimedOut`, `Retired`, `Failed`,
-`AlreadySignedIn`, `Unavailable`). It reads the current state itself, holds one absolute deadline
-across both waits, persists only after a completed promotion **and** a token grant, runs
-`settle_after_upgrade` exactly once per completion, and never lets a persist or settle failure
-escape as an exception — it becomes `Failed`. Every state carries its own `.copy` (the chat form,
-which never contains a raw exception, a URL or a `hermes` verb) and `.copy_terminal`, so no caller
-maps a reason to a string. `cancelled()` stops an attempt; `cancel_wins_after_promotion` decides
-what happens when the server had already completed the transfer — the desktop keeps `True` (a
-DELETE means "not on this machine"), the gateway passes `False` (a supersede must not discard a
-transfer the user actually approved). `scope` is entered only around the precondition and persist
-blocks, never across a `yield` or a network wait, because `run_in_executor` does not carry
-contextvars. `upgrade_guest` (`hermes auth upgrade`), the CLI `/login` handler and the desktop
-promotion poller are renderers over it; a surface that needs the cancel check and the save to be
-atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
-is a separate path (`_nous_plain_poller`) and must stay one.

@@ -217,11 +217,11 @@ def main() -> int:
 
     if args.readme:
         path = Path(args.readme)
-        old = path.read_text()
+        old = path.read_text(encoding="utf-8-sig")
         if README_MARKERS[0] not in old:
             print(f"error: {README_MARKERS[0]} not found in {path}", file=sys.stderr)
             return 1
-        path.write_text(replace_block(old, block))
+        path.write_text(replace_block(old, block), encoding="utf-8")
         print(f"updated {path}")
     return 0
 

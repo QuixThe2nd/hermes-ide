@@ -52,7 +52,7 @@ This is the most common question for new contributors. The answer is almost alwa
 - It requires end-to-end integration with API keys, auth flows, or multi-component configuration managed by the agent harness
 - It needs custom processing logic that must execute precisely every time (not "best effort" from LLM interpretation)
 - It handles binary data, streaming, or real-time events that can't go through the terminal
-- Examples: browser automation (Camofox session management), TTS (audio encoding + platform delivery), vision analysis (base64 image handling)
+- Examples: browser automation (Camofox session management), vision analysis (base64 image handling)
 
 ### Should the Skill be bundled?
 
@@ -229,7 +229,7 @@ hermes-agent/
 ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
+├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-discord, etc.)
 ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
@@ -249,7 +249,7 @@ hermes-agent/
 │   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
 │   ├── config.py                 # Config management, migration, env var definitions
 │   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
+│   ├── auth.py                   # Provider resolution, OAuth (facade + auth_*.py siblings)
 │   ├── models.py                 # OpenRouter model selection lists
 │   ├── banner.py                 # Welcome banner, ASCII art
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
@@ -284,7 +284,7 @@ hermes-agent/
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
 │   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│       ├── discord.py, slack.py, whatsapp.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer
@@ -306,7 +306,7 @@ hermes-agent/
 |------|---------|
 | `~/.hermes/config.yaml` | Settings (model, terminal, toolsets, compression, etc.) |
 | `~/.hermes/.env` | API keys and secrets |
-| `~/.hermes/auth.json` | OAuth credentials (Nous Portal) |
+| `~/.hermes/auth.json` | OAuth credentials |
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | SQLite session database |
@@ -341,7 +341,7 @@ User message → AIAgent._run_agent_loop()
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
 - **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
-- **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
+- **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (provider OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
 
 ---
@@ -602,7 +602,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
    Good: `Search arXiv papers by keyword, author, category, or ID.`
    Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
 
-2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_agent` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_agent` ``, `` `image_generate` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
 
    Do NOT name shell utilities the agent already has wrapped:
 

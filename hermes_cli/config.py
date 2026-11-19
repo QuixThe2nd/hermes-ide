@@ -229,7 +229,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD", "QQ_APP_ID", "QQ_CLIENT_SECRET",
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
-    "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     # Deprecated (replaced by display.tool_progress) but STILL READ by the gateway as a
     # back-compat fallback. The boolean HERMES_TOOL_PROGRESS variant is unsupported (its only
@@ -711,7 +710,6 @@ from hermes_cli.personality import (  # noqa: E402,F401
 from hermes_cli.config_defaults import DEFAULT_MAX_TURNS  # noqa: F401
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     3: ["FIRECRAWL_API_KEY", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
@@ -950,15 +948,15 @@ def _unset_nested(config, dotted_key: str) -> bool:
 
 
 _ENV_CONFIG_KEYS = frozenset({
-    'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+    'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
     'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
     'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_URL', 'CONNECTOR_GATEWAY_URL',
     'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
     'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'PERPLEXITY_API_KEY', 'API_SERVER_KEY',
-    'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+    'FAL_KEY', 'DISCORD_BOT_TOKEN',
     'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
     'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-    'GITHUB_TOKEN', 'HONCHO_API_KEY'})
+    'GITHUB_TOKEN'})
 
 
 def _is_env_config_key(key: str) -> bool:
@@ -1095,7 +1093,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by gateway/config.py:
     "group_sessions_per_user", "thread_sessions_per_user",
-    "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
+    "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
@@ -1143,17 +1141,6 @@ _FB_REQUIRED_FIELDS = (
 _FB_SINGLE_REQUIRED_FIELDS = (
     ("provider", "Add: provider: openrouter (or another provider)"),
     ("model", "Add: model: anthropic/claude-sonnet-4 (or another model)"))
-
-
-def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
-    voice_cfg = config.get("voice")
-    if not (isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg):
-        return
-    submit_mode = voice_cfg.get("submit_mode")
-    normalized = submit_mode.strip().lower() if isinstance(submit_mode, str) else None
-    if normalized not in {"direct", "draft"}:
-        _issue(issues, "error", f"voice.submit_mode must be 'direct' or 'draft', got {submit_mode!r}",
-               "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
 def _validate_timezone(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
@@ -1277,7 +1264,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
-    _validate_voice(config, issues)
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
@@ -2157,14 +2143,9 @@ TERMINAL_CONFIG_ENV_MAP = {
     **{
         key: f"TERMINAL_{key.upper()}"
         for key in (
-            "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
-            "docker_image", "docker_forward_env", "singularity_image", "modal_image",
-            "daytona_image", "vercel_runtime", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
-            "container_cpu", "container_memory", "container_disk", "container_persistent",
-            "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
-            "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
-            "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
+            "ssh_host", "ssh_user", "ssh_port", "ssh_key",
+            "sandbox_dir", "persistent_shell")}}
 
 
 def _terminal_env_value(value: Any) -> str:
@@ -2406,13 +2387,11 @@ _FALLBACK_COMMENT = """
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
-#   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
-#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -2903,7 +2882,6 @@ def _show_managed_banner() -> None:
 
 _SHOW_CONFIG_API_KEYS = (
     ("OPENROUTER_API_KEY", "OpenRouter"),
-    ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
     ("EXA_API_KEY", "Exa"),
     ("PARALLEL_API_KEY", "Parallel"),
     ("FIRECRAWL_API_KEY", "Firecrawl"),
@@ -2955,20 +2933,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'  # noqa: E731
-    default_img = 'nikolaik/python-nodejs:python3.11-nodejs20'
     backend_lines = {
-        'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
-        'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
-        'modal': lambda: [
-            f"  Modal image:  {terminal.get('modal_image', default_img)}",
-            f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],
-        'daytona': lambda: [
-            f"  Daytona image: {terminal.get('daytona_image', default_img)}",
-            f"  API key:      {configured('DAYTONA_API_KEY')}"],
-        'vercel_sandbox': lambda: [
-            f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}",
-            f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}",
-        ],
         'ssh': lambda: [
             f"  SSH host:     {get_env_value('TERMINAL_SSH_HOST') or '(not set)'}",
             f"  SSH user:     {get_env_value('TERMINAL_SSH_USER') or '(not set)'}"]}
@@ -3064,7 +3029,7 @@ def show_config():
     _show_aux_overrides(config)
 
     _section("Messaging Platforms")
-    for label, env_key in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN")):
+    for label, env_key in (("Discord", "DISCORD_BOT_TOKEN"),):
         state = 'configured' if get_env_value(env_key) else color('not configured', Colors.DIM)
         print(f"  {label + ':':<13} {state}")
 
@@ -3558,7 +3523,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     Only known display settings (``OVERRIDEABLE_KEYS``) are redirected. Returns ``(key, note)``;
     the gateway import is guarded so the CLI works where the gateway package is unavailable.
 
-    Before #71047 a write such as ``hermes config set platforms.telegram.streaming false`` landed on a key
+    Before #71047 a write such as ``hermes config set platforms.discord.streaming false`` landed on a key
     the gateway never reads: ``config get`` echoed the new value back while the runtime kept the old
     ``display.platforms`` one — a silent no-op that looks like a duplicated key to the user.
     """
@@ -3651,7 +3616,7 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "but Hermes may not read it.", Colors.YELLOW))
     if suggestion:
         print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
+    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path
     # is written but not bridged, so the footer would be a false promise there.
     if len(_split_key_path(key)) == 1:
         print(color(
@@ -3850,8 +3815,8 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
     # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``stt.provider``,
-    # ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded
+    # (``gateway.proxy_url``: a stored value counts as an explicit user pick), so
     # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
     # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.

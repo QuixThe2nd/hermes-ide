@@ -11,7 +11,7 @@ metadata:
   hermes:
     tags: [privacy, data-broker, opt-out, ccpa, gdpr, security, doxxing]
     category: security
-    related_skills: [google-workspace, agentmail, himalaya, scrapling, osint-investigation]
+    related_skills: [google-workspace, himalaya, scrapling, osint-investigation]
     homepage: https://github.com/NousResearch/hermes-agent
 ---
 
@@ -75,8 +75,7 @@ verifying re-scan.
       `references/methods.md` -> "Browser workflow". Falls back to drafts if the inbox is unreachable.
     - **SMTP/IMAP (stored creds): `EMAIL_ADDRESS` + `EMAIL_PASSWORD`** (+ `EMAIL_SMTP_HOST` /
       `EMAIL_IMAP_HOST` for non-mainstream providers; gmail/outlook/yahoo/icloud/fastmail inferred).
-      The CLI sends via `send-email` and reads verify links via `poll-verification`. The `agentmail`
-      skill (per-broker aliases) also counts.
+      The CLI sends via `send-email` and reads verify links via `poll-verification`.
   - Google Sheets tracker: the `google-workspace` skill.
   - The `scrapling` skill for stealth/Cloudflare-protected pages.
 

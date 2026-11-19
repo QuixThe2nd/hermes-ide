@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
     share_hint:            "Deel hierdie skakels met die Hermes-span vir ondersteuning."
 
-  footer:
-    status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
-    usage:                 "Gebruik: `/footer [on|off|status]`"
-    saved:                 "📎 Looptyd-voetstuk: **{state}**{example}\n_(globaal gestoor — neem effek by die volgende boodskap)_"
-    example_line:          "\nVoorbeeld: `{preview}`"
-    state_on:              "AAN"
-    state_off:             "AF"
-
   goal:
     unavailable:           "Doelwitte is nie beskikbaar in hierdie sessie nie."
     no_goal_set:           "Geen doelwit gestel nie."
@@ -252,17 +244,6 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     current_with_title:    "📌 Sessie: `{session_id}`\nTitel: **{title}**"
     current_no_title:      "📌 Sessie: `{session_id}`\nGeen titel gestel nie. Gebruik: `/title My Sessie Naam`"
 
-  topic:
-    not_telegram_dm:         "Die /topic-opdrag is slegs beskikbaar in Telegram-privaatgesprekke."
-    no_session_db:           "Sessie-databasis is nie beskikbaar nie."
-    unauthorized:            "Jy het nie toestemming om /topic op hierdie bot te gebruik nie."
-    restore_needs_topic:     "Om 'n sessie te herstel, skep of open eers 'n Telegram-onderwerp en stuur dan /topic <session-id> binne daardie onderwerp. Om 'n nuwe onderwerp te skep, open All Messages en stuur enige boodskap daar."
-    topics_disabled:         "Telegram-onderwerpe is nog nie vir hierdie bot geaktiveer nie.\n\nHoe om dit te aktiveer:\n1. Open @BotFather.\n2. Kies jou bot.\n3. Open Bot Settings → Threads Settings.\n4. Skakel Threaded Mode aan en maak seker gebruikers mag nuwe drade skep.\n\nStuur dan weer /topic."
-    topics_user_disallowed:  "Telegram-onderwerpe is geaktiveer, maar gebruikers mag nie onderwerpe skep nie.\n\nOpen @BotFather → kies jou bot → Bot Settings → Threads Settings, en skakel dan 'Disallow users to create new threads' af.\n\nStuur dan weer /topic."
-    enable_failed:           "Kon nie Telegram-onderwerpmodus aktiveer nie: {error}"
-    bound_status:            "Hierdie onderwerp is gekoppel aan:\nSessie: {label}\nID: {session_id}\n\nGebruik /new om hierdie onderwerp met 'n vars sessie te vervang.\nVir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
-    thread_ready:            "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike Hermes-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
-    untitled_session:        "Sessie sonder titel"
 
   undo:
     nothing:               "Niks om ongedaan te maak nie."
@@ -276,41 +257,6 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
     starting:                "☤ Begin Hermes-opdatering… Ek sal vordering hier stroom."
 
-  usage:
-    rate_limits:              "⏱️ **Tariefperke:** {state}"
-    header_session:           "📊 **Sessie-tokengebruik**"
-    label_model:              "Model: `{model}`"
-    label_input_tokens:       "Invoertokens: {count}"
-    label_cache_read:         "Kasie-leestokens: {count}"
-    label_cache_write:        "Kasie-skryftokens: {count}"
-    label_output_tokens:      "Uitvoertokens: {count}"
-    label_total:              "Totaal: {count}"
-    label_api_calls:          "API-oproepe: {count}"
-    label_cost:               "Koste: {prefix}${amount}"
-    label_cost_included:      "Koste: ingesluit"
-    label_context:            "Konteks: {used} / {total} ({pct}%)"
-    label_compressions:       "Saamperserings: {count}"
-    breakdown_header: "🧩 **Konteksverdeling** _(geskat)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Stelselopdrag"
-    breakdown_cat_tool_definitions: "Nutsmiddeldefinisies"
-    breakdown_cat_rules: "Reëls"
-    breakdown_cat_skills: "Vaardighede"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Subagent-definisies"
-    breakdown_cat_memory: "Geheue"
-    breakdown_cat_conversation: "Gesprek"
-    header_session_info:      "📊 **Sessie-inligting**"
-    label_messages:           "Boodskappe: {count}"
-    label_estimated_context:  "Geskatte konteks: ~{count} tokens"
-    detailed_after_first:     "_(Gedetailleerde gebruik beskikbaar na die eerste agent-antwoord)_"
-    no_data:                  "Geen gebruiksdata beskikbaar vir hierdie sessie nie."
-    unknown_subcommand:       "Onbekende /usage subopdrag: `{args}`. Probeer `/usage` of `/usage reset [--force]`."
-    reset_wrong_provider:     "Gebankte gebruikslimiet-terugstellings is slegs beskikbaar op die openai-codex verskaffer. Skakel eers oor met `/model`."
-
-  credits:
-    not_logged_in:            "Nie by Nous Portal aangemeld nie. Meld aan om jou kredietsaldo te sien en op te laai."
-
   verbose:
     not_enabled:           "Die `/verbose`-opdrag is nie vir boodskapplatforms geaktiveer nie.\n\nAktiveer dit in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Gereedskap-vordering: **AF** — geen gereedskap-aktiwiteit word vertoon nie."
@@ -320,23 +266,6 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     mode_log:              "⚙️ Gereedskap-vordering: **LOG** — stil in die klets; gereedskaps-oproepe word na ~/.hermes/logs/tool_calls.log geskryf."
     saved_suffix:          "_(gestoor vir **{platform}** — neem effek by die volgende boodskap)_"
     save_failed:           "_(kon nie in konfigurasie stoor nie: {error})_"
-
-  voice:
-    enabled_voice_only:    "Stemmodus geaktiveer.\nEk sal met stem antwoord wanneer jy stemboodskappe stuur.\nGebruik /voice tts om stemantwoorde vir alle boodskappe te kry."
-    disabled_text:         "Stemmodus gedeaktiveer. Slegs teks-antwoorde."
-    tts_enabled:           "Outo-TTS geaktiveer.\nAlle antwoorde sal 'n stemboodskap insluit."
-    status_mode:           "Stemmodus: {label}"
-    status_channel:        "Stemkanaal: #{channel}"
-    status_participants:   "Deelnemers: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (praat)"
-    enabled_short:         "Stemmodus geaktiveer."
-    disabled_short:        "Stemmodus gedeaktiveer."
-    label_off:             "Af (slegs teks)"
-    label_voice_only:      "Aan (stemantwoord op stemboodskappe)"
-    label_all:             "TTS (stemantwoord op alle boodskappe)"
-    help:                  "{toggle}\n\n**Hoe /voice werk**\n• `/voice on` — stemantwoord wanneer jy 'n stemboodskap stuur\n• `/voice tts` — stemantwoord op *elke* boodskap\n• `/voice off` — terug na slegs-teks antwoorde\n• `/voice status` — wys die huidige modus\n• `/voice` (geen argument) — wissel vinnig tussen aan en af{channels}"
-    help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
 
   shared:
     session_db_unavailable:      "Sessie-databasis is nie beskikbaar nie."

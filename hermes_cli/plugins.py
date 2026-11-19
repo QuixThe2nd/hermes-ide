@@ -145,19 +145,14 @@ VALID_HOOKS: Set[str] = {
     # path (agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
     # coordinates + kind, seq, payload (the client-safe session event payload, approvals redacted).
     "on_room_member_activity",
-    # pre_transcription: after provider resolution, BEFORE any backend runs. Kwargs: file_path,
-    # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
-    # model (registration order, last-writer-wins; file_path is read-only).
-    "pre_transcription",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
-    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
-    # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",
-    # "thread_renamed". Each event type carries its own event-local additive payload contract (see
+    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Discord
+    # "message_edited", "message_deleted", "thread_created", "thread_renamed". Each event type
+    # carries its own event-local additive payload contract (see
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
-    # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
@@ -938,7 +933,7 @@ class PluginContext:
 
     def register_platform_handler(self, platform: str, factory: Callable) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
-        register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
+        register (``adapter`` read-only). ``native``: discord
         ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, dingtalk
         ``DingTalkStreamClient``, line aiohttp ``web.Application``, others ``None``. Keep SDK imports
         inside the factory; exceptions are logged and the platform still connects. Scope handlers in
@@ -953,11 +948,6 @@ class PluginContext:
         logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
                      getattr(factory, "__name__", repr(factory)))
 
-    def register_telegram_handler(self, factory: Callable) -> None:
-        """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
-        handler per group and core registers a catch-all ``CallbackQueryHandler`` — always scope with
-        ``pattern=`` or you swallow the core button flows."""
-        self.register_platform_handler("telegram", factory)
 
     @_serialized_replacement
     def register_auxiliary_task(
@@ -1151,17 +1141,6 @@ _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str,
      "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
      "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
      {"normalize": None, "register": "register_source", "param": "source"}),
-    ("register_tts_provider", "tts_provider", "agent.tts_registry",
-     "agent.tts_provider:TTSProvider", "TTS provider",
-     "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "
-     "``tts.provider`` unless it is a built-in name (rejected with a warning) or a "
-     "``tts.providers.<name>: type: command`` entry shares it (command-providers win).",
-     {"normalize": "lower"}),
-    ("register_transcription_provider", "transcription_provider", "agent.transcription_registry",
-     "agent.transcription_provider:TranscriptionProvider", "transcription provider",
-     "Register an :class:`agent.transcription_provider.TranscriptionProvider`; ``provider.name`` is "
-     "matched by ``stt.provider`` unless it is a built-in name (rejected) or a ``stt.providers.<name>: "
-     "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
 )
 
 _NAME_NORMALIZERS: Dict[Optional[str], Optional[Callable[[str], str]]] = {
@@ -1564,9 +1543,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
         return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
 
-    def get_telegram_handler_factories(self) -> List[tuple]:
-        """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
-        return self.get_platform_handler_factories("telegram")
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""

@@ -73,14 +73,6 @@ gateway:
     full_logs_hint:        "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
     share_hint:            "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
 
-  footer:
-    status:                "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
-    usage:                 "Úsáid: `/footer [on|off|status]`"
-    saved:                 "📎 Buntásc rite: **{state}**{example}\n_(sábháilte go domhanda — éifeachtach ón gcéad teachtaireacht eile)_"
-    example_line:          "\nSampla: `{preview}`"
-    state_on:              "AR"
-    state_off:             "AS"
-
   goal:
     unavailable:           "Níl spriocanna ar fáil sa seisiún seo."
     no_goal_set:           "Níl aon sprioc socraithe."
@@ -256,17 +248,6 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     current_with_title:    "📌 Seisiún: `{session_id}`\nTeideal: **{title}**"
     current_no_title:      "📌 Seisiún: `{session_id}`\nGan teideal socraithe. Úsáid: `/title M'Ainm Seisiúin`"
 
-  topic:
-    not_telegram_dm:         "Tá an t-ordú /topic ar fáil amháin i gcomhráite príobháideacha Telegram."
-    no_session_db:           "Níl bunachar sonraí na seisiún ar fáil."
-    unauthorized:            "Níl tú údaraithe chun /topic a úsáid ar an mbot seo."
-    restore_needs_topic:     "Chun seisiún a athchóiriú, cruthaigh nó oscail topaic Telegram ar dtús, ansin seol /topic <session-id> taobh istigh den topaic sin. Chun topaic nua a chruthú, oscail All Messages agus seol teachtaireacht ar bith ann."
-    topics_disabled:         "Níl topaicí Telegram cumasaithe don bhot seo fós.\n\nConas iad a chumasú:\n1. Oscail @BotFather.\n2. Roghnaigh do bhot.\n3. Oscail Bot Settings → Threads Settings.\n4. Casadh ar Threaded Mode agus déan cinnte go bhfuil cead ag úsáideoirí snáitheanna nua a chruthú.\n\nAnsin seol /topic arís."
-    topics_user_disallowed:  "Tá topaicí Telegram cumasaithe, ach níl cead ag úsáideoirí topaicí a chruthú.\n\nOscail @BotFather → roghnaigh do bhot → Bot Settings → Threads Settings, ansin múchadh 'Disallow users to create new threads'.\n\nAnsin seol /topic arís."
-    enable_failed:           "Theip ar mhodh topaice Telegram a chumasú: {error}"
-    bound_status:            "Tá an topaic seo nasctha le:\nSeisiún: {label}\nID: {session_id}\n\nÚsáid /new chun an topaic seo a athsholáthar le seisiún úr.\nLe haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú."
-    thread_ready:            "Tá topaicí il-seisiúin Telegram cumasaithe.\n\nÚsáidfear an topaic seo mar sheisiún Hermes neamhspleách. Úsáid /new chun seisiún reatha na topaice seo a athsholáthar. Le haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú."
-    untitled_session:        "Seisiún gan teideal"
 
   undo:
     nothing:               "Níl aon rud le cealú."
@@ -280,41 +261,6 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "☤ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
 
-  usage:
-    rate_limits:              "⏱️ **Teorainneacha Ráta:** {state}"
-    header_session:           "📊 **Úsáid Comharthaí Seisiúin**"
-    label_model:              "Samhail: `{model}`"
-    label_input_tokens:       "Comharthaí ionchuir: {count}"
-    label_cache_read:         "Comharthaí léite ón taisce: {count}"
-    label_cache_write:        "Comharthaí scríofa sa taisce: {count}"
-    label_output_tokens:      "Comharthaí aschuir: {count}"
-    label_total:              "Iomlán: {count}"
-    label_api_calls:          "Glaonna API: {count}"
-    label_cost:               "Costas: {prefix}${amount}"
-    label_cost_included:      "Costas: san áireamh"
-    label_context:            "Comhthéacs: {used} / {total} ({pct}%)"
-    label_compressions:       "Dlúthuithe: {count}"
-    breakdown_header: "🧩 **Miondealú comhthéacs** _(measta)_"
-    breakdown_line: "• {label}: ~{count} ({pct}%)"
-    breakdown_cat_system_prompt: "Leid an chórais"
-    breakdown_cat_tool_definitions: "Sainmhínithe uirlisí"
-    breakdown_cat_rules: "Rialacha"
-    breakdown_cat_skills: "Scileanna"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "Sainmhínithe fo-ghníomhairí"
-    breakdown_cat_memory: "Cuimhne"
-    breakdown_cat_conversation: "Comhrá"
-    header_session_info:      "📊 **Eolas Seisiúin**"
-    label_messages:           "Teachtaireachtaí: {count}"
-    label_estimated_context:  "Comhthéacs measta: ~{count} comhartha"
-    detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
-    no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
-    unknown_subcommand:       "Fo-ordú /usage anaithnid: `{args}`. Bain triail as `/usage` nó `/usage reset [--force]`."
-    reset_wrong_provider:     "Níl athshocruithe teorann bainc ar fáil ach ar an soláthraí openai-codex. Athraigh le `/model` ar dtús."
-
-  credits:
-    not_logged_in:            "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."
-
   verbose:
     not_enabled:           "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Dul chun cinn uirlise: **AS** — gan aon ghníomhaíocht uirlise á thaispeáint."
@@ -324,23 +270,6 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     mode_log:              "⚙️ Dul chun cinn uirlise: **LOG** — ciúin sa chomhrá; scríobhtar glaonna uirlise chuig ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(sábháilte do **{platform}** — éifeachtach ón gcéad teachtaireacht eile)_"
     save_failed:           "_(níorbh fhéidir sábháil sa chumraíocht: {error})_"
-
-  voice:
-    enabled_voice_only:    "Mód gutha cumasaithe.\nFreagróidh mé le guth nuair a sheolann tú teachtaireachtaí gutha.\nÚsáid /voice tts chun freagraí gutha a fháil do gach teachtaireacht."
-    disabled_text:         "Mód gutha díchumasaithe. Freagraí téacs amháin."
-    tts_enabled:           "Auto-TTS cumasaithe.\nBeidh teachtaireacht gutha mar chuid de gach freagra."
-    status_mode:           "Mód gutha: {label}"
-    status_channel:        "Cainéal gutha: #{channel}"
-    status_participants:   "Rannpháirtithe: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (ag labhairt)"
-    enabled_short:         "Mód gutha cumasaithe."
-    disabled_short:        "Mód gutha díchumasaithe."
-    label_off:             "As (téacs amháin)"
-    label_voice_only:      "Ar (freagra gutha do theachtaireachtaí gutha)"
-    label_all:             "TTS (freagra gutha do gach teachtaireacht)"
-    help:                  "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
-    help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
 
   shared:
     session_db_unavailable:      "Níl bunachar sonraí na seisiún ar fáil."

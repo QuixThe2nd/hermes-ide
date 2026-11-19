@@ -523,7 +523,7 @@ def run_denial_and_retrieval_probes() -> dict[str, bool]:
     arguments = {"action": "status", "guild_id": guild_id}
     connector_calls = 0
     denial_log = STATE_ROOT / "logs" / "access-denied.jsonl"
-    before_denials = (len(denial_log.read_text(encoding="utf-8").splitlines())
+    before_denials = (len(denial_log.read_text(encoding="utf-8-sig").splitlines())
                       if denial_log.is_file() else 0)
 
     def forbidden_connector(_dsn: str):
@@ -602,7 +602,7 @@ def run_denial_and_retrieval_probes() -> dict[str, bool]:
                  and len(json.dumps(bounded, ensure_ascii=False,
                                     separators=(",", ":")).encode("utf-8")) <= MAX_JSON_BYTES)
     denial_events = ([json.loads(line) for line in
-                      denial_log.read_text(encoding="utf-8").splitlines()[before_denials:]]
+                      denial_log.read_text(encoding="utf-8-sig").splitlines()[before_denials:]]
                      if denial_log.is_file() else [])
     denial_stat = denial_log.stat() if denial_log.is_file() else None
     denial_ok = bool(denial_stat) and (denial_stat.st_mode & 0o777) == 0o600 \

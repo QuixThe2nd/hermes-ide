@@ -6,6 +6,7 @@ was CLEARED: ``turn`` at the end of every turn; ``conversation`` at conversation
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
@@ -31,27 +32,23 @@ class TurnState:
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
     lease_tokens: Dict[int, Any] = field(default_factory=dict)
-    # One-shot "steer delivered" listener registered on ``agent`` when a
-    # busy follow-up is steered into this run (fires when the steer text is
-    # actually injected into the model's context). ``clear()`` only drops
-    # the reference — the agent-side unregistration is done by
-    # ``GatewayRunner._drop_steer_delivered_listener`` BEFORE ``clear()``
-    # (it needs ``self.agent``, mirroring the lease handling above), so a
-    # listener that never fired cannot survive into a later turn.
-    steer_delivered_listener: Optional[Callable[[str], None]] = None
-
+    # Accepted Discord steers own one callback and one delivery receipt per message ID.
+    # The seen-ID set survives individual callback completion until this turn ends.
+    steer_delivery_bindings: Dict[str, Any] = field(default_factory=dict)
+    steer_delivery_message_ids: set = field(default_factory=set)
+    steer_delivery_lock: Any = field(default_factory=threading.Lock, repr=False)
     def clear(self) -> None:
-        """Reset the per-turn slot (agent / start ts / lease / busy-ack).
-
-        Mirrors the exact clear set of the old _release_running_agent_state:
-        _running_agents, _running_agents_ts, _active_session_leases (popped
-        by the caller so it can call ``lease.release()``), _busy_ack_ts.
-        """
+        """Reset the turn slot and detach callbacks before a cached agent can be reused."""
+        with self.steer_delivery_lock:
+            bindings = list(self.steer_delivery_bindings.values())
+            self.steer_delivery_bindings.clear()
+            self.steer_delivery_message_ids.clear()
+        for binding in bindings:
+            binding.cancel()
         self.agent = None
         self.started_ts = 0.0
         self.lease = None
         self.busy_ack_ts = 0.0
-        self.steer_delivered_listener = None
 
 
 @dataclass
@@ -64,9 +61,8 @@ class ConversationState:
     service_tier_override: Any = _UNSET_TIER  # /fast: "priority" or None; _UNSET_TIER = absent
     last_resolved_model: str = ""  # last successfully-resolved non-empty model
     queued_events: List[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)
-    sidecar_notes: List[str] = field(default_factory=list)  # one-shot must-deliver notes
+    sidecar_notes: List[Any] = field(default_factory=list)  # one-shot must-deliver notes (str or (kind, text))
     ephemeral_pin: Optional[Tuple[Any, ...]] = None  # pinned session-context (change_key, text)
-    vc_last: Optional[str] = None  # last voice-channel context delivered
 
     def clear(self) -> None:
         """Reset every field to its default, so new fields are cleared automatically."""
@@ -246,7 +242,6 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     "_queued_events": _spec("conversation", "queued_events", list),
     "_pending_turn_sidecar_notes": _spec("conversation", "sidecar_notes", list),
     "_session_ephemeral_pin": _spec("conversation", "ephemeral_pin", None),
-    "_session_vc_last": _spec("conversation", "vc_last", None),
     "_update_prompt_pending": _spec("persistent", "update_prompt_pending", bool),
     "_pending_native_image_paths_by_session": _spec("persistent", "native_image_paths", list),
     "_pending_messages": _spec("persistent", "pending_command_text", None),

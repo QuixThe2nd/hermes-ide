@@ -640,44 +640,6 @@ class CLIStatusBarMixin:
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
 
-    # ── voice ─────────────────────────────────────────────────────────────────
-
-    def _voice_record_key_label(self) -> str:
-        """The push-to-talk key label every voice-facing hint advertises. Cached at startup
-        (``set_voice_record_key_cache``) because the prompt_toolkit binding is registered once —
-        re-reading config per render could advertise a chord that isn't bound — and this sits on
-        the hot render path.
-
-        Two reasons (Copilot round-13 on 19835): See #19835.
-        """
-        return getattr(self, "_voice_record_key_display_cache", None) or "Ctrl+B"
-
-    def set_voice_record_key_cache(self, raw_key: object) -> None:
-        """Populate the voice label cache from a raw ``voice.record_key``; called after the
-        prompt_toolkit binding is registered so the label matches the live binding."""
-        try:
-            from hermes_cli.voice import format_voice_record_key_for_status
-            self._voice_record_key_display_cache = format_voice_record_key_for_status(raw_key)
-        except Exception:
-            self._voice_record_key_display_cache = "Ctrl+B"
-
-    def _get_voice_status_fragments(self, width: Optional[int] = None):
-        """Voice status bar fragments for the interactive TUI."""
-        width = width or self._get_tui_terminal_width()
-        compact = self._use_minimal_tui_chrome(width=width)
-        label = self._voice_record_key_label()
-        if self._voice_recording:
-            if compact:
-                return [("class:voice-status-recording", " ● REC ")]
-            return [("class:voice-status-recording", f" ● REC  {label} to stop ")]
-        if self._voice_processing:
-            return [("class:voice-status", " ◉ STT " if compact else " ◉ Transcribing... ")]
-        if compact:
-            return [("class:voice-status", f" 🎤 {label} ")]
-        tts = " | TTS on" if self._voice_tts else ""
-        cont = " | Continuous" if self._voice_continuous else ""
-        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
-
     # ── status bar rendering ──────────────────────────────────────────────────
 
     @staticmethod

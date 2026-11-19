@@ -191,7 +191,6 @@ _CREDENTIAL_NAMES = frozenset({
     "ZAI_API_KEY",
     "MINIMAX_API_KEY",
     "OLLAMA_API_KEY",
-    "OPENVIKING_API_KEY",
     "COPILOT_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "FIRECRAWL_API_KEY",
@@ -201,15 +200,13 @@ _CREDENTIAL_NAMES = frozenset({
     "PERPLEXITY_API_KEY",
     "WANDB_API_KEY",
     "ELEVENLABS_API_KEY",
-    "HONCHO_API_KEY",
-    "MEM0_API_KEY",
     "SUPERMEMORY_API_KEY",
     "RETAINDB_API_KEY",
     "HINDSIGHT_API_KEY",
     "HINDSIGHT_LLM_API_KEY",
     "DAYTONA_API_KEY",
     "TWILIO_AUTH_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
     "DISCORD_BOT_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
@@ -238,7 +235,6 @@ _CREDENTIAL_NAMES = frozenset({
     "GATEWAY_PROXY_KEY",
     "API_SERVER_KEY",
     "TOOL_GATEWAY_USER_TOKEN",
-    "TELEGRAM_WEBHOOK_SECRET",
     "WEBHOOK_SECRET",
     "AI_GATEWAY_API_KEY",
     "VOICE_TOOLS_OPENAI_KEY",
@@ -311,10 +307,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # children; tests that exercise child behavior set it explicitly.
     "HERMES_DELEGATED_CHILD_CONTEXT",
     "HERMES_TENANT",
-    # Honcho host selection changes which nested config block wins. A local
-    # shell override leaked "myhost" into the full suite and flipped 20
-    # otherwise-unrelated config tests away from the default "hermes" host.
-    "HERMES_HONCHO_HOST",
     # Dashboard OAuth auth gate (PR #30156). When set, the bundled
     # dashboard-auth `nous` plugin auto-registers itself on plugin discovery,
     # CI never sets these, so production tests must not see them either.
@@ -332,9 +324,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # Platform allowlists — not credentials, but if set from any source
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
-    "TELEGRAM_ALLOWED_USERS",
-    "TELEGRAM_GROUP_ALLOWED_USERS",
-    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "DISCORD_ALLOWED_USERS",
     "QQ_ALLOWED_USERS",
     "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
@@ -352,7 +342,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "PHOTON_ALLOWED_USERS",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
-    "TELEGRAM_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_ALL_USERS",
     "WHATSAPP_ALLOW_ALL_USERS",
     "SLACK_ALLOW_ALL_USERS",
@@ -360,7 +349,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
     "PHOTON_ALLOW_ALL_USERS",
-    "TELEGRAM_CRON_THREAD_ID",
     # API server bind/auth settings are common in local gateway profiles and
     # change adapter defaults plus load_gateway_config() enablement. Tests that
     # need them set opt in explicitly with monkeypatch.
@@ -387,7 +375,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SLACK_REACTIONS",
     "DISCORD_REQUIRE_MENTION",
     "DISCORD_FREE_RESPONSE_CHANNELS",
-    "TELEGRAM_REQUIRE_MENTION",
     "WHATSAPP_REQUIRE_MENTION",
     "DINGTALK_REQUIRE_MENTION",
     "MATRIX_REQUIRE_MENTION",
@@ -410,13 +397,6 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # 2. Blank behavioral HERMES_* vars that could change test semantics.
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
-
-    # Honcho's fallback host/config resolution legitimately reads the user's
-    # global ~/.honcho/config.json. Keep HOME stable (subprocess tests depend
-    # on it), but pin the host so ordinary tests cannot inherit a developer's
-    # defaultHost and silently select the wrong nested config block. Tests of
-    # custom host resolution override/delete this explicitly.
-    monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes")
 
     # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
     #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.
@@ -837,49 +817,6 @@ def _wal_is_usable() -> bool:
     return False
 
 
-# ── Audio-playback guard ───────────────────────────────────────────────────
-#
-# Same class of incident as the live-system guard above, different primitive:
-# a test run spoke the string "partial answer complete" out of the developer's
-# speakers. That string is a test fixture
-# (a removed gateway-server test's fake ``final_response``), and the
-# route it took is fully in-process — no leaked shell variable required:
-#
-#   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the
-#      ``voice.toggle`` RPC with ``action="tts"``. The handler
-#      flips the flag by writing the *real*
-#      process environment: ``os.environ["HERMES_VOICE_TTS"] = "1"``. The
-#      test's ``monkeypatch.delenv(..., raising=False)`` records no undo entry
-#      (pytest only records an undo when the key was present), so the "1"
-#      survives teardown and persists for the rest of the pytest process.
-#   2. Any later test in that process that drives a turn to completion hits
-#      the TTS dispatch in ``prompt.submit``, which checks
-#      ``_voice_tts_enabled()`` — now true — and fires
-#      ``hermes_cli.voice.speak_text(final_response)`` on a daemon thread.
-#   3. ``speak_text`` needs no API key to be audible: ``tools/tts_tool.py``
-#      defaults to the ``edge`` provider, which is keyless.
-#
-# Because the flag is set from *inside* the process, ``scripts/run_tests.sh``'s
-# ``env -i`` does not help, and neither does env-blanking on its own — the
-# hermetic fixture blanks at test setup, and step 1 re-sets it mid-test. So we
-# also intercept the primitive that does the damage, exactly as the
-# live-system guard intercepts ``os.kill`` rather than trusting every caller
-# to mock it:
-#
-#  • ``hermes_cli.voice.speak_text`` — the synth+playback entry point both
-#    gateway call sites late-import, so patching the module attribute catches
-#    them wherever they import it from.
-#  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
-#    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
-#    available to the tests that legitimately exercise it with a mocked
-#    audio backend (``tests/tools/test_voice_mode.py``).
-#
-# Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
-# only selects *which* provider speaks, never *whether* to speak — that gate
-# is the env var alone.
-
-_AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
 # ---------------------------------------------------------------------------
@@ -989,6 +926,24 @@ def _pinned_mcp_sdk_version() -> str:
             return req.split("==", 1)[1].strip()
     raise RuntimeError("pyproject.toml [mcp] extra no longer pins mcp==X")
 
+
+@pytest.fixture
+def short_af_unix_path():
+    """A short-lived AF_UNIX socket path that fits every host's bind limit.
+
+    pytest basetemps can exceed macOS's 104-byte ``sun_path`` limit, and binding
+    directly under the system temp root would make the hub chmod a directory the
+    test cannot own. A unique owned directory keeps the path short and cleanup
+    automatic.
+    """
+    base = tempfile.gettempdir()  # respects TMPDIR; the literal /tmp root may
+    # be unwritable (hosts running /tmp mode 700) or absent (Termux).
+    if len(str(Path(base) / "hermes-afunix-xxxxxxxx" / "hub.sock").encode()) > 103:
+        # 103 bytes: macOS's 104-byte sun_path minus the NUL terminator, the
+        # tightest AF_UNIX bind limit on supported platforms (Linux allows 108).
+        pytest.skip(f"temp dir too long for an AF_UNIX socket path: {base}")
+    with tempfile.TemporaryDirectory(prefix="hermes-afunix-", dir=base) as raw:
+        yield Path(raw) / "hub.sock"
 
 @pytest.fixture
 def require_mcp_2_sdk():
@@ -1143,12 +1098,6 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
         "SQLite WAL mode; skipped on builds where Hermes falls back to "
         "journal_mode=DELETE for the WAL-reset bug.",
-    )
-    config.addinivalue_line(
-        "markers",
-        f"{_AUDIO_GUARD_BYPASS_MARK}: bypass the audio-playback guard (only "
-        "for tests that genuinely need real TTS synthesis and speaker "
-        "playback — there are none in the default suite).",
     )
     config.addinivalue_line(
         "markers",
@@ -1715,49 +1664,6 @@ def _live_system_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _audio_playback_guard(request, monkeypatch):
-    """Stub TTS synthesis + speaker playback for every test.
-
-    See the block comment above for the incident this closes. Defence in
-    depth behind ``_HERMES_BEHAVIORAL_VARS``: the env blanking stops the flag
-    leaking *between* tests, this stops the speakers ever opening even when a
-    test sets the flag *itself* (which the ``voice.toggle`` RPC handler does,
-    by writing ``os.environ`` directly).
-
-    Deliberately silent rather than raising: unlike a stray ``os.kill``, a
-    stray ``speak_text`` is dispatched on a daemon thread whose exception
-    nobody would ever see, so a hard failure would neither stop the test nor
-    surface. Silence is the whole point. Tests that genuinely want real audio
-    can opt out with ``@pytest.mark.real_audio_playback``.
-    """
-    if request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK):
-        yield
-        return
-
-    try:
-        import hermes_cli.voice as _voice
-    except Exception:
-        # Optional audio deps missing — nothing importable to speak with.
-        yield
-        return
-
-    def _blocked_speak_text(text, *args, **kwargs):
-        return None
-
-    def _blocked_play_audio_file(path, *args, **kwargs):
-        return False
-
-    if hasattr(_voice, "speak_text"):
-        monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
-    if hasattr(_voice, "play_audio_file"):
-        monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
-
-    yield
-
-
-
-
-@pytest.fixture(autouse=True)
 def _moa_caches_isolated():
     """Clear module-level MoA cold-start caches before each test.
 
@@ -1830,6 +1736,19 @@ def _capture_real_hermes_root() -> list[Path]:
 
 _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 
+# Subtrees that resolve inside a guarded root but are never operator state:
+# the checkout itself (default install layout ~/.hermes/hermes-agent, harness
+# workspaces under ~/.hermes/cache — pytest's assertion rewriter writes .pyc
+# under its venv during the guarded fixture window) and the process temp dir
+# (TEMP lives under the home on Windows; harnesses set TMPDIR under it).
+# Production state (config.yaml, .env, state.db, sessions) lives directly
+# under the root, never in these subtrees — guarding them is a false positive
+# that fails test setup, not a leak.
+_GUARD_EXEMPT_SUBTREES = (
+    Path(__file__).resolve().parent.parent,  # repo root
+    Path(tempfile.gettempdir()).resolve(),   # process temp dir
+)
+
 
 def _path_hits_real_home(candidate) -> bool:
     """True when candidate resolves under any guarded real root."""
@@ -1861,9 +1780,15 @@ def _path_hits_real_home(candidate) -> bool:
     for root in _REAL_HERMES_ROOT_CANDIDATES:
         try:
             resolved.relative_to(root)
-            return True
         except ValueError:
             continue
+        for exempt in _GUARD_EXEMPT_SUBTREES:
+            try:
+                resolved.relative_to(exempt)
+                return False  # checkout / process-temp subtree, not operator state
+            except ValueError:
+                continue
+        return True
     return False
 
 

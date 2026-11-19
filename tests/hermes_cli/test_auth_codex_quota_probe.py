@@ -312,7 +312,7 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# /usage reset redemption clears persisted pool cooldowns
+# Banked-reset redemption clears persisted pool cooldowns
 # ---------------------------------------------------------------------------
 
 

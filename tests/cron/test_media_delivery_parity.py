@@ -184,7 +184,7 @@ class TestLiveAdapterMediaFailuresSurfaced:
             t = threading.Thread(target=loop.run_forever, daemon=True)
             t.start()
             errors = _send_media_via_adapter(
-                FailingAdapter(), "D01", [(media_file, False)], None, loop, slack_job
+                FailingAdapter(), "D01", [media_file], None, loop, slack_job
             )
             assert errors, (
                 "a failed media send must be returned to the caller, not only logged"
@@ -212,7 +212,7 @@ class TestLiveAdapterMediaFailuresSurfaced:
             t.start()
             errors = _send_media_via_adapter(
                 NeverCalledAdapter(), "D01",
-                [("/nonexistent/definitely-missing.pdf", False)],
+                ["/nonexistent/definitely-missing.pdf"],
                 None, loop, slack_job,
             )
             assert errors, "a filtered-out MEDIA path must be reported, not silent"
@@ -280,7 +280,7 @@ class TestMediaPolicyEnvBridge:
 
         from gateway.platforms.base import BasePlatformAdapter
 
-        kept = BasePlatformAdapter.filter_media_delivery_paths([(str(media), False)])
+        kept = BasePlatformAdapter.filter_media_delivery_paths([str(media)])
         assert kept, (
             "with the policy bridged, an allowlisted file must survive strict "
             "filtering in a non-gateway process"

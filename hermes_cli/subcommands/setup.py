@@ -11,10 +11,10 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         "setup", help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
         "Run a specific section: "
-        "hermes setup model|tts|terminal|gateway|tools|telemetry|agent")
+        "hermes setup model|terminal|gateway|tools|telemetry|agent")
     setup_parser.add_argument(
         "section", nargs="?",
-        choices=["model", "tts", "terminal", "gateway", "tools", "telemetry", "agent"],
+        choices=["model", "terminal", "gateway", "tools", "telemetry", "agent"],
         default=None, help="Run a specific setup section instead of the full wizard")
     setup_parser.add_argument(
         "--non-interactive", action="store_true",
@@ -30,9 +30,4 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         "--quick", action="store_true",
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.")
-    setup_parser.add_argument(
-        "--portal", action="store_true",
-        help="One-shot Nous Portal setup: log in via OAuth, pick a Nous "
-        "model, set Nous as the inference provider, and opt into the Tool "
-        "Gateway. Skips the rest of the wizard.")
     setup_parser.set_defaults(func=cmd_setup)

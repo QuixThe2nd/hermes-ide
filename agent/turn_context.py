@@ -534,6 +534,8 @@ def _bind_turn_identity(
     # (concurrent turns interleave transcript writes). Cleared in _persist_session.
     from agent.agent_runtime_helpers import note_turn_start
     note_turn_start(agent, turn_id)
+    from tools.browser_tool_lifecycle import retain_browser_session
+    retain_browser_session(effective_task_id)
     return effective_task_id, turn_id
 
 
@@ -788,23 +790,24 @@ def _collect_pre_llm_call_context(
 def _merge_gateway_notes(
     agent: Any, messages: List[Any], current_turn_user_idx: int, plugin_user_context: str,
     *, continue_interrupted_turn: bool = False,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, str]:
     """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
     ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
     surface-switch correction. Multimodal (list) content can't take the string sidecar —
     append a durable text part instead. A transparent continuation has no current user
     row to carry a note; any staged note is left pending for the next real user turn
     instead of being spliced into the interrupted turn's history. Returns
-    ``(merged_context, gateway_notes)`` — the notes ride along so injection
-    observability can attribute them without re-consuming the channel."""
+    ``(merged_context, gateway_notes, surface_note)`` — the note strings ride along so
+    injection observability can classify them without re-consuming the channels."""
     _gateway_notes = (
         "" if continue_interrupted_turn else consume_gateway_turn_context_notes(agent)
     )
+    _surface_note = consume_surface_switch_note(agent)
     _turn_notes = "\n\n".join(
-        part for part in (_gateway_notes, consume_surface_switch_note(agent)) if part
+        part for part in (_gateway_notes, _surface_note) if part
     )
     if not _turn_notes:
-        return plugin_user_context, _gateway_notes
+        return plugin_user_context, _gateway_notes, _surface_note
     _gw_turn_content = (
         messages[current_turn_user_idx].get("content")
         if 0 <= current_turn_user_idx < len(messages)
@@ -813,11 +816,28 @@ def _merge_gateway_notes(
     )
     if isinstance(_gw_turn_content, list):
         append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
-        return plugin_user_context, _gateway_notes
+        return plugin_user_context, _gateway_notes, _surface_note
     return (
         plugin_user_context + "\n\n" + _turn_notes if plugin_user_context else _turn_notes,
         _gateway_notes,
+        _surface_note,
     )
+
+
+def _consume_gateway_turn_note_kinds(agent: Any, gateway_notes: str) -> List[Optional[str]]:
+    """One-shot kinds aligned with the gateway's staged turn notes; display
+    metadata only, never part of the model bytes. An absent channel (legacy
+    producers, direct test staging) classifies the joined notes as one
+    unclassified segment."""
+    kinds = getattr(agent, "_gateway_turn_note_kinds", None)
+    if hasattr(agent, "_gateway_turn_note_kinds"):
+        with suppress(Exception):
+            setattr(agent, "_gateway_turn_note_kinds", [])
+    if not gateway_notes:
+        return []
+    if isinstance(kinds, list) and kinds:
+        return [kind if isinstance(kind, str) and kind else None for kind in kinds]
+    return [None]
 
 
 def _bind_interrupt_scope(agent: Any, ra) -> None:
@@ -903,8 +923,8 @@ def _stamp_api_content_sidecar(
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
+    from agent.session_persistence import durable_user_row_content
     live_content = _turn_user_msg.get("content")
-    from agent.session_persistence import _persist_lock, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
     durable_content, _api_content = durable_user_row_content(
         agent, _turn_user_msg, live_content,
@@ -913,34 +933,92 @@ def _stamp_api_content_sidecar(
     if _api_content is None or _api_content == durable_content:
         return
     _turn_user_msg["api_content"] = _api_content
+    _persist_turn_user_api_content(
+        agent, _turn_user_msg, durable_content, _api_content,
+        preflight_compressed=preflight_compressed,
+    )
 
-    # When another writer materialized this turn's user row BEFORE the sidecar existed — in-place
-    # preflight compaction, or a close/early flush that raced the prologue (#102194) — the crash
-    # persist marker-skips the message and the stamp never reaches the DB, so the next turn replays
-    # clean content and the request prefix diverges here. Both writers stamp ``_row_id`` on the live
-    # dict, which is at once the proof a row exists and the address to update.
-    #
-    # Never widen this to an unconditional positional backfill — see set_latest_user_api_content.
-    #
-    # ``_row_id`` is read under ``_session_persist_lock``: a close flush holds it while it commits
-    # the row and only then writes ``_row_id`` back (``sync_flushed_message_markers``). Read outside
-    # it, the stamp can land in between, see no id, return — and the flush then marks the message
-    # persisted with ``api_content = NULL``, leaving no writer to correct the row.
+
+def _persist_turn_user_api_content(
+    agent: Any, row: Dict[str, Any], durable_content: Any, api_content: str,
+    *, preflight_compressed: bool,
+) -> None:
+    """Write a stamped user-row sidecar to the session DB (addressed when possible).
+
+    When another writer materialized this turn's user row BEFORE the sidecar existed — in-place
+    preflight compaction, or a close/early flush that raced the prologue (#102194) — the crash
+    persist marker-skips the message and the stamp never reaches the DB, so the next turn replays
+    clean content and the request prefix diverges here. Both writers stamp ``_row_id`` on the live
+    dict, which is at once the proof a row exists and the address to update.
+
+    Never widen this to an unconditional positional backfill — see set_latest_user_api_content.
+
+    ``_row_id`` is read under ``_session_persist_lock``: a close flush holds it while it commits
+    the row and only then writes ``_row_id`` back (``sync_flushed_message_markers``). Read outside
+    it, the stamp can land in between, see no id, return — and the flush then marks the message
+    persisted with ``api_content = NULL``, leaving no writer to correct the row."""
+    from agent.session_persistence import _persist_lock
+
     with _persist_lock(agent):
-        _row_id = _turn_user_msg.get("_row_id")
+        _row_id = row.get("_row_id")
         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
         _db = getattr(agent, "_session_db", None)
         if _db is None or not (isinstance(_row_id, int) or _in_place_compacted):
             return
         try:
             if isinstance(_row_id, int):
-                _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
+                _db.set_message_api_content(agent.session_id, _row_id, durable_content, api_content)
             else:
                 # Compacted copies carry no row id; positional is safe only because
                 # archive_and_compact just made this message the newest active user row.
-                _db.set_latest_user_api_content(agent.session_id, durable_content, _api_content)
+                _db.set_latest_user_api_content(agent.session_id, durable_content, api_content)
         except Exception:
             logger.warning("api_content backfill failed for session=%s", agent.session_id or "none", exc_info=True)
+
+
+def _stamp_continuation_note_sidecar(
+    agent: Any, messages: List[Any], current_turn_user_idx: int,
+) -> None:
+    """Deliver the serving-identity note on a transparent continuation.
+
+    A continuation has no new user row, but a restart just moved the
+    conversation to a new process mid-turn — the moment the per-turn
+    identity note matters most. The note rides the anchored user row's
+    ``api_content`` sidecar (append-only after any bytes that row already
+    sent, so replayed injections are never lost), never a synthetic user
+    message and never prose in the clean transcript content. Persisted via
+    the same addressed write as the ordinary sidecar so later turns replay
+    identical bytes. Non-string anchored rows take a durable text part
+    instead (the string sidecar cannot apply); a missing/empty note is a
+    no-op.
+    """
+    note = getattr(agent, "_gateway_continuation_note", "") or ""
+    if not isinstance(note, str) or not note:
+        return
+    row = (
+        messages[current_turn_user_idx]
+        if 0 <= current_turn_user_idx < len(messages)
+        else None
+    )
+    if not isinstance(row, dict) or row.get("role") != "user":
+        return
+    live_content = row.get("content")
+    if isinstance(live_content, list):
+        if append_notes_to_multimodal_content(live_content, note):
+            _pop_turn_note(agent, "_gateway_continuation_note")
+        return
+    base = row.get("api_content")
+    base_text = base if isinstance(base, str) and base else live_content
+    if not isinstance(base_text, str):
+        return
+    composed = base_text + "\n\n" + note
+    _pop_turn_note(agent, "_gateway_continuation_note")
+    if composed == base:
+        return
+    row["api_content"] = composed
+    _persist_turn_user_api_content(
+        agent, row, live_content, composed, preflight_compressed=False,
+    )
 
 
 def _persist_turn_start(
@@ -986,7 +1064,11 @@ def build_turn_context(
     and none of the per-new-user-input side channels (memory prefetch, plugin
     context, gateway notes, the api_content sidecar stamp) run, so the first
     provider request is byte-equivalent to an ordinary in-loop
-    "continue after tool results" call: same messages list, same tail."""
+    "continue after tool results" call: same messages list, same tail. The
+    one exception is the gateway's serving-identity continuation note: a
+    restart just moved the conversation to a new process mid-turn, and that
+    note rides the anchored user row's api_content (append-only) — see
+    ``_stamp_continuation_note_sidecar``."""
     from agent.turn_context_compaction import run_turn_start_compaction
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
@@ -1150,9 +1232,13 @@ def build_turn_context(
     # Keep hook provenance before gateway notes join the same API-content
     # channel; display attribution must not call a gateway note a plugin.
     _has_plugin_user_context = bool(plugin_user_context)
-    plugin_user_context, _gateway_notes = _merge_gateway_notes(
+    plugin_user_context, _gateway_notes, _surface_switch_note = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context,
         continue_interrupted_turn=continue_interrupted_turn,
+    )
+    _gateway_note_kinds = (
+        [] if continue_interrupted_turn
+        else _consume_gateway_turn_note_kinds(agent, _gateway_notes)
     )
 
     _bind_interrupt_scope(agent, ra)
@@ -1167,9 +1253,15 @@ def build_turn_context(
     _moa_turn = bool(moa_active or getattr(agent, "provider", None) == "moa")
 
     # Sidecar skipped for codex_app_server/MoA.
-    if (
+    if continue_interrupted_turn:
+        # A continuation stamps no ordinary sidecar (byte-equivalence), but
+        # the gateway's serving-identity note for a just-restarted process
+        # still must reach this turn's request — see
+        # _stamp_continuation_note_sidecar for the append-only channel.
+        if not _moa_turn and getattr(agent, "api_mode", None) != "codex_app_server":
+            _stamp_continuation_note_sidecar(agent, messages, current_turn_user_idx)
+    elif (
         not _moa_turn
-        and not continue_interrupted_turn
         and getattr(agent, "api_mode", None) != "codex_app_server"
         and 0 <= current_turn_user_idx < len(messages)
         and messages[current_turn_user_idx].get("role") == "user"
@@ -1327,6 +1419,21 @@ def build_turn_context(
                         "injected_chars": len(_api) - len(_clean),
                         "sources": _sources,
                     }
+                    # Kind tags in the composed-byte order (memory fence, plugin
+                    # context, gateway notes, surface-switch correction), so the
+                    # gateway can render one heading line per classified
+                    # segment. Additive display metadata: absent when nothing
+                    # classifiable was injected, never part of the model bytes.
+                    _kinds: List[Optional[str]] = []
+                    if ext_prefetch_cache:
+                        _kinds.append("memory")
+                    if _has_plugin_user_context:
+                        _kinds.append("plugin")
+                    _kinds.extend(_gateway_note_kinds)
+                    if _surface_switch_note:
+                        _kinds.append("surface_switch")
+                    if _kinds:
+                        _payload["kinds"] = _kinds
                     # Counted heading metadata: the discrete memory count behind
                     # the recall the gateway just watched being injected. Key
                     # rides only memory-sourced injections; None when no

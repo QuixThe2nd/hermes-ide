@@ -92,7 +92,7 @@ def timer_unit_path(scope: InstallScope, timer_name: str = TIMER_NAME) -> Path:
 def _systemd_quote(value: str) -> str:
     if not value:
         return '""'
-    special = set(' \t\n"\\$%')
+    special = set(" \t\n\"'\\$%")
     if not any(ch in special for ch in value):
         return value
     escaped = (
@@ -110,6 +110,182 @@ def format_exec_start(argv: Sequence[str]) -> str:
 
 def format_environment(key: str, value: str) -> str:
     return f"Environment={_systemd_quote(f'{key}={value}')}"
+
+
+def _logical_unit_lines(body: str):
+    pending = ""
+    for line in body.splitlines():
+        if pending and line.lstrip().startswith(("#", ";")):
+            continue
+        stripped = line.rstrip()
+        continued = stripped.endswith("\\")
+        pending += stripped[:-1] if continued else line
+        if continued:
+            pending += " "
+            continue
+        yield pending
+        pending = ""
+    if pending:
+        raise ValueError("unterminated unit line continuation")
+
+
+_SYSTEMD_WHITESPACE = " \t\n\r"
+_SYSTEMD_SIMPLE_ESCAPES = {
+    "a": b"\a",
+    "b": b"\b",
+    "f": b"\f",
+    "n": b"\n",
+    "r": b"\r",
+    "t": b"\t",
+    "v": b"\v",
+    "\\": b"\\",
+    '"': b'"',
+    "'": b"'",
+    "s": b" ",
+    # format_environment() has always emitted \$; Environment= treats $ literally.
+    "$": b"$",
+}
+
+
+def _decode_systemd_escape(value: str, index: int) -> tuple[bytes, int]:
+    if index >= len(value):
+        raise ValueError("trailing backslash in Environment= value")
+    marker = value[index]
+    simple = _SYSTEMD_SIMPLE_ESCAPES.get(marker)
+    if simple is not None:
+        return simple, index + 1
+
+    widths = {"x": 2, "u": 4, "U": 8}
+    if marker in widths:
+        width = widths[marker]
+        digits = value[index + 1 : index + 1 + width]
+        if len(digits) != width or any(
+            digit not in "0123456789abcdefABCDEF" for digit in digits
+        ):
+            raise ValueError(f"invalid \\{marker} escape in Environment= value")
+        number = int(digits, 16)
+        end = index + 1 + width
+        if number == 0:
+            raise ValueError("NUL is not allowed in Environment= values")
+        if marker == "x":
+            return bytes((number,)), end
+        try:
+            return chr(number).encode("utf-8"), end
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise ValueError("invalid Unicode escape in Environment= value") from exc
+
+    if marker in "01234567":
+        digits = value[index : index + 3]
+        if len(digits) != 3 or any(digit not in "01234567" for digit in digits):
+            raise ValueError("invalid octal escape in Environment= value")
+        number = int(digits, 8)
+        if number == 0 or number > 255:
+            raise ValueError("invalid byte in Environment= octal escape")
+        return bytes((number,)), index + 3
+
+    raise ValueError(f"unknown \\{marker} escape in Environment= value")
+
+
+def _split_systemd_environment(environment: str) -> list[str]:
+    assignments: list[str] = []
+    index = 0
+    while index < len(environment):
+        while index < len(environment) and environment[index] in _SYSTEMD_WHITESPACE:
+            index += 1
+        if index >= len(environment):
+            break
+
+        decoded = bytearray()
+        quote: str | None = None
+        while index < len(environment):
+            char = environment[index]
+            if char == "\\":
+                escaped, index = _decode_systemd_escape(environment, index + 1)
+                decoded.extend(escaped)
+                continue
+            if quote is not None:
+                if char == quote:
+                    quote = None
+                else:
+                    decoded.extend(char.encode("utf-8"))
+                index += 1
+                continue
+            if char in "'\"":
+                quote = char
+                index += 1
+                continue
+            if char in _SYSTEMD_WHITESPACE:
+                break
+            decoded.extend(char.encode("utf-8"))
+            index += 1
+        if quote is not None:
+            raise ValueError("unterminated quote in Environment= value")
+        try:
+            assignments.append(decoded.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ValueError("Environment= value is not valid UTF-8") from exc
+    return assignments
+
+
+def _literal_systemd_percent(value: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "%":
+            decoded.append(value[index])
+            index += 1
+            continue
+        if index + 1 >= len(value) or value[index + 1] != "%":
+            raise ValueError("HERMES_HOME contains an unresolved systemd specifier")
+        decoded.append("%")
+        index += 2
+    return "".join(decoded)
+
+
+def _parse_unit_environment_home(body: str) -> str:
+    section = ""
+    home: str | None = None
+    for line in _logical_unit_lines(body):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            continue
+        if section != "Service":
+            continue
+        key, separator, environment = stripped.partition("=")
+        if not separator or key.strip() != "Environment":
+            continue
+        try:
+            assignments = _split_systemd_environment(environment)
+        except ValueError as exc:
+            raise ValueError(f"invalid Environment= syntax: {exc}") from exc
+        if not assignments:
+            home = None
+            continue
+        for assignment in assignments:
+            name, separator, value = assignment.partition("=")
+            if not separator:
+                raise ValueError("invalid Environment= assignment without '='")
+            if name == "HERMES_HOME":
+                home = value
+    if home is None:
+        raise ValueError("installed service has no HERMES_HOME assignment")
+    home = _literal_systemd_percent(home)
+    if any(ord(char) < 32 or ord(char) == 127 for char in home):
+        raise ValueError("installed service has a non-printable HERMES_HOME")
+    if not home:
+        raise ValueError("installed service has an empty HERMES_HOME")
+    if not Path(home).is_absolute():
+        raise ValueError(f"installed HERMES_HOME is not absolute: {home!r}")
+    return home
+
+
+def _ambiguous_ownership_warning(service_path: Path, detail: object) -> str:
+    return (
+        f"cannot determine HERMES_HOME ownership of {service_path}: {detail}; "
+        "refusing to modify the existing auto-update units. Set "
+        "auto_update.systemd_takeover: true to take over the unit explicitly."
+    )
 
 
 def render_service_unit(
@@ -201,7 +377,7 @@ def write_units_if_changed(
         (service_unit_path(scope, service_name), service_body),
         (timer_unit_path(scope, timer_name), timer_body),
     ):
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
         if existing == body:
             continue
         atomic_write(path, body)
@@ -493,7 +669,49 @@ def reconcile_units(
             timer_active_known=active_known,
         )
 
-    hermes_home = str(get_hermes_home().resolve())
+    current_home = get_hermes_home().resolve()
+    hermes_home = str(current_home)
+    if cfg.get("systemd_takeover") is not True:
+        service_path = service_unit_path(selected)
+        installed_body: str | None = None
+        ownership_warning: str | None = None
+        try:
+            installed_body = service_path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            if service_path.is_symlink():
+                ownership_warning = _ambiguous_ownership_warning(service_path, exc)
+        except (OSError, UnicodeError) as exc:
+            ownership_warning = _ambiguous_ownership_warning(service_path, exc)
+
+        if installed_body is not None:
+            try:
+                installed_home = Path(
+                    _parse_unit_environment_home(installed_body)
+                ).resolve()
+            except (OSError, RuntimeError, ValueError) as exc:
+                ownership_warning = _ambiguous_ownership_warning(service_path, exc)
+            else:
+                if installed_home != current_home:
+                    ownership_warning = (
+                        f"refusing takeover: installed {SERVICE_NAME} targets "
+                        f"HERMES_HOME={installed_home}; this install is {current_home}. "
+                        "Set auto_update.systemd_takeover: true to take over the "
+                        "existing unit explicitly."
+                    )
+
+        if ownership_warning is not None:
+            return ReconcileResult(
+                supported=True,
+                scope=selected,
+                changed=False,
+                enabled=False,
+                timer_active=False,
+                legacy=(),
+                warnings=(ownership_warning,),
+                enabled_known=False,
+                timer_active_known=False,
+            )
+
     service_body = render_service_unit(
         hermes_home=hermes_home,
         exec_start=unit_exec_start_argv(),

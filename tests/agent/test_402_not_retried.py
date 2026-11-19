@@ -6,7 +6,7 @@ prevents the loop's ``is_client_error`` branch from firing.  When a user
 ran a pay-per-token provider (OpenRouter, etc.) with no credential pool
 and no fallback configured, a single 402 cascaded into
 ``agent.api_max_retries`` paid requests against an exhausted balance.
-Real-world impact: ~$40 burned in 48h on a 24/7 gateway routing Telegram
+Real-world impact: ~$40 burned in 48h on a 24/7 gateway routing Discord
 + Discord traffic.
 
 The fix removes ``FailoverReason.billing`` from the exclusion set.  By

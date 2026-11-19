@@ -436,38 +436,50 @@ def restart_safe_gateway_child_argv(
     return GatewayChildDispatch("scoped", scoped)
 
 
-def _stop_systemd_unit(unit_name: str) -> bool:
-    """Stop a transient systemd user scope by unit name.
-    Reaps the *entire* cgroup — catching double-forked descendants reparented to init
-    inside the scope that survive a plain PID signal (SIGTERM all, SIGKILL after
-    ``TimeoutStopSec``). True if stopped or already gone; False if ``systemctl`` is
-    unavailable or the stop failed.
+def _systemctl_stop_result(binary: str, args: list, env: dict) -> str:
+    """``stopped``, ``missing``, or ``failed`` for one systemctl stop invocation."""
+    result = subprocess.run(
+        [binary, *args], capture_output=True, timeout=15, stdin=subprocess.DEVNULL, env=env,
+    )
+    if result.returncode == 0:
+        return "stopped"
+    stderr = (result.stderr or b"").decode(errors="replace").strip().lower()
+    if any(marker in stderr for marker in ("not loaded", "not found", "does not exist")):
+        return "missing"
+    logger.debug("systemctl %s exited %d: %s", " ".join(args), result.returncode, stderr)
+    return "failed"
 
-    See #70716.
+
+def _stop_systemd_unit(unit_name: str) -> bool:
+    """Stop a transient user scope or system service by unit name.
+
+    Reaps the entire cgroup. A missing unit is already gone. A system service
+    (unrelated harness) is not on the user manager, so a user-manager miss
+    falls through to the system manager instead of being treated as success.
+    True if stopped or already gone; False if systemctl is unavailable or the
+    stop failed.
     """
     import shutil
 
     binary = shutil.which("systemctl")
     if binary is None:
         return False
+    env = systemd_user_bus_env()
     try:
-        result = subprocess.run(
-            [binary, "--user", "stop", unit_name],
-            capture_output=True,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-            env=systemd_user_bus_env(),
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or b"").decode(errors="replace").strip()
-            if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
-                return True
-            logger.debug("systemctl --user stop %s exited %d: %s", unit_name, result.returncode, stderr)
-            return False
-        return True
+        user = _systemctl_stop_result(binary, ["--user", "stop", unit_name], env)
     except Exception as exc:
         logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
-        return False
+        user = "failed"
+    if user == "stopped":
+        return True
+    try:
+        system = _systemctl_stop_result(binary, ["stop", unit_name], env)
+    except Exception as exc:
+        logger.debug("systemctl stop %s failed: %s", unit_name, exc)
+        return user == "missing"
+    if system == "stopped":
+        return True
+    return user == "missing" and system == "missing"
 
 
 def format_uptime_short(seconds: int) -> str:

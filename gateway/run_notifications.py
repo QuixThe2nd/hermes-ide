@@ -303,7 +303,7 @@ class GatewayNotificationsMixin:
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import BasePlatformAdapter
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
@@ -322,26 +322,22 @@ class GatewayNotificationsMixin:
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
-            def _is_photo(media_path: str, is_voice: bool) -> bool:
+            def _is_photo(media_path: str) -> bool:
                 ext = Path(media_path).suffix.lower()
-                return ext in _IMAGE_EXTS and not is_voice and not force_document_attachments
+                return ext in _IMAGE_EXTS and not force_document_attachments
 
-            image_paths = [p for p, v in media_files if _is_photo(p, v)]
-            non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+            image_paths = [p for p in media_files if _is_photo(p)]
+            non_image_media = [p for p in media_files if not _is_photo(p)]
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
-            for media_path, is_voice in non_image_media:
+            for media_path in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
-                            chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
-                        )
-                    elif ext in _VIDEO_EXTS:
+                    if ext in _VIDEO_EXTS:
                         await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
@@ -422,7 +418,7 @@ class GatewayNotificationsMixin:
         result, so a final refused here (flood control, a transport that had just died) left no
         ledger row and was gone for good. The ledger identity is the raw inbound message id;
         ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
-        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
+        (forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
@@ -532,7 +528,7 @@ class GatewayNotificationsMixin:
         return data[offset:].decode("utf-8", errors="replace"), len(data)
 
     async def _send_update_output(self, target: "_UpdateTarget", text: str) -> None:
-        """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
+        """Send buffered update output as fenced chunks that fit message limits (e.g. 4096)."""
         from tools.ansi_strip import strip_ansi
         clean = strip_ansi(text).strip()
         if not clean:
@@ -543,7 +539,7 @@ class GatewayNotificationsMixin:
                 await target.send(f"```\n{clean[i:i + max_chunk]}\n```")
 
     async def _forward_update_prompt(self, target: "_UpdateTarget", prompt_text: str, default: str) -> None:
-        """Forward an update prompt: platform-native buttons first (Discord, Telegram), else text."""
+        """Forward an update prompt: platform-native buttons first (Discord), else text."""
         sent_buttons = False
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
@@ -844,26 +840,6 @@ class GatewayNotificationsMixin:
             logger.warning(failure_fmt, platform.value, channel.chat_id, exc)
             return False
 
-    def _free_tier_startup_line(self) -> Optional[str]:
-        """Extra startup line when the gateway's inference is carried by the Nous free tier; None otherwise.
-
-        Best-effort: a resolution failure (no provider, auth error) must not block the online notice."""
-        try:
-            # Persisted state only. The free-tier check reads auth.json; it runs FIRST so the resolver
-            # is only consulted when a free-tier identity already exists and its own free-tier rung
-            # (which may mint on a fresh install, NS-829) answers from that identity without a network
-            # call. No token refresh at boot either way.
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-            if not guest_carries_inference():
-                return None
-            if resolve_provider("auto") != "nous":
-                return None
-        except Exception as exc:
-            logger.debug("Free tier startup line skipped: %s", exc)
-            return None
-        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
-
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
     async def _replay_pending_planned_restart_notification(self) -> set[tuple[str, str, Optional[str]]]:
@@ -888,7 +864,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Resolve obligations from configuration, never from the currently live transports.
                 # Removed homes and explicit notification opt-outs no longer owe a notice.
@@ -934,9 +910,6 @@ class GatewayNotificationsMixin:
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
-        free_tier_line = self._free_tier_startup_line()
-        if free_tier_line:
-            message = f"{message}\n{free_tier_line}"
         any_channel = any(
             (cfg.notification_channel and cfg.notification_channel.chat_id)
             for cfg in self.config.platforms.values()

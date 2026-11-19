@@ -1,0 +1,168 @@
+{
+  "comment": "Shared contract between internal/jevnotices (Go, canonical) and gateway/jev_notice.py (Python twin). Each case is one notice record and the exact line BOTH implementations must produce. Both sides' tests execute this table.",
+  "cases": [
+    {
+      "name": "goal-intent success posts the fenced confidence",
+      "record": {
+        "purpose": "goal-intent",
+        "confidence": 0.82
+      },
+      "expect": "```\n🔍 Goal Intent: 0.82 Confidence\n```"
+    },
+    {
+      "name": "goal-intent low confidence is visible",
+      "record": {
+        "purpose": "goal-intent",
+        "confidence": 0.2
+      },
+      "expect": "```\n🔍 Goal Intent: 0.20 Confidence\n```"
+    },
+    {
+      "name": "goal-intent missing confidence says so",
+      "record": {
+        "purpose": "goal-intent",
+        "confidence": null
+      },
+      "expect": "```\n🔍 Goal Intent: confidence unavailable\n```"
+    },
+    {
+      "name": "goal-intent transport failure posts the sanitized class",
+      "record": {
+        "purpose": "goal-intent",
+        "error": "transport_error"
+      },
+      "expect": "```\n🔍 Goal Intent: failed (transport_error)\n```"
+    },
+    {
+      "name": "goal-intent failure detail collapses to the class token",
+      "record": {
+        "purpose": "goal-intent",
+        "error": "schema_mismatch: no answers object"
+      },
+      "expect": "```\n🔍 Goal Intent: failed (schema_mismatch)\n```"
+    },
+    {
+      "name": "goal-intent retried attempt carries no numbering or fragments",
+      "record": {
+        "purpose": "goal-intent",
+        "subject": "user message",
+        "author": "Bob",
+        "attempt": 2,
+        "attempts": 2,
+        "label": "task",
+        "confidence": 0.77
+      },
+      "expect": "```\n🔍 Goal Intent: 0.77 Confidence\n```"
+    },
+    {
+      "name": "response-gate allow with all four nouls",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Alice",
+        "allowed": true,
+        "scores": {
+          "addresses_bot": 0.91,
+          "continues_bot_thread": 0.12,
+          "joins_bot_thread": 0.03,
+          "noise": 0.05
+        }
+      },
+      "expect": "🔎 jev response-gate user message from Alice: allow (addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)"
+    },
+    {
+      "name": "response-gate deny below threshold is visible",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "allowed": false,
+        "scores": {
+          "addresses_bot": 0.09,
+          "continues_bot_thread": 0.88,
+          "joins_bot_thread": 0.02,
+          "noise": 0.75
+        }
+      },
+      "expect": "🔎 jev response-gate user message from Tek: deny (addresses_bot=0.09 continues_bot_thread=0.88 joins_bot_thread=0.02 noise=0.75)"
+    },
+    {
+      "name": "response-gate http failure after a real request",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "error": "http_502"
+      },
+      "expect": "🔎 jev response-gate user message from Tek: failed (http_502)"
+    },
+    {
+      "name": "response-gate timeout failure",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "error": "timeout"
+      },
+      "expect": "🔎 jev response-gate user message from Tek: failed (timeout)"
+    },
+    {
+      "name": "reaction-gate react with abstention mass",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Alice",
+        "emoji": "🔥",
+        "abstain": 0.2
+      },
+      "expect": "🔎 jev reaction-gate user message from Alice: react 🔥 (abstain 0.20)"
+    },
+    {
+      "name": "reaction-gate no-reaction abstention is visible",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Alice",
+        "abstain": 0.63
+      },
+      "expect": "🔎 jev reaction-gate user message from Alice: no reaction (abstain 0.63)"
+    },
+    {
+      "name": "reaction-gate judge failure",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "error": "incoherent_distribution"
+      },
+      "expect": "🔎 jev reaction-gate user message from Tek: failed (incoherent_distribution)"
+    },
+    {
+      "name": "hostile author name cannot ping or format",
+      "record": {
+        "purpose": "response-gate",
+        "subject": "user message",
+        "author": "@everyone `code\ninjection",
+        "allowed": true,
+        "scores": {
+          "addresses_bot": 0.9,
+          "continues_bot_thread": 0.1,
+          "joins_bot_thread": 0.0,
+          "noise": 0.1
+        }
+      },
+      "expect": "🔎 jev response-gate user message from everyone code injection: allow (addresses_bot=0.90 continues_bot_thread=0.10 joins_bot_thread=0.00 noise=0.10)"
+    },
+    {
+      "name": "single-attempt caller hides the attempt fragment",
+      "record": {
+        "purpose": "reaction-gate",
+        "subject": "user message",
+        "author": "Tek",
+        "emoji": "👍",
+        "abstain": 0.1
+      },
+      "expect": "🔎 jev reaction-gate user message from Tek: react 👍 (abstain 0.10)"
+    }
+  ]
+}

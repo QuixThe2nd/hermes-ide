@@ -316,6 +316,16 @@ class MatrixHubClientAdapter(MatrixAdapter):
         try:
             method = message.get("method")
             params = message.get("params") or {}
+            if method == "restart_request":
+                response = {
+                    "type": "control_result", "id": message.get("id"),
+                    "result": await self._restart_request_control(params),
+                }
+                if self._writer is not None:
+                    async with self._write_lock:
+                        self._writer.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                        await self._writer.drain()
+                return
             if method != "matrix_reaction":
                 raise ValueError("unknown Matrix hub control method")
             event = SimpleNamespace(**(params.get("event") or {}))
@@ -569,12 +579,6 @@ class MatrixHubClientAdapter(MatrixAdapter):
         return self._send_result(await self._rpc(
             "send_document", chat_id, file_path, caption=caption, file_name=file_name,
             reply_to=reply_to, metadata=metadata))
-
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: Optional[dict] = None, **kwargs) -> SendResult:
-        return self._send_result(await self._rpc(
-            "send_voice", chat_id, audio_path, caption=caption,
-            reply_to=reply_to, metadata=metadata, **kwargs))
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> SendResult:

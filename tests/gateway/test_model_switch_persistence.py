@@ -28,7 +28,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
@@ -42,12 +42,11 @@ def _make_runner():
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok")}
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="tok")}
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._voice_mode = {}
+    runner.adapters = {Platform.DISCORD: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
     runner._pending_one_turn_model_restores = {}
@@ -67,7 +66,7 @@ def _make_runner():
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
     )
     runner.session_store.get_or_create_session.return_value = session_entry
@@ -127,8 +126,7 @@ class TestApplySessionModelOverride:
 
 class TestIsIntentionalModelSwitch:
     """The fallback-eviction check must not evict a session whose model differs from the config
-    default for a reason the system produced: a /model override, or the Nous gateway moving the
-    session off the ``nous/welcome`` alias the config still carries."""
+    default for a reason the system produced: a /model override selecting the running model."""
 
     def test_matches_override(self):
         runner = _make_runner()
@@ -145,17 +143,21 @@ class TestIsIntentionalModelSwitch:
         agent = SimpleNamespace(model="gpt-5.4")
         assert runner._is_intentional_model_switch(sk, agent, "openai/gpt-5") is True
 
-    def test_server_model_switch_off_the_welcome_alias_is_intentional(self):
+    def test_override_for_a_different_model_is_not_intentional(self):
+        """An override selecting some other model doesn't excuse the running model."""
         runner = _make_runner()
         sk = build_session_key(_make_source())
-        # apply_model_switch moved the session and recorded the move (alias -> backing).
-        agent = SimpleNamespace(model="z-ai/glm-5.3-flash", _nous_model_switch=("nous/welcome", "z-ai/glm-5.3-flash"))
-        assert runner._is_intentional_model_switch(sk, agent, "nous/welcome") is True
-        # A config that names something else is real drift, not the server's move.
-        assert runner._is_intentional_model_switch(sk, agent, "openai/gpt-5") is False
-        # A later fallback onto a third model is drift too, even with the config still on the alias.
-        agent.model = "fallback/model"
-        assert runner._is_intentional_model_switch(sk, agent, "nous/welcome") is False
+
+        runner._session_model_overrides[sk] = {
+            "model": "gpt-5.4",
+            "provider": "openai",
+            "api_key": "key",
+            "base_url": "",
+            "api_mode": "chat_completions",
+        }
+
+        agent = SimpleNamespace(model="fallback/model")
+        assert runner._is_intentional_model_switch(sk, agent, "gpt-5.4") is False
 
     def test_plain_drift_is_not_intentional(self):
         runner = _make_runner()

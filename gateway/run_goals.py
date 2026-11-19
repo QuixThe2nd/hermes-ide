@@ -121,7 +121,7 @@ class GatewayGoalsMixin:
 
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
-        would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        would quote that stale message (some platforms route anchorless via the topic id).
         """
         source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
@@ -132,8 +132,16 @@ class GatewayGoalsMixin:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
         return adapter
 
-    async def _send_goal_status_notice(self, source: Any, message: str) -> None:
-        """Send a /goal judge status line back to the originating chat/thread."""
+    async def _send_goal_status_notice(
+        self, source: Any, message: str, *, non_conversational: bool = False
+    ) -> None:
+        """Send a /goal judge status line back to the originating chat/thread.
+
+        ``non_conversational=True`` (the Jev notice lines) marks the send as
+        non-conversational history: a troubleshooting notice must never become
+        the last-self-message boundary or leak into the model's recovered
+        context on platforms that honor the flag (Discord).
+        """
         adapter = self._adapter_for_source(source)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
@@ -143,6 +151,15 @@ class GatewayGoalsMixin:
             metadata = self._thread_metadata_for_source(source)
         except Exception:
             metadata = None
+        if non_conversational:
+            metadata = dict(metadata or {})
+            # A diagnostic is never the turn's final message: the interim
+            # marker keeps a live native stream (relay seal-interception)
+            # from sealing on notice text, and non-conversational history
+            # keeps it out of the model's recovered context and off the
+            # last-self-message boundary.
+            metadata["non_conversational_history"] = True
+            metadata["_interim_send"] = True
 
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
@@ -156,7 +173,7 @@ class GatewayGoalsMixin:
 
         The gateway message handler returns the agent response to the platform
         adapter, which sends it after this method's caller has returned.  For a
-        natural Discord/Telegram reading order, goal status belongs after that
+        natural Discord reading order, goal status belongs after that
         send.  Platform adapters provide a one-shot post-delivery callback for
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
@@ -227,9 +244,9 @@ class GatewayGoalsMixin:
         user message that arrives simultaneously is handled by the same
         queue and takes priority naturally.
 
-        ``auto_decision`` (goals.auto.mode=on) is applied FIRST — before the
-        judge — so a goal minted by this turn's message is judged against
-        this turn's response in the same boundary.
+        ``auto_decision`` is applied FIRST — before the judge — so a goal minted
+        by this turn's message is judged against this turn's response in the
+        same boundary.
         """
         try:
             from hermes_cli.goals import GoalManager
@@ -319,6 +336,7 @@ class GatewayGoalsMixin:
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    internal=True,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
@@ -344,10 +362,10 @@ class GatewayGoalsMixin:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
 
-        # Auto-goal (goals.auto.mode=on): consume the decision parked at
-        # message arrival. Popped before the final-text gate and dropped —
-        # not deferred — when the turn produced no text: an interrupted or
-        # errored turn must not mint a goal.
+        # Auto-goal: consume the decision parked at message arrival.
+        # Popped before the final-text gate and dropped — not deferred —
+        # when the turn produced no text: an interrupted or errored turn
+        # must not mint a goal.
         auto_decision = await self._take_pending_auto_goal_decision(source)
 
         # Empty interrupted/errored responses must not drive /goal, but an
@@ -451,7 +469,7 @@ class GatewayGoalsMixin:
         profile = route.get("profile") or profile
         # The loop's OWN profile's adapter map, fail closed: ``self.adapters`` is the default profile's,
         # so a secondary session's wakeup would inject via the default bot on a bare chat_id (a
-        # Telegram DM lands in the user's chat with the other bot).
+        # platform DM lands in the user's chat with the other bot).
         adapters = self._adapters_for_profile(profile)
         adapter = next((a for p, a in adapters.items() if p.value == platform_name), None)
         if adapter is None:
@@ -607,7 +625,7 @@ class GatewayGoalsMixin:
                     try:
                         # Fall back to the session's remembered last real user
                         # message id so the wakeup's reply still carries a
-                        # reply anchor (and pings) on Discord/Telegram.
+                        # reply anchor (and pings) on threaded platforms.
                         _anchor = None
                         if session_key:
                             try:

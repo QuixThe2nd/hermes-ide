@@ -95,4 +95,4 @@ class TerminalEnvironmentProvider(ProviderBase):
     ):
         """Create an execution environment (``BaseEnvironment`` duck type). MUST accept ``**kwargs`` and ignore
         unknown keys so the factory can evolve without breaking older plugins. ``task_id`` keys reuse/persistence;
-        ``container_config`` carries ``container_cpu/memory/disk/persistent`` when :attr:`is_container`."""
+        ``container_config`` is backend-defined sandbox settings (empty dict unless the caller supplies one)."""

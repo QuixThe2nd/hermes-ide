@@ -4,7 +4,7 @@ When the user runs `openai/*` turns through the codex app-server, codex
 owns the loop and builds its own tool list. By default, that means
 Hermes' richer tool surface — web search, browser automation,
 delegate_agent subagents, vision analysis, persistent memory, skills,
-cross-session search, image generation, TTS — is unreachable.
+cross-session search, image generation — is unreachable.
 
 This module exposes a curated subset of those Hermes tools to the
 spawned codex subprocess via stdio MCP. Codex registers it as a normal
@@ -19,7 +19,6 @@ Scope (what we expose):
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
   - skill_view, skills_list              — Hermes' skill library
-  - text_to_speech                       — TTS
 
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
@@ -91,7 +90,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "web_search", "web_extract",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_snapshot", "browser_scroll",
     "browser_back", "browser_get_images", "browser_console", "browser_vision",
-    "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
+    "vision_analyze", "image_generate", "skill_view", "skills_list",
 )
 
 

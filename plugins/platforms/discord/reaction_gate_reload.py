@@ -256,7 +256,7 @@ class ReactionGateReloadWatcher:
         import yaml
 
         try:
-            with open(self.config_path, "r", encoding="utf-8") as handle:
+            with open(self.config_path, "r", encoding="utf-8-sig") as handle:
                 yaml_cfg = yaml.safe_load(handle)
         except (OSError, UnicodeError):
             return None, "config file unreadable"

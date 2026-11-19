@@ -1,16 +1,14 @@
 """Strict tool-provider selection: the `hermes tools` choice always wins.
 
 Policy (owner decision): the provider string stored in config.yaml is what
-runs at call time. "nous" → managed Nous Tool Gateway only; a vendor name →
-that vendor direct with the user's own credentials; no key ever written →
-today's credential autodetect. Credential presence must NEVER select or
-reroute; a selected-but-broken provider produces an honest error naming the
-selection and pointing at `hermes tools`.
+runs at call time. A vendor name → that vendor direct with the user's own
+credentials; no key ever written → today's credential autodetect. Credential
+presence must NEVER select or reroute; a selected-but-broken provider produces
+an honest error naming the selection and pointing at `hermes tools`.
 
-Per category these tests pin the three strict behaviors:
-  (a) managed selection + direct key present ⇒ managed route (key ignored)
-  (b) vendor selection + key missing ⇒ selection-naming error, NO managed call
-  (c) never-configured ⇒ legacy autodetect unchanged
+Per category these tests pin the strict behaviors:
+  (a) vendor selection + key missing ⇒ selection-naming error, NO managed call
+  (b) never-configured ⇒ legacy autodetect unchanged (direct key, else managed gateway)
 """
 
 from types import SimpleNamespace
@@ -22,7 +20,7 @@ from tools import tool_backend_helpers as tbh
 
 
 MANAGED = SimpleNamespace(
-    nous_user_token="managed-token",
+    gateway_token="managed-token",
     gateway_origin="https://gateway.nousresearch.com",
 )
 
@@ -51,11 +49,11 @@ class TestReadSelection:
         with self._with_raw({"image_gen": {"provider": "nous"}}):
             assert tbh.read_selection("image_gen") == "nous"
 
-    def test_legacy_use_gateway_true_maps_to_nous(self):
-        """Old configs stored use_gateway: true beside a vendor name — only
-        the managed picker row ever wrote it, so it means 'nous'."""
+    def test_legacy_use_gateway_true_no_longer_maps_to_a_managed_row(self):
+        """The legacy ``use_gateway`` shim is gone: with a vendor name beside it,
+        the vendor name is the selection."""
         with self._with_raw({"video_gen": {"provider": "fal", "use_gateway": True}}):
-            assert tbh.read_selection("video_gen") == "nous"
+            assert tbh.read_selection("video_gen") == "fal"
 
     def test_legacy_use_gateway_false_keeps_vendor(self):
         with self._with_raw({"tts": {"provider": "openai", "use_gateway": False}}):
@@ -94,26 +92,6 @@ class TestReadSelection:
 
 
 class TestImageFalStrictSelection:
-    def test_nous_selection_routes_managed_even_with_fal_key(self):
-        from tools import image_generation_tool as it
-
-        with patch.object(it, "read_selection", return_value="nous"), \
-             patch.object(it, "fal_key_is_configured", return_value=True), \
-             patch.object(it, "resolve_managed_tool_gateway", return_value=MANAGED) as gw:
-            assert it._resolve_managed_fal_gateway() is MANAGED
-        gw.assert_called_once_with("fal-queue")
-
-    def test_nous_selection_unentitled_raises_selection_error(self):
-        from tools import image_generation_tool as it
-
-        with patch.object(it, "read_selection", return_value="nous"), \
-             patch.object(it, "fal_key_is_configured", return_value=True), \
-             patch.object(it, "resolve_managed_tool_gateway", return_value=None):
-            with pytest.raises(ValueError) as exc:
-                it._resolve_managed_fal_gateway()
-        assert "image_gen is configured to use nous" in str(exc.value)
-        assert "hermes tools" in str(exc.value)
-
     def test_fal_selection_missing_key_errors_without_managed_call(self):
         from tools import image_generation_tool as it
 
@@ -168,14 +146,6 @@ class TestImageFalStrictSelection:
 
 
 class TestVideoFalStrictSelection:
-    def test_nous_selection_routes_managed_even_with_fal_key(self):
-        from plugins.video_gen import fal as vf
-
-        with patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
-             patch("tools.tool_backend_helpers.fal_key_is_configured", return_value=True), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
-            assert vf._resolve_managed_fal_video_gateway() is MANAGED
-
     def test_fal_selection_missing_key_errors_without_managed_call(self):
         from plugins.video_gen import fal as vf
 
@@ -197,86 +167,27 @@ class TestVideoFalStrictSelection:
 
 
 # ---------------------------------------------------------------------------
-# STT (OpenAI audio resolver — previously ignored the stored intent entirely)
-# ---------------------------------------------------------------------------
-
-
-class TestSttStrictSelection:
-    def test_nous_selection_beats_direct_openai_key(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_load_stt_config", return_value={"openai": {"api_key": "sk-direct"}}), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
-            api_key, base_url = tt._resolve_openai_audio_client_config()
-        assert api_key == "managed-token"
-        assert base_url.startswith("https://gateway.nousresearch.com")
-
-    def test_vendor_selection_missing_key_errors_without_managed_call(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_load_stt_config", return_value={}), \
-             patch("tools.tool_backend_helpers.read_selection", return_value="openai"), \
-             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value=""), \
-             patch("tools.managed_tool_gateway.resolve_managed_tool_gateway") as gw:
-            with pytest.raises(ValueError) as exc:
-                tt._resolve_openai_audio_client_config()
-        gw.assert_not_called()
-        assert "stt is configured to use openai" in str(exc.value)
-        assert "hermes tools" in str(exc.value)
-
-    def test_never_configured_keeps_legacy_ladder(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_load_stt_config", return_value={}), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None), \
-             patch("tools.tool_backend_helpers.resolve_openai_audio_api_key", return_value="sk-env"):
-            api_key, base_url = tt._resolve_openai_audio_client_config()
-        assert api_key == "sk-env"
-
-
-
-
-# ---------------------------------------------------------------------------
 # tools_config writers: one provider string per row, no use_gateway writes
 # ---------------------------------------------------------------------------
 
 
 class TestWriteProviderConfig:
-    def test_managed_row_writes_nous_and_clears_legacy_flag(self):
-        from hermes_cli.tools_config import _write_provider_config
-
-        config = {"tts": {"provider": "edge", "use_gateway": False}}
-        provider = {"name": "Nous Subscription", "tts_provider": "openai"}
-        _write_provider_config(provider, config, managed_feature="tts")
-        assert config["tts"]["provider"] == "nous"
-        assert "use_gateway" not in config["tts"]
-
     def test_byok_row_writes_vendor_and_clears_legacy_flag(self):
         from hermes_cli.tools_config import _write_provider_config
 
-        config = {"web": {"backend": "nous", "use_gateway": True}}
+        config = {"web": {"backend": "old-vendor", "use_gateway": True}}
         provider = {"name": "Keenable", "web_backend": "keenable"}
-        _write_provider_config(provider, config, managed_feature=None)
+        _write_provider_config(provider, config)
         assert config["web"]["backend"] == "keenable"
         assert "use_gateway" not in config["web"]
-
-    def test_managed_image_row_persists_nous_provider(self):
-        from hermes_cli.tools_config import _write_provider_config
-
-        config = {}
-        provider = {"name": "Nous Subscription", "imagegen_backend": "fal"}
-        _write_provider_config(provider, config, managed_feature="image_gen")
-        assert config["image_gen"]["provider"] == "nous"
-        assert "use_gateway" not in config["image_gen"]
 
     def test_plugin_injected_byok_row_clears_stale_use_gateway(self):
         """Plugin-injected rows are not in TOOL_CATEGORIES' hardcoded
         provider lists; the legacy clear-loop skipped them."""
         from hermes_cli.tools_config import _write_provider_config
 
-        config = {"stt": {"provider": "nous", "use_gateway": True}}
+        config = {"stt": {"provider": "old-vendor", "use_gateway": True}}
         provider = {"name": "Groq Whisper", "stt_provider": "groq"}
-        _write_provider_config(provider, config, managed_feature=None)
+        _write_provider_config(provider, config)
         assert config["stt"]["provider"] == "groq"
         assert "use_gateway" not in config["stt"]

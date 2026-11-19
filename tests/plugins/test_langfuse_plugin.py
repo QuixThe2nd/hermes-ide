@@ -2001,27 +2001,6 @@ class TestSystemPromptCrossesHookBoundary:
         assert captured["input"][0]["role"] == "system"
         assert "SYS-ANTHROPIC" in captured["input"][0]["content"]
 
-    def test_bedrock_system_kwarg_reaches_generation_input(self, monkeypatch):
-        from agent.transports.bedrock import BedrockTransport
-
-        api_messages = [
-            {"role": "system", "content": "SYS-BEDROCK"},
-            {"role": "user", "content": "hi"},
-        ]
-        api_kwargs = BedrockTransport().build_kwargs(
-            "anthropic.claude-x", api_messages, None, max_tokens=64
-        )
-        # Premise: Bedrock Converse moves system into a separate 'system' kwarg,
-        # shaped as [{"text": ...}] blocks — no "type" key, unlike Anthropic.
-        # (The transport may append extra blocks, e.g. cachePoint markers.)
-        assert {"text": "SYS-BEDROCK"} in api_kwargs["system"]
-        assert all(m.get("role") != "system" for m in api_kwargs["messages"])
-
-        mod = self._make_mod()
-        captured = self._capture_generation(mod, monkeypatch)
-        self._derive_and_fire(mod, api_kwargs, api_messages)
-        assert captured["input"][0]["role"] == "system"
-        assert "SYS-BEDROCK" in captured["input"][0]["content"]
 
     def test_chat_completions_shape_needs_no_fallback(self, monkeypatch):
         """When system stays in messages[0] (chat_completions), the helper

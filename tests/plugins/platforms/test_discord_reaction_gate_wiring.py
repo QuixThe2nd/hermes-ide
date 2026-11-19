@@ -190,6 +190,19 @@ def _reactions(message) -> list:
     return [call.args for call in message.add_reaction.await_args_list]
 
 
+def _conversational_sends(adapter) -> list:
+    """Sends that are NOT Jev classification notices.
+
+    Every real judge request now posts one visible notice line
+    (test_discord_jev_notices.py owns that contract); the wiring assertions
+    below care about conversational replies only.
+    """
+    return [
+        call for call in adapter.send.await_args_list
+        if not (call.kwargs.get("metadata") or {}).get("jev_notice")
+    ]
+
+
 def _thread_channel(monkeypatch, parent_id=555, thread_id=9001):
     """A thread-of-parent channel pair, with ``discord.Thread`` shimmed for isinstance.
 
@@ -231,7 +244,7 @@ class TestDeniedBySpeakingGateStillReacted:
 
         assert dispatched is False  # the speaking gate denied the reply...
         assert adapter._handle_message.await_count == 0  # ...no session or dispatch...
-        assert adapter.send.await_count == 0  # ...and no text reply anywhere.
+        assert _conversational_sends(adapter) == []  # ...and no text reply anywhere (Jev notices excluded).
         assert choice_judge.calls == 1  # ...but the reaction judge was consulted once...
         assert _reactions(ambient) == [("🔥",)]  # ...and reacted with the argmax emoji.
 

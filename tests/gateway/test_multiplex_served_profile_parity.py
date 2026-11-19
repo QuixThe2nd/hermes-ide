@@ -22,7 +22,7 @@ from hermes_constants import get_hermes_home
 class RecordingAdapter:
     def __init__(self, notice_delivery=None):
         self.config = PlatformConfig(enabled=True, extra={"notice_delivery": notice_delivery} if notice_delivery else {})
-        self.platform = Platform.TELEGRAM
+        self.platform = Platform.DISCORD
         self.calls = []
         self._active_sessions, self._pending_messages, self._session_tasks = {}, {}, {}
 
@@ -59,8 +59,8 @@ def served(tmp_path, monkeypatch):
     runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=[], get_notice_delivery=lambda p: "public")
     runner._running = True
     default_adapter, alpha_adapter = RecordingAdapter(), RecordingAdapter(notice_delivery="private")
-    runner.adapters = {Platform.TELEGRAM: default_adapter}
-    runner._profile_adapters = {"alpha": {Platform.TELEGRAM: alpha_adapter}}
+    runner.adapters = {Platform.DISCORD: default_adapter}
+    runner._profile_adapters = {"alpha": {Platform.DISCORD: alpha_adapter}}
     runner._primary_profile_name = "default"
     runner._session_source_cache = {}
     runner.session_store = SimpleNamespace(_ensure_loaded=lambda: None, _entries={})
@@ -78,11 +78,11 @@ def served(tmp_path, monkeypatch):
 
 
 def _alpha_source():
-    return SessionSource(platform=Platform.TELEGRAM, chat_id="1001", chat_type="dm", user_id="u1", profile="alpha")
+    return SessionSource(platform=Platform.DISCORD, chat_id="1001", chat_type="dm", user_id="u1", profile="alpha")
 
 
 def test_platform_notice_honours_the_served_profiles_notice_delivery(served):
-    """alpha's ``platforms.telegram.notice_delivery: private`` (carried by ITS adapter) wins over the
+    """alpha's ``platforms.discord.notice_delivery: private`` (carried by ITS adapter) wins over the
     launch profile's GatewayConfig — as a standalone alpha gateway would behave."""
     runner = served.runner
     runner._thread_metadata_for_source = lambda source: None
@@ -99,11 +99,11 @@ def test_loop_completion_persists_into_the_served_profiles_store(served):
     from hermes_cli.loops import LoopManager
 
     runner = served.runner
-    entry = SimpleNamespace(session_id="sess-alpha-1", session_key="agent:alpha:telegram:dm:1001")
+    entry = SimpleNamespace(session_id="sess-alpha-1", session_key="agent:alpha:discord:dm:1001")
     with _profile_runtime_scope(served.alpha):
         _get_session_db()
         mgr = LoopManager(session_id=entry.session_id)
-        mgr.set("check", interval_seconds=300, route={"platform": "telegram", "chat_id": "1001", "profile": "alpha"})
+        mgr.set("check", interval_seconds=300, route={"platform": "discord", "chat_id": "1001", "profile": "alpha"})
         assert mgr.fire_tick()
         asyncio.run(runner._post_turn_loop_completion(
             session_entry=entry, source=_alpha_source(), final_response="done"))
@@ -131,8 +131,8 @@ def test_watch_event_gate_uses_the_owning_profiles_mode(served):
 
     runner = served.runner
     registry = ProcessRegistry()
-    evt = {"type": "watch_match", "session_id": "p1", "session_key": "agent:alpha:telegram:dm:1001",
-           "platform": "telegram", "chat_type": "dm", "chat_id": "1001", "pattern": "DONE",
+    evt = {"type": "watch_match", "session_id": "p1", "session_key": "agent:alpha:discord:dm:1001",
+           "platform": "discord", "chat_type": "dm", "chat_id": "1001", "pattern": "DONE",
            "output": "DONE", "command": "x"}
     registry.completion_queue.put(evt)
     asyncio.run(runner._drain_watch_notifications(registry.completion_queue))
@@ -150,7 +150,7 @@ def test_served_profile_process_checkpoint_is_recovered_at_startup(served, monke
     import os
     entry = {"session_id": "proc_alpha01", "pid": os.getpid(), "pid_scope": "host", "command": "sleep 1",
              "started_at": 1.0, "watcher_interval": 5, "notify_on_complete": True,
-             "session_key": "agent:alpha:telegram:dm:1001"}
+             "session_key": "agent:alpha:discord:dm:1001"}
     (served.alpha / "processes.json").write_text(json.dumps([entry]))
     registry = ProcessRegistry()
     monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: True)

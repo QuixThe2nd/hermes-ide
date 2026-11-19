@@ -69,7 +69,7 @@ def stored_session_route(session_meta, *, current_model, current_provider):
         return None
     api_mode = runtime.get("api_mode") or None
     # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
-    # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
+    # pick the wire per model (OpenCode Zen/Go, Copilot) re-derive both from the stored model, or a
     # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
     # model (#96066).
     from hermes_cli.model_switch import model_derived_api_mode

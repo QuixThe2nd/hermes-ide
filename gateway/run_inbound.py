@@ -60,6 +60,20 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
+def interrupt_if_capable(running_agent: Any, text: Any) -> bool:
+    """Call ``interrupt()`` only on a live agent; a placeholder object has none.
+
+    The session slot can briefly hold a non-agent placeholder that is not the pending
+    sentinel, so duck-type instead of assuming ``interrupt`` exists. False means nothing
+    was interrupted and the caller keeps the follow-up queued instead of crashing.
+    """
+    interrupt = getattr(running_agent, "interrupt", None)
+    if not callable(interrupt):
+        return False
+    interrupt(text)
+    return True
+
+
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -239,7 +253,7 @@ class GatewayInboundMixin:
 
         if not self._is_user_authorized_for_source(source):
             if source.user_id is None:
-                # No user identity (Telegram service messages, channel forwards, anonymous admin
+                # No user identity (platform service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
@@ -386,8 +400,8 @@ class GatewayInboundMixin:
             return None
         if _pending_clarify is None:
             return None
-        _clarify_has_audio = bool(self._pending_event_audio_paths(event))
-        _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
+        _clarify_has_audio = self._event_has_audio_attachment(event)
+        _raw_clarify_reply = (event.text or "").strip()
 
         def _retain(why: str) -> str:
             logger.info(
@@ -397,7 +411,7 @@ class GatewayInboundMixin:
             return ""
 
         if _clarify_has_audio and not _raw_clarify_reply:
-            return _retain("voice transcription produced no usable text")
+            return _retain("voice note is not a typed clarify answer")
         # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
@@ -609,7 +623,7 @@ class GatewayInboundMixin:
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
 
-        # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
+        # Photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -617,56 +631,10 @@ class GatewayInboundMixin:
             return True, None
         return False, None
 
-    def _hm_busy_telegram_grace_queue(
-        self, event: "MessageEvent", source: SessionSource, _quick_key: str, effective_busy_input_mode: str
-    ) -> bool:
-        """Queue a Telegram text follow-up that lands within the post-start grace window."""
-        from gateway.run import logger
-
-        _grace = float(os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0"))
-        _grace_state = self._peek_session_state(_quick_key)
-        _started_at = _grace_state.turn.started_ts if _grace_state else 0
-        if not (
-            source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
-            and _grace > 0 and _started_at and (time.time() - _started_at) <= _grace
-        ):
-            return False
-        logger.debug(
-            "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-            time.time() - _started_at, _quick_key,
-        )
-        if effective_busy_input_mode != "queue":
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
-        else:
-            adapter = self._delivery_adapter_for(source)
-            if adapter:
-                self._enqueue_fifo(_quick_key, event, adapter)
-        return True
 
     @staticmethod
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
-
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
-        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics.
-
-        Returns whether the steer landed; the async caller (_hm_handle_running_session_message)
-        turns a True result into the same receipts the classic busy handler emits."""
-        from gateway.run import logger
-
-        steer_text = (event.text or "").strip()
-        steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
-            try:
-                steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
-            except Exception as exc:
-                logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-        if steered:
-            logger.debug("PRIORITY steer for session %s", _quick_key)
-            return True
-        logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-        self._queue_or_replace_pending_event(_quick_key, event)
-        return False
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -688,16 +656,13 @@ class GatewayInboundMixin:
                 logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
-        if self._pending_event_audio_paths(event):
-            _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                event, self._adapter_for_source(source), source, event.text or "",
-                log_context="Voice-priority-interrupt",
-            )
-        elif not _interrupt_text and getattr(event, "media_urls", None):
+        if not _interrupt_text and getattr(event, "media_urls", None):
             _interrupt_text = _build_media_placeholder(event)
         # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
         # — that copy was never consumed and grew unbounded.
-        running_agent.interrupt(_interrupt_text)
+        if not interrupt_if_capable(running_agent, _interrupt_text):
+            # Placeholder object: nothing to interrupt, keep the follow-up queued.
+            self._queue_or_replace_pending_event(_quick_key, event)
 
     def _resume_claim_event_consumes_sentinel(
         self, event: "MessageEvent", session_key: str
@@ -727,17 +692,13 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
-        busy_input_mode queue/steer, subagent and compression protection demote to queue."""
+        subagent and compression protection demote to queue."""
         from gateway.run import logger
 
         from gateway.run import _AGENT_PENDING_SENTINEL
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
-
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
-        if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
-            return None
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
@@ -767,39 +728,9 @@ class GatewayInboundMixin:
                 self, event, _quick_key, require_successor_ready=True,
             ):
                 return None
-            queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
-            if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
             return DeferredReply(
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
             )
-        if effective_busy_input_mode == "queue":
-            logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-            self._queue_or_replace_pending_event(_quick_key, event)
-            return None
-        if effective_busy_input_mode == "steer":
-            steered = self._hm_busy_steer(event, running_agent, _quick_key)
-            if steered:
-                # Receipt parity with the classic busy handler
-                # (_handle_active_session_busy_message): a steered follow-up
-                # gets the Discord ⏩ read-receipt on its own source message
-                # plus the one-shot "steer delivered" ack. The priority path
-                # stays bubble-silent — these two receipts are all it emits —
-                # and a failure here must never unwind a delivered steer.
-                try:
-                    if self._steer_delivered_ack_enabled(event):
-                        self._register_steer_delivered_ack(event, _quick_key, running_agent)
-                    await self._maybe_react_discord_busy_steer(
-                        event, self._delivery_adapter_for(source), _quick_key,
-                        steered=True, is_steer_mode=True,
-                    )
-                except Exception:
-                    logger.debug(
-                        "PRIORITY steer receipt failed for session %s", _quick_key, exc_info=True
-                    )
-            return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
@@ -929,8 +860,6 @@ class GatewayInboundMixin:
 
 
     async def _hm_cmd_new(self, event, source, _quick_key):
-        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-            return True, self._telegram_topic_root_new_message()
         return True, await self._handle_reset_command(event)
 
     async def _hm_cmd_incognito(self, event, source, _quick_key):
@@ -938,16 +867,6 @@ class GatewayInboundMixin:
             event, "incognito", "This starts a fresh incognito session and discards the current conversation history.",
             self._handle_incognito_command,
         )
-
-    async def _hm_cmd_start(self, event, source, _quick_key):
-        from gateway.run import logger
-
-        logger.info("Ignoring /start platform ping for session %s", _quick_key)
-        return True, ""
-
-    async def _hm_cmd_egress(self, event, source, _quick_key):
-        from hermes_cli.proxy_cli import format_status_text
-        return True, format_status_text()
 
     async def _hm_rewrite_turn_to_prompt(self, event, source, name: str, ack: str, build) -> Tuple[bool, Optional[str]]:
         """Ack, then rewrite the turn to ``build()`` and fall through to the agent (keeps role
@@ -1027,7 +946,7 @@ class GatewayInboundMixin:
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "incognito", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue",
+        "new", "incognito", "start", "learn", "plan", "init", "blueprint", "undo", "queue",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -1109,8 +1028,8 @@ class GatewayInboundMixin:
                 return True, f"Quick command '/{command}' has no target defined.", command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
+        # Plugin-registered slash commands. Underscores normalize to hyphens so underscored
+        # autocomplete forms match plugin commands registered with hyphens.
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
@@ -1189,7 +1108,7 @@ class GatewayInboundMixin:
     ) -> Optional[str]:
         """Rewrite ``/<bundle>`` / ``/<skill>`` invocations into the skill prompt on ``event.text``;
         returns a reply string when the command is disabled/unknown/failed, else None.
-        resolve_skill_command_key() handles the Telegram underscore/hyphen round-trip (/claude_code)."""
+        resolve_skill_command_key() handles the underscore/hyphen round-trip (/claude_code)."""
         from gateway.run import logger
 
         if not command or self._hm_bundle_slash_rewrite(event, source, _quick_key, command):
@@ -1502,10 +1421,10 @@ class GatewayInboundMixin:
         if is_internal:
             pass
         elif source.user_id is None:
-            # Messages with no user identity (Telegram service messages,
+            # Messages with no user identity (platform service messages,
             # channel forwards, anonymous admin posts, sender_chat) can't
             # be paired, but they can still be authorized via a
-            # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
+            # chat-scoped allowlist (e.g. QQ_GROUP_ALLOWED_USERS
             # authorizes every member of the listed chat regardless of
             # sender). Defer to _is_user_authorized so that path runs.
             if not self._is_user_authorized_for_source(source):
@@ -1670,7 +1589,7 @@ class GatewayInboundMixin:
         # Auto-goal intent: classify off-path (this schedules retained,
         # profile-scoped work; no classification/HTTP/DB/JSONL work runs
         # inline with the reply) so the decision is ready at the turn boundary.
-        self._schedule_goal_intent_shadow(event, _quick_key)
+        self._schedule_auto_goal_intent(event, _quick_key)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
         if (
@@ -1761,12 +1680,12 @@ class GatewayInboundMixin:
             and _pending_clarify is not None
             and _clarify_mod is not None
         ):
-            _clarify_has_audio = bool(self._pending_event_audio_paths(event))
-            _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
+            _clarify_has_audio = self._event_has_audio_attachment(event)
+            _raw_clarify_reply = (event.text or "").strip()
             if _clarify_has_audio and not _raw_clarify_reply:
                 logger.info(
-                    "Gateway retained pending clarify after voice transcription "
-                    "produced no usable text (session=%s, id=%s)",
+                    "Gateway retained pending clarify after a voice note "
+                    "with no typed answer (session=%s, id=%s)",
                     _quick_key,
                     _pending_clarify.clarify_id,
                 )
@@ -1896,7 +1815,7 @@ class GatewayInboundMixin:
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
         #
-        # Special case: Telegram/photo bursts often arrive as multiple near-
+        # Special case: photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
 
@@ -2101,53 +2020,12 @@ class GatewayInboundMixin:
                     # when the busy policy allows it (the photo merge happens
                     # inside it); cap/IO failure gets the honest drain refusal,
                     # same answer text follow-ups get — never a silent loss.
-                    return self._busy_drain_admission(
-                        event,
-                        _quick_key,
-                        self._effective_busy_input_mode(source),
-                    )
+                    return self._busy_drain_admission(event, _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            effective_busy_input_mode = self._effective_busy_input_mode(source)
-            _telegram_followup_grace = float(
-                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
-            )
-            _grace_state = self._peek_session_state(_quick_key)
-            _started_at = _grace_state.turn.started_ts if _grace_state else 0
-            if (
-                source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
-                and _telegram_followup_grace > 0
-                and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
-            ):
-                if _drain_refuses:
-                    # The grace window's in-memory queue dies with the process
-                    # bounce — this sub-path takes the same durable admission
-                    # as every other busy follow-up, never a silent loss.
-                    return self._busy_drain_admission(
-                        event, _quick_key, effective_busy_input_mode
-                    )
-                logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                    time.time() - _started_at,
-                    _quick_key,
-                )
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    if effective_busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
-                    else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
-                        )
-                return None
 
             _ra_state = self._peek_session_state(_quick_key)
             running_agent = _ra_state.turn.agent if _ra_state else None
@@ -2163,16 +2041,7 @@ class GatewayInboundMixin:
                     # process bounce — same durable admission as every other
                     # busy follow-up. (/stop above stays reachable: it is the
                     # in-flight-work lifecycle the drain itself depends on.)
-                    return self._busy_drain_admission(
-                        event, _quick_key, effective_busy_input_mode
-                    )
-                # Steer mode: a steer-eligible follow-up parks in the
-                # steer-on-live slot instead — injected the moment the agent
-                # build finishes, not parked as a second user turn.
-                if await self._maybe_park_steer_on_agent_live(
-                    event, _quick_key, effective_busy_input_mode, running_agent
-                ):
-                    return None
+                    return self._busy_drain_admission(event, _quick_key)
                 # Queue the message so it will be picked up after the
                 # agent starts. Internal events (resume wakes, background
                 # completions) ride the FIFO as their own turn — never merged
@@ -2191,29 +2060,28 @@ class GatewayInboundMixin:
                     )
                 return None
             if _drain_refuses:
-                return self._busy_drain_admission(
-                    event, _quick_key, effective_busy_input_mode
-                )
-            if effective_busy_input_mode == "queue":
-                logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
-            # Steer/redirect resolution is shared with the adapter busy
+                return self._busy_drain_admission(event, _quick_key)
+            # Redirect/demotion resolution is shared with the adapter busy
             # handler (_handle_active_session_busy_message): one resolver
             # applies the interrupt->queue demotions (#30170 subagents,
-            # #56391 in-flight compression), attempts the mid-run steer
-            # (steer mode, voice transcripts folded in per #58780) or the
-            # text-only redirect (interrupt mode), and falls back to queue
-            # semantics when neither lands. /stop reaches its dedicated
-            # handler above, so the operator keeps a clean escape hatch.
+            # #56391 in-flight compression) and attempts the text-only
+            # redirect, falling back to queue semantics when it doesn't land.
+            # /stop reaches its dedicated handler above, so the operator keeps
+            # a clean escape hatch.
             outcome = await self._resolve_busy_steer_or_redirect(
-                event, _quick_key, effective_busy_input_mode, running_agent
+                event, _quick_key, running_agent
             )
-            if outcome.steered:
-                logger.debug("PRIORITY steer for session %s", _quick_key)
-                return None
             if outcome.redirected:
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
+                try:
+                    adapter = self._delivery_adapter_for(source)
+                    if adapter:
+                        await self._send_busy_ack(
+                            event, adapter, _quick_key, running_agent, outcome,
+                        )
+                except Exception:
+                    # Receipt failure must never unwind an accepted redirect.
+                    logger.debug("PRIORITY redirect receipt failed for %s", _quick_key, exc_info=True)
                 return None
             if outcome.effective_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -2222,17 +2090,12 @@ class GatewayInboundMixin:
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
-            if self._pending_event_audio_paths(event):
-                _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                    event,
-                    self._adapter_for_source(source),
-                    source,
-                    event.text or "",
-                    log_context="Voice-priority-interrupt",
-                )
-            elif not _interrupt_text and _media_urls:
+            if not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
-            running_agent.interrupt(_interrupt_text)
+            if not interrupt_if_capable(running_agent, _interrupt_text):
+                # Placeholder object in the slot: nothing to interrupt, keep the
+                # follow-up queued rather than killing the turn with AttributeError.
+                self._queue_or_replace_pending_event(_quick_key, event)
             # NOTE: self._pending_messages was write-only (never consumed).
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
@@ -2397,24 +2260,11 @@ class GatewayInboundMixin:
             return await plain_handler(event)
 
         if canonical == "new":
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
             return await self._handle_reset_command(event)
 
-        if canonical == "topic":
-            return await self._handle_topic_command(event)
-
-        if canonical == "start":
-            logger.info("Ignoring /start platform ping for session %s", _quick_key)
-            return ""
 
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
-
-        if canonical == "egress":
-            from hermes_cli.proxy_cli import format_status_text
-
-            return format_status_text()
 
         if canonical == "platform":
             return await self._handle_platform_command(event)
@@ -2566,12 +2416,6 @@ class GatewayInboundMixin:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
-        if canonical == "usage":
-            return await self._handle_usage_command(event)
-
-        if canonical == "topup":
-            return await self._handle_topup_command(event)
-
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -2619,9 +2463,6 @@ class GatewayInboundMixin:
             return await self._handle_refine_command(event)
         if canonical == "review":
             return await self._handle_review_command(event)
-
-        if canonical == "voice":
-            return await self._handle_voice_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -2689,9 +2530,8 @@ class GatewayInboundMixin:
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so Telegram's underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
+                # Normalize underscores to hyphens so underscored
+                # autocomplete forms match plugin commands registered with hyphens.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
@@ -2703,9 +2543,8 @@ class GatewayInboundMixin:
                 logger.warning("Plugin command dispatch failed: %s", e)
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
-        # resolve_skill_command_key() handles the Telegram underscore/hyphen
-        # round-trip so /claude_code from Telegram autocomplete still resolves
-        # to the claude-code skill.
+        # resolve_skill_command_key() handles the underscore/hyphen
+        # round-trip so /claude_code from an underscored autocomplete still resolves
         if command:
             # Skill bundles take precedence over individual skill commands —
             # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
@@ -2849,15 +2688,6 @@ class GatewayInboundMixin:
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
 
-
-        if not is_internal and await asyncio.to_thread(
-            self._is_telegram_topic_root_lobby, source
-        ):
-            # Debounce the lobby reminder so a user who forgets about
-            # topic mode and fires ten prompts doesn't get ten copies.
-            if self._should_send_telegram_lobby_reminder(source):
-                return self._telegram_topic_root_lobby_message()
-            return None
 
         # ── External-drain new-turn gate (Phase 2) ────────────────────
         # When NAS has engaged an external drain (.drain_request.json present,
@@ -3065,93 +2895,6 @@ class GatewayInboundMixin:
         return message_text
 
     @staticmethod
-    def _classify_inbound_media(
-        event: MessageEvent, pending_stt_prepared: bool
-    ) -> Tuple[list, list, list, list]:
-        """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
-        MIME wins over the message-level type (a document sent alongside an image must not be routed
-        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
-        from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
-        image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
-        for i, path in enumerate(event.media_urls or []):
-            mtype = event.media_types[i] if i < len(event.media_types) else ""
-            if _event_media_is_image(event, i):
-                image_paths.append(path)
-            if _event_media_is_audio(event, i):
-                if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-                    audio_file_paths.append(path)
-                elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
-                    audio_paths.append(path)
-            if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
-                video_paths.append(path)
-        return image_paths, audio_paths, audio_file_paths, video_paths
-
-    async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
-    ) -> str:
-        """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
-        from gateway.run import logger
-
-        # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
-        # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
-        _img_mode = await asyncio.to_thread(
-            self._decide_image_input_mode, source=source, session_key=session_key,
-        )
-        if _img_mode == "native":
-            self._session_state(session_key).persistent.native_image_paths = list(image_paths)
-            logger.info(
-                "Image routing: native (model supports vision). %d image(s) will be attached inline.",
-                len(image_paths),
-            )
-            return message_text
-        logger.info(
-            "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
-            _img_mode, len(image_paths),
-        )
-        # Vision enrichment runs before AIAgent.run_conversation(), so bind this session's resolved
-        # runtime explicitly rather than consulting process-global compatibility mirrors.
-        vision_runtime = None
-        try:
-            turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source, session_key=session_key,
-            )
-            vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
-        except Exception:
-            logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
-
-        from agent.auxiliary_client import scoped_runtime_main
-
-        with scoped_runtime_main(vision_runtime):
-            return await self._enrich_message_with_vision(message_text, image_paths)
-
-    async def _echo_stt_transcripts(
-        self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
-    ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
-        from gateway.run import logger
-
-        for tx in transcripts:
-            try:
-                await adapter.send(source.chat_id, f'🎙️ "{tx}"', metadata=metadata)
-            except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
-
-    async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
-    ) -> str:
-        message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
-        )
-        # Echo each successful transcript back immediately when configured so users can verify STT
-        # quality in real time. On transcription failure do NOT send a hardcoded notice: that
-        # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
-        if _successful_transcripts and self._should_echo_stt_transcripts():
-            _echo_adapter = self._delivery_adapter_for(source)
-            if _echo_adapter:
-                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
-        return message_text
-
     @staticmethod
     def _inbound_attachment_display_name(path: str) -> Tuple[str, str]:
         """``(display_name, agent_visible_path)``: cache filename is ``<id>_<id>_<original>``; the
@@ -3165,7 +2908,7 @@ class GatewayInboundMixin:
     def _prepend_inbound_media_file_notes(cls, message_text: str, audio_file_paths: list[str], video_paths: list[str]) -> str:
         """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
         for kind, noun, verb, tool, paths in (
-            ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool", audio_file_paths),
+            ("an audio file attachment", "audio", "inspect", "your own tools", audio_file_paths),
             ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths),
         ):
             for _path in paths:
@@ -3343,7 +3086,7 @@ class GatewayInboundMixin:
         """Prepare inbound event text for the agent.
 
         Keep the normal inbound path and the queued follow-up path on the same
-        preprocessing pipeline so sender attribution, image enrichment, STT,
+        preprocessing pipeline so sender attribution, image enrichment,
         document notes, reply context, and @ references all behave the same.
 
         Side effect: buffers per-session native image paths when the active
@@ -3357,19 +3100,13 @@ class GatewayInboundMixin:
             _build_document_context_note,
             _event_media_is_audio,
             _event_media_is_image,
-            _event_media_is_stt_input,
             _event_media_is_video,
             _load_gateway_config,
         )
         from gateway.run import logger
 
         history = history or []
-        _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
-        message_text = (
-            getattr(event, "_gateway_pending_stt_text", None)
-            if _pending_stt_prepared
-            else event.text
-        ) or ""
+        message_text = event.text or ""
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Prefer the already resolved session key from the caller so this write
@@ -3424,7 +3161,6 @@ class GatewayInboundMixin:
 
         if event.media_urls:
             image_paths = []
-            audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 # Classify images per-attachment: trust this attachment's own
@@ -3434,14 +3170,9 @@ class GatewayInboundMixin:
                 # mis-routed here as an image and the provider 400s.
                 if _event_media_is_image(event, i):
                     image_paths.append(path)
-                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT.
-                # Mixed DOCUMENT events also preserve audio as a file path instead of
-                # dropping it or treating it as a voice note.
+                # Audio, including voice notes, is a file attachment. Content is not transcribed.
                 if _event_media_is_audio(event, i):
-                    if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-                        audio_file_paths.append(path)
-                    elif not _pending_stt_prepared and _event_media_is_stt_input(event, i):
-                        audio_paths.append(path)
+                    audio_file_paths.append(path)
                 if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                     video_paths.append(path)
 
@@ -3497,40 +3228,6 @@ class GatewayInboundMixin:
                             image_paths,
                         )
 
-            if audio_paths:
-                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-                    message_text,
-                    audio_paths,
-                )
-                # Echo each successful transcript back to the user immediately
-                # when configured. Lets users verify STT quality in real-time,
-                # while allowing quiet STT for users who only want the agent to
-                # receive the transcription.
-                if _successful_transcripts and self._should_echo_stt_transcripts():
-                    _echo_adapter = self._adapter_for_source(source)
-                    _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
-                # NOTE: Previously, when transcription failed (e.g. no STT
-                # provider configured), the gateway also emitted a hardcoded
-                # English notice via `_stt_adapter.send()`. That bypassed the
-                # LLM and produced two replies — one pre-canned English clip
-                # (which TTS then spoke aloud, in the wrong language) and one
-                # correct, localized LLM reply from the enriched message text.
-                # The enrichment step now leaves a single neutral marker in the
-                # prompt, so the LLM produces one coherent reply in the user's
-                # language. The hardcoded send has therefore been removed.
-
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
             for _apath in audio_file_paths:
@@ -3543,8 +3240,7 @@ class GatewayInboundMixin:
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
                     f"Its content is not inlined here. If the user's request involves "
-                    f"what the audio contains, transcribe or process it yourself — for "
-                    f"example by passing the path to a transcription or media tool — "
+                    f"what the audio contains, inspect the file yourself — "
                     f"instead of asking the user to describe it. Only ask what to do "
                     f"with it if their intent is genuinely unclear.]"
                 )
@@ -3608,9 +3304,8 @@ class GatewayInboundMixin:
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = re.sub(r'[^\w.\- ]', '_', display_name)
 
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
-                # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
+                # Translate the host cache path to where the active terminal backend sees it
+                # (e.g. ~/.hermes under ssh), so the agent can open it.
                 agent_path = to_agent_visible_cache_path(path)
 
                 inline_flags = getattr(event, "media_text_inlined", None) or []
@@ -3642,25 +3337,6 @@ class GatewayInboundMixin:
             )
             message_text = f"{_redelivery_note}\n\n{message_text}"
 
-        # Discord: surface the triggering message id per-turn on the user
-        # message rather than in the cached system prompt. message_id changes
-        # every turn, so baking it into build_session_context_prompt() would
-        # bust the agent-cache signature and rebuild the AIAgent every message
-        # (destroying prompt caching). The static IDs block points the agent
-        # here; the volatile id rides the per-turn user content.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
-                )
-
         # Incognito sessions drop unbounded history backfill and reply context here, BEFORE
         # either is composed into the turn text (adapters that proved a bounded block flag it).
         self._apply_incognito_inbound_gate(event)
@@ -3677,6 +3353,29 @@ class GatewayInboundMixin:
                 )
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+
+        # Discord: surface the triggering message id per-turn on the user
+        # message rather than in the cached system prompt. message_id changes
+        # every turn, so baking it into build_session_context_prompt() would
+        # bust the agent-cache signature and rebuild the AIAgent every message
+        # (destroying prompt caching). The static IDs block points the agent
+        # here; the volatile id rides the per-turn user content. Prepended
+        # LAST so the note is the message's leading bytes — that prefix is
+        # what strip_discord_triggering_note peels for the persisted copy
+        # (a reply pointer prepended after it would hide the note from the
+        # strip and leak the instruction into the durable transcript).
+        if (
+            source is not None
+            and getattr(source, "platform", None) == Platform.DISCORD
+            and getattr(event, "message_id", None)
+        ):
+            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+            if _disc_tools_loaded():
+                message_text = (
+                    f"[Triggering message id: `{event.message_id}` — use as "
+                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
+                    f"{message_text}"
+                )
 
         # Prepend channel context from history backfill (if any), OUTERMOST so the block reads
         # history → reply pointer → trigger message. Runs after sender-prefix so the prefix
@@ -3823,19 +3522,12 @@ class GatewayInboundMixin:
             session_key=session_key,
         )
 
-    async def _prepare_clarify_reply_text(self, event) -> str:
-        """Return raw text or successful voice transcripts for a clarify reply."""
-        if not self._pending_event_audio_paths(event):
-            return (event.text or "").strip()
-
-        _, successful_transcripts = await self._transcribe_pending_audio_event_once(
-            event, "",
-        )
-        return "\n\n".join(
-            transcript.strip()
-            for transcript in successful_transcripts
-            if transcript.strip()
-        )
+    @staticmethod
+    def _event_has_audio_attachment(event) -> bool:
+        """True when the event carries an audio attachment. Voice notes are files, not transcripts."""
+        from gateway.run import _event_media_is_audio
+        urls = getattr(event, "media_urls", None) or []
+        return any(_event_media_is_audio(event, i) for i in range(len(urls)))
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
@@ -4227,313 +3919,3 @@ class GatewayInboundMixin:
         if user_text and user_text.strip() != cls._EMPTY_TEXT_PLACEHOLDER:
             return f"{prefix}\n\n{user_text}"
         return prefix
-
-    @staticmethod
-    def _untranscribed_audio_note(path: str) -> str:
-        """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
-        steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
-        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-        return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
-
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
-        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        from gateway.run import logger
-
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
-                result = fallback
-        if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
-            return None, self._untranscribed_audio_note(path)
-        transcript = result["transcript"]
-        # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
-        # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
-        # See #41603.
-        if not (transcript or "").strip():
-            return None, (
-                "[The user sent a voice message but it came through "
-                "empty or inaudible — speech-to-text returned no "
-                "words. Do not guess at the content; ask the user "
-                "to resend or type it out.]"
-            )
-        # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
-
-    async def _enrich_message_with_transcription(
-        self,
-        user_text: str,
-        audio_paths: List[str],
-    ) -> tuple[str, List[str]]:
-        """
-        Auto-transcribe user voice/audio messages using the configured STT provider
-        and prepend the transcript to the message text.
-
-        Args:
-            user_text:   The user's original caption / message text.
-            audio_paths: List of local file paths to cached audio files.
-
-        Returns:
-            A tuple of ``(enriched_text, successful_transcripts)``:
-              - ``enriched_text``: the message string with transcription wrappers
-                prepended (same as before).
-              - ``successful_transcripts``: the raw transcript strings for audio
-                clips that were successfully transcribed, in input order. Empty
-                list if every clip failed or STT is disabled. Callers can use
-                this to echo transcripts back to the user before the agent loop.
-        """
-        from gateway.run import _probe_audio_duration, logger
-
-        seen = set()
-        audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
-        if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                if duration_str:
-                    notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
-                    )
-                else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
-            if not notes:
-                return user_text, []
-            prefix = "\n\n".join(notes)
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, []
-            if user_text:
-                return f"{prefix}\n\n{user_text}", []
-            return prefix, []
-
-        try:
-            from tools.transcription_tools import (
-                transcribe_audio,
-                transcribe_audio_local_fallback,
-            )
-        except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
-            unavailable_note = "[voice message could not be transcribed]"
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return unavailable_note, []
-            if user_text:
-                return f"{unavailable_note}\n\n{user_text}", []
-            return unavailable_note, []
-
-        enriched_parts = []
-        successful_transcripts: List[str] = []
-        for path in audio_paths:
-            try:
-                logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(
-                    transcribe_audio, path, None, "gateway",
-                )
-                if not result.get("success"):
-                    fallback = await asyncio.to_thread(
-                        transcribe_audio_local_fallback,
-                        path,
-                    )
-                    if fallback.get("success"):
-                        logger.info(
-                            "Configured STT failed for %s; recovered with local STT",
-                            path,
-                        )
-                        result = fallback
-                if result["success"]:
-                    transcript = result["transcript"]
-                    # Speech-to-text can return success=True with an empty or
-                    # whitespace-only transcript on silence, cut-off, or
-                    # inaudible audio. Emitting empty quotes ('""') makes the
-                    # agent reply to nothing and can loop, so that case gets a
-                    # clear sentinel note instead (#41603).
-                    if not (transcript or "").strip():
-                        enriched_parts.append(
-                            "[The user sent a voice message but it came through "
-                            "empty or inaudible — speech-to-text returned no "
-                            "words. Do not guess at the content; ask the user "
-                            "to resend or type it out.]"
-                        )
-                        continue
-                    successful_transcripts.append(transcript)
-                    # Pass the transcript through as a plain quoted line. The
-                    # earlier wording ("The user sent a voice message~ Here's
-                    # what they said: ...") read as a meta-instruction and made
-                    # the LLM volunteer commentary about voice mode rather than
-                    # reply to the content.
-                    enriched_parts.append(f'"{transcript}"')
-                else:
-                    error = result.get("error", "unknown error")
-                    # All failure branches: a single, minimal, neutral marker.
-                    # Do NOT mention "no STT provider configured", "setup
-                    # instructions", or the "hermes-agent-setup" skill, and do
-                    # NOT claim a direct message was sent — those phrases get
-                    # persisted in conversation history and poison every later
-                    # turn, so the model keeps volunteering STT-setup advice
-                    # even after transcription starts working. The cause is
-                    # logged for operator diagnosis but kept out of the
-                    # LLM-visible prompt.
-                    logger.info("Voice transcription failed for %s: %s", path, error)
-                    from tools.credential_files import to_agent_visible_cache_path
-
-                    agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-                    enriched_parts.append(
-                        "[voice message could not be transcribed automatically; "
-                        f"the audio is available at: {agent_path}]"
-                    )
-            except Exception as e:
-                logger.error("Transcription error: %s", e)
-                from tools.credential_files import to_agent_visible_cache_path
-
-                agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-                enriched_parts.append(
-                    "[voice message could not be transcribed automatically; "
-                    f"the audio is available at: {agent_path}]"
-                )
-
-        if enriched_parts:
-            prefix = "\n\n".join(enriched_parts)
-            # Strip the empty-content placeholder from the Discord adapter
-            # when we successfully transcribed the audio — it's redundant.
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, successful_transcripts
-            if user_text:
-                return f"{prefix}\n\n{user_text}", successful_transcripts
-            return prefix, successful_transcripts
-        return user_text, successful_transcripts
-
-    def _pending_event_audio_paths(self, event) -> List[str]:
-        """Return STT-eligible paths from a pending voice message."""
-        from gateway.run import _event_media_is_stt_input
-        audio_paths: List[str] = []
-        media_urls = getattr(event, "media_urls", None) or []
-        for i, path in enumerate(media_urls):
-            if _event_media_is_stt_input(event, i):
-                audio_paths.append(path)
-        return audio_paths
-
-    async def _transcribe_pending_audio_event_once(
-        self,
-        event,
-        user_text: Optional[str] = None,
-    ) -> tuple[str | None, List[str]]:
-        """Transcribe a pending audio event once and cache the result on the event.
-
-        Voice follow-ups can be inspected first by the interrupt monitor and
-        later consumed by the pending-drain path.  Both need the same transcript,
-        but only one STT call and one transcript echo should happen for the
-        platform message.
-        """
-        if hasattr(event, "_gateway_pending_stt_text"):
-            cached_text = getattr(event, "_gateway_pending_stt_text")
-            cached_transcripts = getattr(event, "_gateway_pending_stt_transcripts", []) or []
-            return cached_text, list(cached_transcripts)
-
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
-            return user_text if user_text is not None else (getattr(event, "text", None) or None), []
-
-        text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
-            text,
-            audio_paths,
-        )
-        setattr(event, "_gateway_pending_stt_text", enriched_text)
-        setattr(event, "_gateway_pending_stt_transcripts", list(successful_transcripts))
-        return enriched_text, successful_transcripts
-
-    async def _echo_pending_stt_transcripts_once(
-        self,
-        event,
-        adapter,
-        source,
-        transcripts: List[str],
-        *,
-        metadata=None,
-        log_context: str = "Transcript",
-    ) -> None:
-        """Echo pending-event STT transcripts to the chat at most once.
-
-        The already-echoed transcripts are tracked as a COUNT rather than a
-        single boolean.  ``merge_pending_message_event`` can append a second
-        voice note to an event whose first transcript was already echoed and
-        invalidates the transcription cache; the re-run transcription then
-        returns the earlier transcripts as a prefix of the new list, so
-        echoing only the unsent tail suppresses the repeat while still
-        surfacing the newly merged note.  A count rather than a set of seen
-        values because two separate notes that transcribe identically are two
-        distinct deliveries and both must be echoed.
-        """
-        from gateway.run import logger
-
-        if (
-            not transcripts
-            or not self._should_echo_stt_transcripts()
-            or adapter is None
-        ):
-            return
-        already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        unsent = transcripts[already_echoed:]
-        setattr(event, "_gateway_pending_stt_echoed", already_echoed + len(unsent))
-        for tx in unsent:
-            try:
-                await adapter.send(
-                    source.chat_id,
-                    f'🎙️ "{tx}"',
-                    metadata=metadata,
-                )
-            except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
-
-    async def _transcribe_and_echo_pending_voice(
-        self,
-        event,
-        adapter,
-        source,
-        text: str,
-        *,
-        log_context: str,
-        metadata=_UNSET,
-    ) -> tuple[str, List[str]]:
-        """Transcribe a pending voice event and echo transcripts once.
-
-        Unified helper for all interrupt/monitor/backup/drain paths that need
-        to transcribe a pending voice event and echo the transcript to chat.
-        Returns ``(enriched_text, transcripts)`` so the caller can feed the
-        enriched text into ``agent.interrupt()`` or the pending-drain flow.
-
-        If the event has no STT-eligible media, returns ``(text, [])`` unchanged.
-        The caller is responsible for the ``_build_media_placeholder`` fallback
-        when ``text`` is empty and the event has non-audio media.
-        """
-        from gateway.run import _UNSET, logger
-
-        if not self._pending_event_audio_paths(event):
-            return text, []
-        try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(
-                event,
-                text,
-            )
-            echo_meta = self._thread_metadata_for_source(
-                source,
-                self._reply_anchor_for_event(event),
-            ) if metadata is _UNSET else metadata
-            await self._echo_pending_stt_transcripts_once(
-                event,
-                adapter,
-                source,
-                transcripts,
-                metadata=echo_meta,
-                log_context=log_context,
-            )
-            return enriched_text or text, transcripts
-        except Exception as trans_exc:
-            logger.warning("%s transcription failed: %s", log_context, trans_exc)
-            return text, []

@@ -13,7 +13,7 @@ through ``tools.claude_viewer_url`` (the single host resolver), as one
 small receipt the moment the child spawns — for synchronous and
 background runs alike.
 
-Security shape (mirrors ``tools/cursor_run_receipts.py``):
+Security shape:
 
 * deterministic, hash-derived file name under the SAME Hermes home the
   run logs into — a reader never scans, and never touches another
@@ -237,7 +237,7 @@ def load_validated_receipt(
         if hasattr(os, "getuid") and stat.st_uid != os.getuid():
             # windows-footgun: ok — hasattr-gated POSIX uid check
             return None
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
         if len(raw) > MAX_RECEIPT_BYTES:
             return None
         data = json.loads(raw)

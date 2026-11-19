@@ -421,9 +421,9 @@ def test_current_generation_is_independent_for_each_bot_token(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
+def test_unix_hub_supports_two_clients_rpc_and_detach(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -492,9 +492,9 @@ def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
+def test_overlap_admission_opens_only_after_successor_attaches(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             async def disconnect(self):
@@ -771,10 +771,10 @@ def test_overlap_spawn_supervisor_env_is_scoped_to_launcher(monkeypatch, tmp_pat
     assert captured[-1]["PATH"].endswith(supervisor_env["PATH"])
 
 
-@pytest.mark.platforms("posix")
-def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
-    async def scenario(socket_dir):
-        server = DiscordHubServer(Path(socket_dir) / "hub.sock")
+@pytest.mark.platforms("linux")
+def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path, short_af_unix_path):
+    async def scenario():
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             async def disconnect(self):
@@ -801,10 +801,7 @@ def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
             await client.disconnect()
             await server.stop()
 
-    import os
-    import tempfile
-    with tempfile.TemporaryDirectory(dir="/tmp", prefix="h-") as socket_dir:
-        run(scenario(socket_dir))
+    run(scenario())
 
 
 def test_hub_rejects_local_successor_registration_from_another_peer(tmp_path):
@@ -971,13 +968,13 @@ def test_spawn_replacement_uses_the_checkout_venv_interpreter(tmp_path):
 @pytest.mark.asyncio
 async def test_deferred_successor_claim_retries_then_becomes_authoritative(monkeypatch):
     from gateway.overlap_restart import (
-        GATEWAY_CLAIM_SUCCESSOR_PENDING, claim_when_predecessor_exits,
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, claim_authority_when_lock_frees,
     )
 
     alive = iter((True, False))
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: next(alive))
     claims = iter((GATEWAY_CLAIM_SUCCESSOR_PENDING, True))
-    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: next(claims))
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_, **__: next(claims))
     runner = SimpleNamespace(
         _overlap_successor_pending=True,
         _shutdown_event=asyncio.Event(),
@@ -985,7 +982,7 @@ async def test_deferred_successor_claim_retries_then_becomes_authoritative(monke
     )
     on_authoritative = AsyncMock()
 
-    assert await claim_when_predecessor_exits(
+    assert await claim_authority_when_lock_frees(
         runner, 4242, on_authoritative, poll_seconds=0,
     )
     assert runner._overlap_successor_pending is False
@@ -995,10 +992,10 @@ async def test_deferred_successor_claim_retries_then_becomes_authoritative(monke
 
 @pytest.mark.asyncio
 async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkeypatch, caplog):
-    from gateway.overlap_restart import claim_when_predecessor_exits
+    from gateway.overlap_restart import claim_authority_when_lock_frees
 
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: False)
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_, **__: False)
     adapter = SimpleNamespace(
         supports_overlap_restart=True,
         disconnect=AsyncMock(),
@@ -1015,7 +1012,7 @@ async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkey
     )
 
     with caplog.at_level(logging.WARNING):
-        assert not await claim_when_predecessor_exits(
+        assert not await claim_authority_when_lock_frees(
             runner, 4242, AsyncMock(), poll_seconds=0,
         )
     assert runner._exit_cleanly is True
@@ -1032,11 +1029,11 @@ async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkey
 
 @pytest.mark.asyncio
 async def test_deferred_claim_error_does_not_leave_a_pending_zombie(monkeypatch):
-    from gateway.overlap_restart import claim_when_predecessor_exits
+    from gateway.overlap_restart import claim_authority_when_lock_frees
 
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
 
-    def fail_claim(_pid):
+    def fail_claim(_pid, **_kwargs):
         raise OSError("lock probe failed")
 
     monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", fail_claim)
@@ -1046,7 +1043,7 @@ async def test_deferred_claim_error_does_not_leave_a_pending_zombie(monkeypatch)
         stop=AsyncMock(),
     )
 
-    assert not await claim_when_predecessor_exits(runner, 4242, AsyncMock(), poll_seconds=0)
+    assert not await claim_authority_when_lock_frees(runner, 4242, AsyncMock(), poll_seconds=0)
     assert runner._exit_with_failure is True
     runner.stop.assert_awaited_once_with()
 
@@ -1148,8 +1145,7 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     monkeypatch.setattr(gateway_run, "_enable_multiplex_log_routing", lambda config: None)
     monkeypatch.setattr(gateway_run, "_start_gateway_claim_pid_file", lambda: GATEWAY_CLAIM_SUCCESSOR_PENDING)
     monkeypatch.setattr(gateway_run, "_discover_gateway_mcp_tools", AsyncMock())
-    monkeypatch.setattr(gateway_run, "_ensure_windows_gateway_venv_imports", lambda: None)
-    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: None)
+    monkeypatch.setattr("gateway.run._ensure_windows_gateway_venv_imports", lambda: None)
     monkeypatch.setattr("gateway.shutdown_flush.recover_pending_to_db", lambda **kwargs: 0)
     replace = AsyncMock()
     monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", replace)
@@ -1172,6 +1168,11 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
             assert self._launched_as_overlap_successor is True
             assert OVERLAP_SUCCESSOR_ENV not in os.environ
             assert OVERLAP_PREDECESSOR_PID_ENV not in os.environ
+            self.adapters = {
+                Platform.DISCORD: SimpleNamespace(
+                    supports_overlap_restart=True, _running=True,
+                ),
+            }
             events.append("hub-adapter-start")
             return True
 
@@ -1191,27 +1192,44 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
         events.append("control-socket")
         return control
 
-    def start_cron(runner):
+    cron_calls = []
+
+    def start_cron(runner, **kwargs):
+        cron_calls.append(kwargs)
         events.append("cron")
         return threading_event, cron_provider, None, None
 
+    def start_housekeeping(*args):
+        events.append("housekeeping")
+        return None
+
     import threading
     threading_event = threading.Event()
-    deferred = AsyncMock(side_effect=lambda: events.append("deferred-adapters"))
+    deferred = AsyncMock(side_effect=lambda _runner: events.append("deferred-adapters"))
     monkeypatch.setattr(gateway_run, "GatewayRunner", FakeRunner)
     monkeypatch.setattr(gateway_run, "_start_gateway_start_control_socket", start_control)
     monkeypatch.setattr(gateway_run, "_start_gateway_start_cron_and_housekeeping", start_cron)
+    monkeypatch.setattr(gateway_run, "_start_gateway_start_housekeeping", start_housekeeping)
     monkeypatch.setattr("gateway.overlap_restart.start_deferred_adapters", deferred)
 
+    claimed_predecessor = []
+    claim_errors = []
+
     async def fake_claim(runner, predecessor_pid, on_authoritative, **kwargs):
-        assert predecessor_pid == 4242
-        assert "control-socket" not in events and "cron" not in events
+        from gateway.overlap_restart import forget_pending_predecessor
+
+        claimed_predecessor.append(predecessor_pid)
+        forget_pending_predecessor()
         events.append("predecessor-exited")
-        await on_authoritative()
-        runner._shutdown_event.set()
+        try:
+            await on_authoritative()
+        except BaseException as exc:
+            claim_errors.append(exc)
+        finally:
+            runner._shutdown_event.set()
         return True
 
-    monkeypatch.setattr("gateway.overlap_restart.claim_when_predecessor_exits", fake_claim)
+    monkeypatch.setattr("gateway.overlap_restart.claim_authority_when_lock_frees", fake_claim)
     tail = {}
 
     async def fake_tail(*args):
@@ -1224,14 +1242,146 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     monkeypatch.setattr(gateway_run, "_start_gateway_shutdown_tail", fake_tail)
     monkeypatch.setattr("gateway.lifecycle_ledger.record_startup", lambda: events.append("lifecycle"))
 
-    assert await gateway_run.start_gateway(config=GatewayConfig(), verbosity=None)
+    assert await asyncio.wait_for(
+        gateway_run.start_gateway(config=GatewayConfig(), verbosity=None), timeout=10,
+    )
+    assert claimed_predecessor == [4242]
+    assert claim_errors == []
     replace.assert_not_awaited()
     assert events == [
-        "hub-adapter-start", "predecessor-exited", "control-socket", "lifecycle",
-        "deferred-adapters", "restart-notification", "cron", "systemd-watchdog",
+        "hub-adapter-start", "cron", "predecessor-exited", "control-socket", "lifecycle",
+        "deferred-adapters", "restart-notification", "housekeeping", "systemd-watchdog",
     ]
+    assert cron_calls == [{"in_process_only": True, "with_housekeeping": False}]
     deferred.assert_awaited_once()
     assert tail == {"control": control, "cron_provider": cron_provider}
+
+
+def test_overlap_cron_dispatch_requires_a_verified_successor():
+    from gateway.overlap_restart import can_dispatch_cron
+
+    runner = SimpleNamespace(
+        _draining=False,
+        _external_drain_active=False,
+        _overlap_successor_pending=True,
+        _launched_as_overlap_successor=True,
+        adapters={},
+        _profile_adapters={},
+    )
+    assert not can_dispatch_cron(runner), "an unattached successor must not claim due jobs"
+
+    runner.adapters = {
+        Platform.DISCORD: SimpleNamespace(supports_overlap_restart=True, _running=True),
+    }
+    assert can_dispatch_cron(runner)
+
+    runner._external_drain_active = True
+    assert not can_dispatch_cron(runner), "external quiesce remains authoritative"
+    runner._external_drain_active = False
+    runner.adapters[Platform.DISCORD]._running = False
+    assert not can_dispatch_cron(runner), "a detached successor must stop claiming due jobs"
+
+    runner._overlap_successor_pending = False
+    runner._draining = True
+    assert not can_dispatch_cron(runner), "a predecessor must not claim new work while draining"
+    runner._draining = False
+    assert can_dispatch_cron(runner), "an ordinary running gateway dispatches cron"
+
+
+@pytest.mark.asyncio
+async def test_pending_overlap_defers_external_cron_provider(monkeypatch):
+    import threading
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig
+
+    started = threading.Event()
+
+    class ExternalProvider:
+        name = "external-test"
+
+        def start(self, stop_event, **kwargs):
+            started.set()
+            stop_event.wait(timeout=5)
+
+    provider = ExternalProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *args, **kwargs: None)
+    runner = SimpleNamespace(
+        config=GatewayConfig(), adapters={}, _profile_adapters={}, _primary_profile_name=None,
+    )
+
+    early = gateway_run._start_gateway_start_cron_and_housekeeping(
+        runner, in_process_only=True, with_housekeeping=False)
+    early[0].set()
+    assert early[1:] == (None, None, None)
+    assert not started.is_set(), "external provider started before gateway authority"
+
+    handles = gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+    try:
+        assert handles[1] is provider
+        assert await asyncio.to_thread(started.wait, 5), "authoritative provider never started"
+    finally:
+        handles[0].set()
+        for thread in handles[2:]:
+            thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in handles[2:])
+
+
+@pytest.mark.asyncio
+async def test_verified_successor_ticks_while_predecessor_drains_indefinitely(monkeypatch, tmp_path):
+    import threading
+    from cron.scheduler_provider import InProcessCronScheduler
+    from gateway import run as gateway_run
+    from gateway.config import GatewayConfig
+    from gateway.overlap_restart import can_dispatch_cron
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
+    monkeypatch.setattr(InProcessCronScheduler, "recover_interrupted", lambda self: 0)
+    monkeypatch.setattr("cron.jobs.record_ticker_heartbeat", lambda **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *args, **kwargs: None)
+
+    ticked = threading.Event()
+    tick_calls = []
+
+    def fake_tick(*args, **kwargs):
+        tick_calls.append(kwargs)
+        ticked.set()
+        return 0
+
+    monkeypatch.setattr("cron.scheduler.tick", fake_tick)
+    predecessor_hub = SimpleNamespace(supports_overlap_restart=True, _running=True)
+    successor_hub = SimpleNamespace(supports_overlap_restart=True, _running=True)
+    predecessor = SimpleNamespace(
+        config=GatewayConfig(), adapters={Platform.DISCORD: predecessor_hub}, _profile_adapters={},
+        _draining=True, _external_drain_active=False,
+        _overlap_successor_pending=False, _launched_as_overlap_successor=False,
+    )
+    successor = SimpleNamespace(
+        config=GatewayConfig(), adapters={Platform.DISCORD: successor_hub}, _profile_adapters={},
+        _draining=False, _external_drain_active=False,
+        _overlap_successor_pending=True, _launched_as_overlap_successor=True,
+    )
+
+    handles = [gateway_run._start_gateway_start_cron_and_housekeeping(predecessor)]
+    try:
+        handles.append(gateway_run._start_gateway_start_cron_and_housekeeping(successor))
+        assert await asyncio.to_thread(ticked.wait, 10), "successor never ticked"
+        assert predecessor._draining, "the test must not rely on the predecessor exiting"
+        assert not can_dispatch_cron(predecessor)
+        assert can_dispatch_cron(successor)
+    finally:
+        for cron_stop, _provider, cron_thread, housekeeping in handles:
+            cron_stop.set()
+            cron_thread.join(timeout=5)
+            housekeeping.join(timeout=5)
+
+    assert tick_calls, "neither generation dispatched cron"
+    assert all(call["can_dispatch"]() for call in tick_calls)
+    assert all(call["adapters"] is successor.adapters for call in tick_calls), (
+        "the draining predecessor dispatched alongside its successor")
+    assert all(not thread.is_alive() for _stop, _provider, thread, _hk in handles)
 
 
 @pytest.mark.asyncio
@@ -1320,15 +1470,12 @@ def test_hub_client_exposes_the_gateway_discord_adapter_surface():
     async_methods = (
         "send_clarify", "send_tool_stage_embed", "edit_tool_stage_embed",
         "send_slash_confirm", "send_update_prompt", "refresh_skill_group",
-        "cancel_background_tasks", "play_tts", "play_ack_in_voice",
-        "join_voice_channel", "leave_voice_channel", "play_in_voice_channel",
-        "get_user_voice_channel", "send_model_picker", "send_choice_picker",
+        "cancel_background_tasks", "send_model_picker", "send_choice_picker",
     )
     sync_methods = (
         "get_bot_display_name", "resolved_allowlist_user_ids",
         "prefers_fresh_final_streaming", "format_tool_preview",
-        "claim_startup_resume_inbound", "voice_mixer_active",
-        "is_in_voice_channel", "get_voice_channel_info", "get_voice_channel_context",
+        "claim_startup_resume_inbound",
     )
     for name in async_methods:
         assert asyncio.iscoroutinefunction(getattr(DiscordAdapter, name))
@@ -1339,9 +1486,9 @@ def test_hub_client_exposes_the_gateway_discord_adapter_surface():
 
 
 @pytest.mark.platforms("posix")
-def test_picker_callbacks_round_trip_to_the_attached_gateway(tmp_path):
+def test_picker_callbacks_round_trip_to_the_attached_gateway(short_af_unix_path):
     async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
@@ -1418,20 +1565,15 @@ def test_send_multiple_images_forwards_reply_to():
 
 
 @pytest.mark.platforms("posix")
-def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
+def test_sync_queries_use_the_hub(short_af_unix_path):
     async def scenario():
         from agent.display import ToolPreview
 
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
-        voice_channel = SimpleNamespace(id=99, name="stage", guild=SimpleNamespace(id=77))
+        server = DiscordHubServer(short_af_unix_path)
 
         class FakeDiscordConnection:
             def __init__(self):
-                self._client = SimpleNamespace(get_channel=lambda channel_id: (
-                    voice_channel if channel_id == voice_channel.id else None
-                ))
                 self.claims = []
-                self.joins = []
 
             async def disconnect(self):
                 pass
@@ -1452,24 +1594,6 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
             def claim_startup_resume_inbound(self, message_id, source):
                 self.claims.append((message_id, source.chat_id))
 
-            def voice_mixer_active(self, guild_id):
-                return guild_id == 77
-
-            def is_in_voice_channel(self, guild_id):
-                return guild_id == 77
-
-            def get_voice_channel_info(self, guild_id):
-                return {"channel_name": "stage", "member_count": 1}
-
-            def get_voice_channel_context(self, guild_id):
-                return "[Voice channel: #stage — 1 participant(s)]"
-
-            async def get_user_voice_channel(self, guild_id, user_id):
-                return voice_channel
-
-            async def join_voice_channel(self, channel, *, text_channel_id=None, source=None):
-                self.joins.append((channel, text_channel_id, source))
-                return True
 
         connection = FakeDiscordConnection()
 
@@ -1490,20 +1614,12 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
                 assert client.prefers_fresh_final_streaming("answer")
                 assert client.format_tool_preview(ToolPreview(text="docs", url="https://example.com")) == "linked:docs"
                 client.claim_startup_resume_inbound("message-1", source)
-                assert client.voice_mixer_active(77)
-                assert client.is_in_voice_channel(77)
-                assert client.get_voice_channel_info(77)["channel_name"] == "stage"
-                assert "stage" in client.get_voice_channel_context(77)
+
 
             # The test hub shares this loop; production hub queries block only the caller,
             # never the separate hub process's event loop.
             await asyncio.to_thread(check_sync_surface)
             assert connection.claims == [("message-1", "42")]
-
-            handle = await client.get_user_voice_channel(77, "7")
-            assert handle.id == 99 and handle.name == "stage" and handle.guild_id == 77
-            assert await client.join_voice_channel(handle, text_channel_id=42, source=source.to_dict())
-            assert connection.joins == [(voice_channel, 42, source.to_dict())]
         finally:
             await client.disconnect()
             await server.stop()
@@ -1521,7 +1637,7 @@ class TestHubGateCredentialHandoff:
 
     def test_client_resolves_and_sends_the_scoped_credential(self, monkeypatch):
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-profile-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-profile-key")
         captured = {}
 
         async def fake_call(method, params=None):
@@ -1538,6 +1654,7 @@ class TestHubGateCredentialHandoff:
 
     def test_client_sends_none_without_a_key(self, monkeypatch):
 
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         captured = {}
 
@@ -1581,11 +1698,11 @@ class TestHubGateCredentialHandoff:
 
 
 @pytest.mark.platforms("posix")
-def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
+def test_unix_attach_round_trips_the_gate_credential(short_af_unix_path, monkeypatch):
     """End to end over the socket: scoped key → attach payload → hub-side adapter."""
     import plugins.platforms.discord.adapter as adapter_module
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-roundtrip-key")
+    monkeypatch.setenv("LITELLM_API_KEY", "sk-roundtrip-key")
 
     class StubAdapter:
         def __init__(self, config):
@@ -1599,7 +1716,7 @@ def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
             pass
 
     async def scenario():
-        server = DiscordHubServer(tmp_path / "hub.sock")
+        server = DiscordHubServer(short_af_unix_path)
         monkeypatch.setattr(adapter_module, "DiscordAdapter", StubAdapter)
         await server.start()
         client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
@@ -1626,6 +1743,7 @@ class TestHubAdapterCredentialCapture:
         self.adapter = DiscordAdapter(config)
 
     def test_hub_pin_is_used_verbatim(self, monkeypatch):
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         self.adapter._hub_gate_credential = "sk-hub-key"
         self.adapter._capture_response_gate_credential()
@@ -1634,13 +1752,13 @@ class TestHubAdapterCredentialCapture:
     def test_hub_pin_empty_fails_closed_even_with_env_key(self, monkeypatch):
         # The hub process env may hold the default profile's first-writer-wins key;
         # a profile with no key must stay credential-less, not borrow it.
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-default-profile-leak")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-default-profile-leak")
         self.adapter._hub_gate_credential = ""
         self.adapter._capture_response_gate_credential()
         assert self.adapter._response_gate_credential is None
 
     def test_in_process_adapter_reads_the_scope(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-scoped-key")
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-scoped-key")
         self.adapter._capture_response_gate_credential()
         assert self.adapter._response_gate_credential == "sk-scoped-key"
 
@@ -1664,6 +1782,40 @@ class TestHubAdapterCredentialCapture:
         assert self.adapter._response_gate is not None
         assert self.adapter._response_gate.client is None
         assert any(
-            "no OPENROUTER_API_KEY" in record.message and record.levelno == logging.ERROR
+            "no LITELLM_API_KEY" in record.message and record.levelno == logging.ERROR
             for record in caplog.records
         )
+
+
+@pytest.mark.platforms("posix")
+def test_default_socket_path_binds_when_hermes_root_exceeds_sun_path(tmp_path, monkeypatch):
+    """default_socket_path() must stay bindable when the hermes root pushes the
+    naive ``<root>/gateway/discord-hub.sock`` past the tightest AF_UNIX
+    ``sun_path`` limit (104 bytes on macOS): the endpoint falls back to a short
+    hashed name under the process temp dir — still one deterministic endpoint
+    per installation — and a real hub binds and accepts a connection on it."""
+    from hermes_constants import get_default_hermes_root
+    from plugins.platforms.discord.hub import default_socket_path
+
+    deep = tmp_path
+    while len(str(deep).encode()) <= 120:
+        deep = deep / "a-very-long-hermes-home-segment"
+    deep.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(deep))
+    assert len(str(get_default_hermes_root() / "gateway" / "discord-hub.sock").encode()) > 104
+
+    endpoint = default_socket_path()
+    assert len(str(endpoint).encode()) <= 103
+    assert endpoint == default_socket_path()  # one stable installation-wide endpoint
+
+    async def scenario():
+        server = DiscordHubServer(endpoint)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_unix_connection(str(server.socket_path))
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    run(scenario())

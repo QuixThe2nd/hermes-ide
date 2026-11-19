@@ -43,12 +43,11 @@ class TestExplicitAllowlist:
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        "HONCHO_API_KEY",
         "FIRECRAWL_API_KEY",
         "FAL_KEY",
         "SUDO_PASSWORD",
         "GITHUB_TOKEN",
-        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
@@ -338,7 +337,7 @@ class TestListNavigation:
     def test_deeper_nesting_through_list(self, _isolated_hermes_home):
         """Navigation path mixing dict → list → dict → scalar."""
         self._write_config(_isolated_hermes_home, (
-            "telegram:\n"
+            "discord:\n"
             "  allowlist:\n"
             "    - name: alice\n"
             "      role: admin\n"
@@ -346,15 +345,15 @@ class TestListNavigation:
             "      role: user\n"
         ))
 
-        # NOTE: original test path was ``platforms.telegram.allowlist.1.role``,
+        # NOTE: original test path was ``platforms.discord.allowlist.1.role``,
         # which #34067 schema validation correctly rejects (platform configs
         # live at the top level, not under a ``platforms`` namespace). Use
         # the canonical path.
-        set_config_value("telegram.allowlist.1.role", "admin")
+        set_config_value("discord.allowlist.1.role", "admin")
 
         import yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
-        allowlist = reloaded["telegram"]["allowlist"]
+        allowlist = reloaded["discord"]["allowlist"]
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
@@ -532,8 +531,8 @@ class TestSchemaValidation:
         assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
-        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
+        # ``stt.provider`` is a retired key with no seeded default. A stored value must
+        # still be written so old configs keep loading; the schema walk must not refuse it.
         ("stt.provider", "whisper", "whisper", None),
         # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
         # from an unseeded key, so it is written too — the user gets the sibling suggestion
@@ -593,7 +592,6 @@ class TestValidateConfigKey:
         "terminal.backend",
         "agent.max_turns",
         "discord.gateway_restart_notification",
-        "telegram.bot_token",
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.strict",

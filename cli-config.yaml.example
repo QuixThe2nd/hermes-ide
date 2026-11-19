@@ -48,8 +48,6 @@ model:
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
-  #   "nous"         - Nous Portal OAuth (requires: hermes auth add nous)
-  #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
   #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
@@ -131,7 +129,7 @@ model:
   #   X-Stainless-*) when a custom provider sits behind a gateway/WAF that
   #   rejects them — e.g. an upstream that returns "502 Upstream access
   #   forbidden" for the SDK default User-Agent but accepts a plain one.
-  #   Applies on the OpenAI wire only (not native Anthropic / Bedrock).
+  #   Applies on the OpenAI wire only (not native Anthropic).
   #
   # default_headers:
   #   User-Agent: "curl/8.7.1"
@@ -263,10 +261,6 @@ model:
 # HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
 # implicit non-stream stale detector is auto-disabled for local endpoints
 # and can scale upward for very large contexts.
-#
-# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
-# SDK paths) — those use boto3 with its own timeout configuration.
-#
 # providers:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts
@@ -534,9 +528,16 @@ terminal:
 # Camofox Browser Tool Configuration (server set by CAMOFOX_URL)
 # =============================================================================
 browser:
-  # Inactivity timeout in seconds - browser sessions are automatically closed
-  # after this period of no activity between agent loops (default: 120 = 2 minutes)
-  inactivity_timeout: 120
+  # Inactivity timeout in seconds for reclaiming orphaned browser sessions.
+  # Active agent turns keep their sessions across non-browser work and long
+  # model calls (default: 120 = 2 minutes).
+
+  # Automatically send sanitized Camofox screenshots to the originating
+  # Discord/Matrix conversation after meaningful page changes. Uses the same
+  # thread as tool progress. Local Tesseract OCR is required: screenshots are
+  # suppressed when privacy inspection fails or detects login, payment, OTP,
+  # vault, or similar sensitive content. Default true; set false to opt out.
+  # progress_images: false
 
   # Maximum characters of snapshot content before truncate-and-store.
   # Increase for long pages (for example, documentation or financial reports),
@@ -613,7 +614,7 @@ compression:
 
   # Opt-in compression progress notices on chat platforms (default: false).
   # By design, routine automatic compression is SILENT on human-facing chat
-  # gateways (Telegram, Discord, Slack, ...) — it happens in the background
+  # gateways (Discord, Slack, ...) — it happens in the background
   # with server-side logging only. Set true to also deliver the routine
   # progress statuses (compacting started, preflight/pre-API compression,
   # idle compaction, retry progress, and the compaction-complete notice) to
@@ -725,8 +726,8 @@ compression:
   # Gateway session-hygiene turn-hold budget (default: 10). Max seconds an
   # arriving user turn is held while a still-streaming hygiene summary
   # finishes. Distinct from hygiene_timeout_seconds (compressor inactivity
-  # budget): this bounds user-visible latency so chat transports (Telegram
-  # ~30s) do not drop a silent connection. On expiry the turn proceeds
+  # budget): this bounds user-visible latency so chat transports (~30s
+  # timeouts) do not drop a silent connection. On expiry the turn proceeds
   # uncompressed; the detached worker keeps its commit admission (when the
   # commit is watermark-fenced) and the summary is adopted at the next safe
   # boundary. Thinking-model summarizers often need longer than 10s to emit
@@ -793,26 +794,23 @@ prompt_caching:
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
-# browser screenshot analysis, web page summarization, TTS audio-tag insertion,
-# and context compression.
+# browser screenshot analysis, web page summarization, and context compression.
 #
-# By default these use Gemini Flash via OpenRouter or Nous Portal and are
-# auto-detected from your credentials.  You do NOT need to change anything
-# here for normal usage.
+# By default these use Gemini Flash via OpenRouter and are auto-detected from
+# your credentials. You do NOT need to change anything here for normal usage.
 #
-# WARNING: Overriding these with providers other than OpenRouter or Nous Portal
-# is EXPERIMENTAL and may not work.  Not all models/providers support vision,
-# produce usable summaries, or accept the same API format.  Change at your own
-# risk — if things break, reset to "auto" / empty values.
+# WARNING: Overriding these with providers other than OpenRouter is EXPERIMENTAL
+# and may not work. Not all models/providers support vision, produce usable
+# summaries, or accept the same API format. Change at your own risk — if things
+# break, reset to "auto" / empty values.
 #
 # Each task has its own provider + model pair so you can mix providers.
 # For example: OpenRouter for vision (needs multimodal), but your main
 # local endpoint for compression (just needs text).
 #
 # Provider options:
-#   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
+#   "auto"       - Best available: OpenRouter → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
-#   "nous"       - Force Nous Portal (requires: hermes auth add nous)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
@@ -821,9 +819,9 @@ prompt_caching:
 #                  Works with OpenAI API, local models, or any OpenAI-compatible
 #                  endpoint.  Also falls back to Codex OAuth and API-key providers.
 #
-# Model: leave empty to use the provider's default.  When empty, OpenRouter
-# uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
-# Other providers pick a sensible default automatically.
+# Model: leave empty to use the provider's default. When empty, OpenRouter
+# uses "google/gemini-3-flash-preview". Other providers pick a sensible default
+# automatically.
 #
 # Native vision embeds (vision_analyze / browser screenshots when the MAIN model
 # is vision-capable) ride conversation history and are re-sent on every later
@@ -860,12 +858,6 @@ prompt_caching:
 #     model: ""
 #     reasoning_effort: "low"
 #
-#   # Gemini 3.1 TTS hidden audio-tag insertion
-#   tts_audio_tags:
-#     provider: "auto"       # empty model = your main chat model
-#     model: ""
-#     timeout: 30
-#
 #   # Automatic session title generation after the first exchange
 #   title_generation:
 #     enabled: true          # set false to disable auto-title generation
@@ -892,7 +884,7 @@ prompt_caching:
 #                           #     enable_thinking: false
 #
 #   # Auto-generated short session titles after the first exchange.
-#   # Each active Discord/Telegram channel can spawn a background title
+#   # Each active Discord/Slack channel can spawn a background title
 #   # call.  Cap concurrency to keep retries during provider incidents
 #   # from amplifying the request burst.  Leave unset for legacy behavior
 #   # (unlimited).
@@ -1021,7 +1013,7 @@ group_sessions_per_user: true
 # WS sidecar — tui/desktop/subagent rows whose start time AND newest
 # message are both older than the session TTL (HERMES_TUI_SESSION_TTL_S,
 # default 6h) are closed with end_reason "startup_orphan_reap".
-# Messaging-platform sessions (Telegram, Discord, ...) are never touched;
+# Messaging-platform sessions (Discord, Slack, ...) are never touched;
 # live in-memory sessions are excluded; swept sessions stay resumable.
 #
 # dashboard:
@@ -1067,8 +1059,7 @@ group_sessions_per_user: true
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
-# Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
-# For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
+# Disabled by default — enable to try the streaming UX on Discord/Slack.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText
@@ -1202,7 +1193,7 @@ agent:
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, off on
-  # conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # conversational messaging surfaces (Discord, Slack, etc.) where the
   # verification summary would reach a human as chat noise. The
   # HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: false
@@ -1229,7 +1220,7 @@ agent:
   # Enable verbose logging
   verbose: false
   
-  # Reasoning effort level (OpenRouter and Nous Portal)
+  # Reasoning effort level (provider-dependent; OpenRouter and OpenAI-compatible APIs)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   # Providers with bespoke thinking tiers (a relay serving fast/thinking): use the
@@ -1305,25 +1296,25 @@ gateway:
 # If a platform isn't listed here, its built-in default is used.
 #
 # You can use EITHER:
-#   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
+#   - A preset like "hermes-cli" or "hermes-discord" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams, google_chat
+# Supported platform keys: cli, discord, whatsapp, slack, qqbot, teams, google_chat
 #
 # Examples:
 #
 #   # Use presets (same as defaults):
 #   platform_toolsets:
 #     cli: [hermes-cli]
-#     telegram: [hermes-telegram]
+#     discord: [hermes-discord]
 #
-#   # Custom: give Telegram only web + terminal + file + planning:
+#   # Custom: give Slack only web + terminal + file + planning:
 #   platform_toolsets:
-#     telegram: [web, terminal, file, todo]
+#     slack: [web, terminal, file, todo]
 #
 #   # Custom: CLI without browser or image gen:
 #   platform_toolsets:
-#     cli: [web, terminal, file, skills, todo, tts, cronjob]
+#     cli: [web, terminal, file, skills, todo, cronjob]
 #
 #   # Restrictive: Discord gets read-only tools only:
 #   platform_toolsets:
@@ -1331,19 +1322,17 @@ gateway:
 #
 # If not set, defaults are:
 #   cli:           hermes-cli            (everything + cronjob management)
-#   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
-#   discord:       hermes-discord        (same as telegram)
-#   whatsapp:      hermes-whatsapp       (same as telegram)
-#   slack:         hermes-slack          (same as telegram)
-#   signal:        hermes-signal         (same as telegram)
-#   homeassistant: hermes-homeassistant  (same as telegram)
-#   qqbot:            hermes-qqbot            (same as telegram)
-#   teams:            hermes-teams            (same as telegram)
-#   google_chat:      hermes-google_chat      (same as telegram)
+#   discord:       hermes-discord        (terminal, file, web, vision, image, browser, skills, todo, cronjob, messaging)
+#   whatsapp:      hermes-whatsapp       (same as discord)
+#   slack:         hermes-slack          (same as discord)
+#   signal:        hermes-signal         (same as discord)
+#   homeassistant: hermes-homeassistant  (same as discord)
+#   qqbot:            hermes-qqbot            (same as discord)
+#   teams:            hermes-teams            (same as discord)
+#   google_chat:      hermes-google_chat      (same as discord)
 #
 platform_toolsets:
   cli: [hermes-cli]
-  telegram: [hermes-telegram]
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
@@ -1361,31 +1350,6 @@ platform_toolsets:
 # Platform-specific knobs live under `extra`.
 #
 # platforms:
-#   telegram:
-#     reply_to_mode: "first"  # off | first | all
-#     # guest_mode lets explicit @mentions from non-allowlisted groups through.
-#     # Default false; ordinary messages, replies, and regex wake words stay blocked.
-#     guest_mode: false
-#     # allowed_chats: ["-1001234567890"]
-#     extra:
-#       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
-#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
-#       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
-#       allow_cjk_rich_messages: false # Keep CJK content on the safe MarkdownV2 path unless an unaffected client explicitly opts in to native rich rendering
-#       command_menu:
-#         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
-#         # all built-in commands plus common skill commands stay visible
-#         # while remaining under Telegram's payload-size limit. Clamped 1..100.
-#         max_commands: 60
-#         # prepend = user priority first, then Hermes defaults
-#         # append  = Hermes defaults first, then user priority
-#         # replace = only the list below defines priority
-#         priority_mode: prepend
-#         # Priority is applied across core + plugin + skill commands before
-#         # the cap, so a listed skill command always keeps a menu slot.
-#         priority:
-#           - my_plugin_command
-#           - my-important-skill
 #   slack:
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
@@ -1439,16 +1403,14 @@ platform_toolsets:
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
 #   todo         - todo (in-memory task planning, no deps)
-#   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
 #
 # PRESETS (curated bundles):
 #   hermes-cli       - All of the above except send_message
-#   hermes-telegram  - terminal, file, web, vision, image_gen, tts, browser,
+#   hermes-discord   - terminal, file, web, vision, image_gen, browser,
 #                      skills, todo, cronjob, send_message
-#   hermes-discord   - Same as hermes-telegram
-#   hermes-whatsapp  - Same as hermes-telegram
-#   hermes-slack     - Same as hermes-telegram
+#   hermes-whatsapp  - Same as hermes-discord
+#   hermes-slack     - Same as hermes-discord
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file
@@ -1466,7 +1428,6 @@ platform_toolsets:
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
-#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
 #
 # Composite toolsets:
@@ -1541,133 +1502,6 @@ platform_toolsets:
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
 
-# =============================================================================
-# Text-to-Speech
-# =============================================================================
-# TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
-# Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
-# can use a hidden auxiliary rewrite pass to insert expressive square-bracket
-# audio tags into the TTS script without showing tags in chat.
-#
-# tts:
-#   provider: "gemini"
-#   speed: 1.0              # global speed multiplier (provider-specific overrides this)
-#   # Per-platform audio upload limits. Built-in defaults: discord 10 MiB,
-#   # telegram 50 MiB, everything else 10 MiB, each with safety_ratio 0.85
-#   # (the fraction of max_file_bytes actually targeted). Override per platform:
-#   delivery_profiles:
-#     telegram:
-#       max_file_bytes: 52428800
-#       safety_ratio: 0.85
-#   gemini:
-#     model: "gemini-3.1-flash-tts-preview"
-#     voice: "Kore"
-#     audio_tags: false
-#     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
-#   xai:
-#     voice_id: "eve"       # built-in or custom voice ID from xAI Console
-#     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"
-#     speed: 1.0            # 0.7-1.5 playback speed
-#     auto_speech_tags: false  # insert expressive audio tags via LLM rewrite
-#     text_normalization: false  # normalize numbers/abbreviations/symbols
-#     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
-#     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
-#     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
-
-# =============================================================================
-# Voice Transcription (Speech-to-Text)
-# =============================================================================
-# Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
-stt:
-  enabled: true
-  # provider: "local"          # auto-detected if omitted
-  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
-  # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
-  # silence inflates upload time, per-audio-minute billing, and hallucination risk.
-  # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
-  # on any failure the original uploads untouched.
-  # cloud_trim_silence: true   # set false to always upload the original audio
-  # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
-  # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
-  # Optional static transcription prompt: vocabulary/context hints for
-  # prompt-capable backends. Composition is deterministic: this config value
-  # is the base, then `pre_transcription` hooks run in registration order with
-  # last-writer-wins semantics per field.
-  #
-  # Privacy: the final prompt is sent to the configured STT provider alongside
-  # the audio. Do not include secrets or session context you would not send to
-  # that provider.
-  #
-  # Length / truncation contract: Whisper-family backends (local, openai,
-  # groq, deepinfra) only use the final ~224 prompt tokens, so Hermes
-  # truncates longer prompts client-side (keeping the tail) with a WARNING
-  # log — never an error. Other backends own their own validation.
-  #
-  # Provider behavior:
-  #   local (faster-whisper)  -> `initial_prompt`, forwarded unchanged
-  #   openai / groq          -> `prompt`, forwarded unchanged
-  #   mistral                -> `prompt`, forwarded unchanged
-  #   deepinfra              -> OpenAI-compatible `prompt`, unchanged
-  #   local_command/xai/
-  #   elevenlabs             -> unsupported; DEBUG log, then continue
-  #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
-  # prompt: "Hermes, Teknium, Nous Research, delegation"
-  local:
-    model: "base"              # tiny | base | small | medium | large-v3 | turbo
-    # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
-    # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
-    # --- Anti-hallucination hardening (whisper decodes junk from silence without these) ---
-    # vad: true                # Silero VAD filter (default on) — silence never reaches whisper.
-    #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
-    # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
-    # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
-    # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
-    # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
-  language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
-  # groq:
-  #   model: "whisper-large-v3-turbo"
-  #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
-  openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
-    timeout: 60                # request timeout in seconds; increase for self-hosted model cold starts
-    max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
-  # mistral:
-  #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
-  # deepinfra:
-  #   # Model id is discovered live from the DeepInfra catalog filtered
-  #   # by the `stt` surface tag — leave `model` blank to take the first
-  #   # live result. Pin only when you need a specific Whisper variant.
-  #   model: ""
-
-# Text-to-speech. Only the deepinfra block is documented here — the
-# remaining providers (edge, openai, xai, minimax, mistral, gemini,
-# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
-# DEFAULT_CONFIG in hermes_cli/config.py.
-# tts:
-#   provider: "deepinfra"
-#   deepinfra:
-#     # Model id is discovered live from the DeepInfra catalog filtered
-#     # by the `tts` surface tag — leave `model` blank to take the first
-#     # live result.
-#     model: ""
-#     voice: "default"
-
-# "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
-# Full engine/provider options inherit from DEFAULT_CONFIG in
-# hermes_cli/config_defaults.py — only capture placement is documented here.
-# wake_word:
-#   enabled: false
-#   capture: "auto"    # auto | local | client
-#                      # auto: backend PortAudio mic when one exists; a remote
-#                      #       desktop on a mic-less (headless/VPS) backend
-#                      #       streams its own mic via the wake.feed RPC.
-#                      # local: always the backend mic (wake_word.input_device).
-#                      # client: always desktop-streamed PCM (detection stays
-#                      #         on the backend).
-
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from
 # api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —
@@ -1732,7 +1566,7 @@ delegation:
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
-  #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Supported: openrouter, zai, kimi-coding, minimax
   #                                           # Cost tip: keep the parent on a frontier model and pin
   #                                           # delegation.model to an inexpensive one — children carry the
   #                                           # vast majority of tokens, so this is where spend is cut while
@@ -1740,20 +1574,6 @@ delegation:
   # fallback_providers:                       # Fallback chain for delegated children (same entry format as the
   #   - provider: "openrouter"                # top-level list). Pinned children use only a declared child chain;
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).
-
-# =============================================================================
-# Honcho Integration (Cross-Session User Modeling)
-# =============================================================================
-# AI-native persistent memory via Honcho (https://honcho.dev/).
-# Builds a deeper understanding of the user across sessions and tools.
-# Runs alongside USER.md — additive, not a replacement.
-#
-# Requires: pip install honcho-ai
-# Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
-# API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
-#
-# Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
-# honcho: {}
 
 # =============================================================================
 # Display
@@ -1768,35 +1588,28 @@ display:
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (CLI default)
-  #   describe: One short human sentence per call (gateway default; rows render in code boxes,
-  #            set display.tool_progress_codebox: false for plain text)
+  #   describe: One short human sentence per call (gateway default; rows always render in code boxes)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
-  # Per-platform defaults can be quieter than the global setting. Telegram
-  # tunes for mobile: tool_progress and busy_ack_detail default off (no
-  # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
-  # acks or heartbeats), but interim_assistant_messages and
-  # long_running_notifications STAY ON so the user has real signal between
-  # turn start and final answer (mid-turn assistant commentary + a single
-  # edit-in-place "⏳ Working — N min" heartbeat). Override under
-  # display.platforms.telegram.
+  # Per-platform defaults can be quieter than the global setting. Override
+  # under display.platforms.<platform>.
 
   # Auto-cleanup of temporary progress bubbles after the final response lands.
-  # On platforms that support message deletion (currently Telegram), this
+  # On platforms that support message deletion, this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and
   # context-pressure status messages once the final reply has been delivered —
   # keeping long-running turns visible live, then tidy afterward. Failed runs
   # leave the bubbles in place as breadcrumbs. Off by default.
-  # Per-platform override: display.platforms.telegram.cleanup_progress
+  # Per-platform override: display.platforms.<platform>.cleanup_progress
   #   true:  Delete tracked progress/status bubbles on successful turn
   #   false: Leave everything in place (default)
   # Example:
   #   display:
   #     platforms:
-  #       telegram:
+  #       discord:
   #         cleanup_progress: true
   cleanup_progress: false
 
@@ -1820,7 +1633,7 @@ display:
 
   # Gateway-only context-injection progress card ("🧠 gateway context
   # injected") shown when the gateway wraps your message with envelope context
-  # (interruption system notes, voice prefixes). Memory/plugin/mixed context
+  # (interruption system notes). Memory/plugin/mixed context
   # cards and ordinary tool progress are unaffected, and the model still
   # receives the full injected content either way.
   #   true:  Show the gateway context card (default)
@@ -1837,14 +1650,14 @@ display:
   # updates, commentary, streamed output), so continuous visible output
   # suppresses the heartbeat; a genuinely quiet turn gets one after
   # agent.gateway_notify_interval of silence.
-  # Default: true everywhere, including Telegram (silent agents are worse
-  # than a single edit-in-place heartbeat).
+  # Default: true everywhere (silent agents are worse than a single
+  # edit-in-place heartbeat).
   long_running_notifications: true
 
   # Include detailed iteration/tool/status context in busy acknowledgments
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
-  # iteration 21/60, terminal". When false (Telegram default), both stay
+  # iteration 21/60, terminal". When false, both stay
   # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
   busy_ack_detail: true
 
@@ -1857,11 +1670,10 @@ display:
   #              images are attached (steer only carries text).
   # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
   # Toggle at runtime with /busy <interrupt|queue|steer>.
-  busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
-  # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
+  # terminal(background=true, notify_on_complete=true) from Discord/Slack/etc.
   #   concise: One-line status message on completion; failures include a short
   #            output tail (default)
   #   off:     No watcher messages at all
@@ -2093,27 +1905,25 @@ updates:
 # =============================================================================
 # Web Dashboard
 # =============================================================================
-# OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
-# The bundled Nous Portal plugin reads these on startup; settings here are
-# the canonical surface. Each can be overridden by an environment variable:
+# OAuth gate configuration for `hermes dashboard --host <non-loopback>`:
+# self-hosted OIDC (generic OpenID Connect). Each setting can be overridden by
+# an environment variable:
 #
-#   dashboard.oauth.client_id   <-  HERMES_DASHBOARD_OAUTH_CLIENT_ID
-#   dashboard.oauth.portal_url  <-  HERMES_DASHBOARD_PORTAL_URL
-#   dashboard.public_url        <-  HERMES_DASHBOARD_PUBLIC_URL
+#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
+#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
+#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
+#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#   dashboard.public_url                       <-  HERMES_DASHBOARD_PUBLIC_URL
 #
 # Env wins when set to a non-empty value. This is what Fly.io's platform-
-# secret injection uses to push per-deploy client_ids without needing to
-# bake a config.yaml into the image. Empty env values are treated as unset
-# so a provisioned-but-not-populated secret can't shadow a valid entry here.
+# secret injection uses to push per-deploy values without needing to bake a
+# config.yaml into the image. Empty env values are treated as unset so a
+# provisioned-but-not-populated secret can't shadow a valid entry here.
 #
 # Local dev / on-prem deploys should typically set these via config.yaml
 # (the ~/.hermes/.env file is reserved for API keys and secrets).
 #
 # dashboard:
-#   oauth:
-#     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
-#     portal_url: ""   # blank → default https://portal.nousresearch.com
-#
 #   # Force the absolute base URL the OAuth callback (and any other public
 #   # URL the dashboard hands to external systems) is built from. Set this
 #   # for deploys behind reverse proxies that don't reliably forward
@@ -2143,16 +1953,6 @@ updates:
 #   #     # - "172.20.0.0/24"  # dedicated network, if the IP is dynamic
 #
 # -----------------------------------------------------------------------------
-# Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
-# Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the
-# nous block above when gating the dashboard with your own identity provider.
-# Each setting can be overridden by an environment variable:
-#
-#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
-#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
-#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
-#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
-#
 # dashboard:
 #   oauth:
 #     provider: self-hosted

@@ -24,7 +24,6 @@ KIND_JSON = "json"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
-STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
 
 
 @dataclass(frozen=True)

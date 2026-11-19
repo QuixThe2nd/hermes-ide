@@ -26,8 +26,7 @@ _terminal_scope_var: ContextVar = ContextVar("hermes_terminal_scope", default=No
 # without them the projection is not total.
 _TOOL_LEVEL_DEFAULTS: Dict[str, Any] = {
     "cwd": ".", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_key": "",
-    "docker_orphan_reaper": True, "docker_persist_across_processes": True,
-    "sandbox_dir": "", "lifetime_seconds": 300, "docker_shared_container_key": "",
+    "sandbox_dir": "", "lifetime_seconds": 300,
     "home_mode": "auto",
 }
 
@@ -171,8 +170,6 @@ def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
     resolved = resolve_placeholder_terminal_cwd(
         configured_cwd="", terminal_backend=scope.get("TERMINAL_ENV", ""),
         messaging_cwd=None,
-        docker_mount_cwd_to_workspace=scope.get(
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"true", "1", "yes"},
         home_fallback=str(Path.home()),
     )
     if resolved:

@@ -80,18 +80,18 @@ def test_gateway_platform_defaults_to_hard_stop_without_changing_interactive_def
         ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         for platform in ("cli", "tui", "desktop", "acp")
     ]
-    telegram_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="telegram")
+    discord_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="discord")
     cron_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cron")
 
     assert all(cfg.hard_stop_enabled is False for cfg in interactive_configs)
-    assert telegram_cfg.hard_stop_enabled is True
+    assert discord_cfg.hard_stop_enabled is True
     assert cron_cfg.hard_stop_enabled is True
 
 
 def test_non_interactive_hard_stop_can_be_disabled_explicitly():
     cfg = ToolCallGuardrailConfig.from_mapping(
         {"non_interactive_hard_stop_enabled": False},
-        platform="telegram",
+        platform="discord",
     )
 
     assert cfg.hard_stop_enabled is False
@@ -373,7 +373,7 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("subagent", "api_server", "cli"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is False, platform
-    for platform in ("telegram", "discord", "cron", "slack"):
+    for platform in ("matrix", "discord", "cron", "slack"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
 

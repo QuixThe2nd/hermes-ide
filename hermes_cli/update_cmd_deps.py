@@ -148,7 +148,7 @@ def _declared_pyproject_extras(project_root: Path | None = None) -> frozenset[st
     root = project_root or _m().PROJECT_ROOT
     pyproject = root / "pyproject.toml"
     try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         extras = (data.get("project") or {}).get("optional-dependencies")
         if extras is None:
             raise PyprojectExtrasReadError(

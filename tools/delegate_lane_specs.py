@@ -1,20 +1,20 @@
 """Shared lane specifications and ``delegation.lanes`` resolution.
 
-The four bundled specs are generic capability defaults. A non-empty
-``delegation.lanes`` mapping opts into the lane surface; entries override
-individual defaults without discarding the rest of a lane's configuration.
+The four bundled specs are generic capability defaults and always register;
+``delegation.lanes`` is a per-lane override overlay merged onto them field by
+field, never an opt-in switch.
 """
 
 from __future__ import annotations
-
 import copy
+import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from hermes_constants import get_hermes_home
 from tools.delegate_tool_config import _cfg
 
-HARNESSES = frozenset({"omp", "claude", "cursor", "subagent"})
+HARNESSES = frozenset({"omp", "claude", "subagent"})
 RECEIPT_FIELDS = ["lane", "harness", "model", "reviewer", "verdict"]
 LANE_NAMES = ["ui_dev", "client_dev", "backend_dev", "reverse_engineer"]
 LANE_TOOL_NAMES = [f"delegate_{name}" for name in LANE_NAMES]
@@ -23,7 +23,7 @@ _DEFAULT_MODELS = ["openai/gpt-5.2", "anthropic/claude-sonnet-5-5"]
 _CODING_TOOLS = ["read", "write", "edit", "glob", "grep", "bash", "lsp"]
 
 
-def _lane(soul: str, tools: Iterable[str]) -> Dict[str, Any]:
+def _lane(soul: str, tools: Iterable[str], *, goal: bool = False) -> Dict[str, Any]:
     return {
         "harness": "omp",
         "models": list(_DEFAULT_MODELS),
@@ -33,6 +33,9 @@ def _lane(soul: str, tools: Iterable[str]) -> Dict[str, Any]:
         "tools_allowlist": list(tools),
         "reviewer": "requesting agent",
         "receipt_fields": list(RECEIPT_FIELDS),
+        # goal=True drives OMP RPC goal continuation (the lane keeps working
+        # until the goal completes); False stays a one-shot print-mode turn.
+        "goal": goal,
     }
 
 
@@ -41,7 +44,7 @@ DEFAULT_LANE_SPECS: Dict[str, Dict[str, Any]] = {
     "client_dev": _lane("client", _CODING_TOOLS),
     "backend_dev": _lane("backend", _CODING_TOOLS),
     "reverse_engineer": _lane(
-        "reverse_engineer", ["read", "glob", "grep"]
+        "reverse_engineer", ["read", "glob", "grep"], goal=True
     ),
 }
 
@@ -51,10 +54,6 @@ def canonical_lane_name(name: str) -> str:
     value = str(name or "").strip()
     return value[len("delegate_"):] if value.startswith("delegate_") else value
 
-
-def lanes_configured() -> bool:
-    """Lane schemas are opt-in: an empty or absent mapping exposes nothing."""
-    return bool(_cfg().get("lanes"))
 
 
 def _override_list(raw: Any) -> List[Dict[str, Any]]:
@@ -124,6 +123,9 @@ def resolve_lane_spec(name: str, lanes: Any = None) -> Dict[str, Any]:
         spec.get("receipt_fields") or RECEIPT_FIELDS, "receipt_fields"
     )
     spec["soul"] = str(spec.get("soul") or "")
+    # Operator overlays merge field by field, so an overlay that omits ``goal``
+    # keeps the lane default; an explicit ``goal: false`` stays one-shot.
+    spec["goal"] = bool(spec.get("goal"))
     raw_reviewer = spec.get("reviewer")
     # Dict reviewers ({provider, model, reasoning_effort}) stay structured for
     # the reviewer pass; everything else stays the display string.
@@ -132,6 +134,57 @@ def resolve_lane_spec(name: str, lanes: Any = None) -> Dict[str, Any]:
         else str(raw_reviewer or "requesting agent")
     )
     return spec
+
+
+# Harnesses the bundled omp default steps down to when the omp binary is
+# missing from the host: lanes stay runnable instead of hidden.
+_HARNESS_FALLBACKS = ("claude", "subagent")
+
+
+def _omp_reachable(omp_config: Optional[Mapping[str, Any]] = None) -> bool:
+    config = omp_config if omp_config is not None else (_cfg().get("omp") or {})
+    return shutil.which(str(config.get("binary") or "omp")) is not None
+
+
+def _claude_reachable(_omp_config: Optional[Mapping[str, Any]] = None) -> bool:
+    from tools.claude_agent_tool import resolve_claude_binary
+
+    return resolve_claude_binary() is not None
+
+
+_HARNESS_PROBES = {
+    "omp": _omp_reachable, "claude": _claude_reachable,
+}
+
+
+def harness_reachable(harness: str, omp_config: Optional[Mapping[str, Any]] = None) -> bool:
+    """True when a harness's binary/backend can actually run on this host."""
+    if harness == "subagent":  # in-process child agent: no external binary
+        return True
+    probe = _HARNESS_PROBES.get(harness)
+    return probe(omp_config) is True if probe else False
+
+
+def resolve_runnable_spec(
+    name: str, lanes: Any = None, omp_config: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
+    """Resolve a lane for execution; the bundled omp default steps down to the
+    first harness that can actually run (claude, then the in-process subagent),
+    so a host without the omp binary still gets working lane tools."""
+    spec = resolve_lane_spec(name, lanes)
+    if spec["harness"] == "omp" and not harness_reachable("omp", omp_config):
+        for harness in _HARNESS_FALLBACKS:
+            if harness_reachable(harness, omp_config):
+                spec["harness"] = harness
+                break
+    return spec
+
+
+def lane_harness_reachable(
+    name: str, lanes: Any = None, omp_config: Optional[Mapping[str, Any]] = None
+) -> bool:
+    """Lane visibility: the resolved harness, after omp fallback, can run."""
+    return harness_reachable(resolve_runnable_spec(name, lanes, omp_config)["harness"])
 
 
 def resolve_lane_path(value: str) -> Path:
@@ -174,4 +227,4 @@ def soul_path(soul: str) -> Optional[Path]:
 def read_soul(soul: str) -> str:
     """Load a path-backed soul or return its literal text unchanged."""
     path = soul_path(soul)
-    return path.read_text(encoding="utf-8") if path is not None else soul
+    return path.read_text(encoding="utf-8-sig") if path is not None else soul

@@ -2,6 +2,7 @@
 
 import contextlib
 import contextvars
+from datetime import datetime, timedelta, timezone
 import itertools
 import json
 import logging
@@ -168,7 +169,7 @@ class TestResolveOrigin:
     def test_full_origin(self):
         job = {
             "origin": {
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": "123456",
                 "chat_name": "Test Chat",
                 "thread_id": "42",
@@ -177,7 +178,7 @@ class TestResolveOrigin:
         result = _resolve_origin(job)
         assert isinstance(result, dict)
         assert result == job["origin"]
-        assert result["platform"] == "telegram"
+        assert result["platform"] == "discord"
         assert result["chat_id"] == "123456"
         assert result["chat_name"] == "Test Chat"
         assert result["thread_id"] == "42"
@@ -188,7 +189,7 @@ class TestResolveOrigin:
         [
             "combined-digest-replaces-x-and-y-20260503",
             123,
-            ["telegram", "12345"],
+            ["discord", "12345"],
             ("platform", "chat_id"),
             42.0,
         ],
@@ -212,14 +213,14 @@ class TestResolveDeliveryTarget:
         job = {
             "deliver": "origin",
             "origin": {
-                "platform": "telegram",
+                "platform": "discord",
                 "chat_id": "-1001",
                 "thread_id": "17585",
             },
         }
 
         assert _resolve_delivery_target(job) == {
-            "platform": "telegram",
+            "platform": "discord",
             "chat_id": "-1001",
             "thread_id": "17585",
             "_resolved_from": "origin",
@@ -363,7 +364,7 @@ class TestDeliverResultWrapping:
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
@@ -371,7 +372,7 @@ class TestDeliverResultWrapping:
                 "id": "test-job",
                 "name": "daily-report",
                 "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "discord", "chat_id": "123"},
             }
             _deliver_result(job, "Here is today's summary.")
 
@@ -394,7 +395,7 @@ class TestDeliverResultWrapping:
         relay = MagicMock()
         relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
         relay.send_for_platform = AsyncMock(return_value=MagicMock(success=True))
-        relay.send_voice = AsyncMock(return_value=MagicMock(success=True))
+        relay.send_document = AsyncMock(return_value=MagicMock(success=True))
         relay.supports_inchannel_continuable = False
         # Not a real RelayAdapter: keep the auto-created accessor from
         # shadowing the scalar False (MagicMock fabricates truthy callables).
@@ -452,8 +453,8 @@ class TestDeliverResultWrapping:
         args = relay.send_for_platform.await_args.args
         assert args[:3] == (Platform.SLACK, "D123", "scheduled result")
         assert relay.send_for_platform.await_args.kwargs["metadata"]["user_id"] == "U123"
-        relay.send_voice.assert_awaited_once()
-        media_metadata = relay.send_voice.await_args.kwargs["metadata"]
+        relay.send_document.assert_awaited_once()
+        media_metadata = relay.send_document.await_args.kwargs["metadata"]
         assert media_metadata["_relay_logical_platform"] == "slack"
         assert media_metadata["user_id"] == "U123"
         standalone_send.assert_not_awaited()
@@ -461,7 +462,7 @@ class TestDeliverResultWrapping:
 
     def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
-        platform attachments (e.g., Discord voice, Telegram audio) rather than
+        platform attachments (e.g., Discord voice, WhatsApp audio) rather than
         as literal 'MEDIA:/path' text."""
         from gateway.config import Platform
         from concurrent.futures import Future
@@ -469,7 +470,7 @@ class TestDeliverResultWrapping:
 
         adapter = AsyncMock()
         adapter.send.return_value = MagicMock(success=True)
-        adapter.send_voice.return_value = MagicMock(success=True)
+        adapter.send_document.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -514,10 +515,10 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Here is TTS" in text_sent
 
-        # Audio file should be sent as a voice attachment
-        adapter.send_voice.assert_called_once()
-        voice_call = adapter.send_voice.call_args
-        assert voice_call[1]["audio_path"] == str(media_path)
+        # Audio file should be sent as a document attachment
+        adapter.send_document.assert_called_once()
+        document_call = adapter.send_document.call_args
+        assert document_call[1]["file_path"] == str(media_path)
 
 
 class TestDeliverResultErrorReturns:
@@ -529,13 +530,13 @@ class TestDeliverResultErrorReturns:
         pconfig = MagicMock()
         pconfig.enabled = False
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg):
             job = {
                 "id": "disabled",
                 "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "discord", "chat_id": "123"},
             }
             result = _deliver_result(job, "Output.")
         assert result is not None
@@ -788,7 +789,7 @@ class TestRunJobSessionPersistence:
             "id": "test-job",
             "name": "test",
             "prompt": "hello",
-            "deliver": "telegram:-2002",
+            "deliver": "discord:-2002",
         }
         fake_db = MagicMock()
         seen = {}
@@ -828,7 +829,7 @@ class TestRunJobSessionPersistence:
         assert final_response == "ok"
         assert "ok" in output
         assert seen == {
-            "platform": "telegram",
+            "platform": "discord",
             "chat_id": "-2002",
             "thread_id": None,
         }
@@ -1183,6 +1184,8 @@ class TestRunJobConfigEnvVarExpansion:
             "    model: claude-opus-5\n",
             encoding="utf-8",
         )
+        # Stale per-job pins (provider names a dead provider) must be ignored: the primary
+        # resolve comes from persisted config, not the job record.
         job = {
             "id": "dns-fallback",
             "name": "dns fallback",
@@ -1195,7 +1198,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") in (None, "xai-oauth"):
+            if kwargs.get("requested") is None:
                 raise httpx.ConnectError(
                     "[Errno 8] nodename nor servname provided, or not known"
                 )
@@ -1220,7 +1223,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True, error
         assert error is None
-        assert requested == ["xai-oauth", "xai"]
+        # Primary resolve is config-default (requested=None), never the job's stale pin.
+        assert requested == [None, "xai"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "xai"
         assert kwargs["model"] == "grok-4.5"
@@ -1240,6 +1244,8 @@ class TestRunJobConfigEnvVarExpansion:
             "    model: z-ai/glm-5.2\n",
             encoding="utf-8",
         )
+        # Legacy snapshot fields are tolerated and ignored; the primary resolve is the
+        # config-default provider, which fails auth and walks the fallback chain.
         job = {
             "id": "auth-fallback",
             "name": "auth fallback",
@@ -1252,8 +1258,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") == "openai-codex":
-                # The unpinned job's provider_snapshot is its effective pin.
+            if kwargs.get("requested") is None:
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -1275,7 +1280,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == ["openai-codex", "openrouter"]
+        assert requested == [None, "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"
@@ -1409,8 +1414,9 @@ class TestRunJobModelResolution:
         assert error is None
         assert mock_agent_cls.call_args.kwargs["model"] == "alias-key-model"
 
-    def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
-        """A malformed config.yaml degrades gracefully when the job has a model."""
+    def test_corrupt_config_yaml_degrades_gracefully_ignoring_job_model(self, tmp_path, monkeypatch):
+        """A malformed config.yaml fails with fleet-default guidance; a stale job pin does NOT
+        rescue the run (pins are inert — the model always comes from config)."""
         (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
@@ -1430,10 +1436,11 @@ class TestRunJobModelResolution:
             mock_agent_cls.return_value = mock_agent
             success, _, _, error = run_job(job)
 
-        # Explicit job model survives the corrupt-config fall-through.
-        assert success is True
-        assert error is None
-        assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
+        # No rescue from the job's stale pin: the run fails cleanly, pointing at the fleet default.
+        assert success is False
+        assert mock_agent_cls.call_args is None
+        assert "cron.model" in error
+        assert "explicit-model" not in error
 
 
 class TestRunJobSkillBacked:
@@ -1500,7 +1507,7 @@ class TestSilentDelivery:
             "id": "monitor-job",
             "name": "monitor",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "discord", "chat_id": "123"},
         }
 
     def test_silent_response_suppresses_delivery(self, caplog):
@@ -1634,7 +1641,7 @@ class TestOneShotDispatchClaim:
             "id": "monitor-job",
             "name": "monitor",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "discord", "chat_id": "123"},
             "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
             "repeat": {"times": 1, "completed": 0},
         }
@@ -1897,13 +1904,13 @@ class TestSendMediaViaAdapter:
 
     def test_multiple_media_files_all_delivered(self, tmp_path, monkeypatch):
         adapter = MagicMock()
-        adapter.send_voice = AsyncMock()
+        adapter.send_document = AsyncMock()
         adapter.send_image_file = AsyncMock()
-        voice_path = self._safe_media_path(tmp_path, monkeypatch, "voice.mp3")
+        audio_path = self._safe_media_path(tmp_path, monkeypatch, "voice.mp3")
         photo_path = self._safe_media_path(tmp_path, monkeypatch, "photo.jpg")
-        media_files = [(str(voice_path), False), (str(photo_path), False)]
+        media_files = [str(audio_path), str(photo_path)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
-        adapter.send_voice.assert_called_once()
+        adapter.send_document.assert_called_once()
         adapter.send_image_file.assert_called_once()
 
 
@@ -1978,7 +1985,7 @@ class TestParallelTick:
 
         jobs = [
             {"id": "tg-job", "name": "tg", "deliver": "local",
-             "origin": {"platform": "telegram", "chat_id": "111"}},
+             "origin": {"platform": "discord", "chat_id": "111"}},
             {"id": "dc-job", "name": "dc", "deliver": "local",
              "origin": {"platform": "discord", "chat_id": "222"}},
         ]
@@ -1992,7 +1999,7 @@ class TestParallelTick:
             from cron.scheduler import tick
             tick(verbose=False)
 
-        assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
+        assert seen["tg-job"] == {"platform": "discord", "chat_id": "111"}
         assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
 
     def test_max_parallel_env_var(self, monkeypatch):
@@ -2053,7 +2060,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         loop = MagicMock()
         loop.is_running.return_value = True
@@ -2080,7 +2087,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         job = {
             "id": "timeout-job",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "discord", "chat_id": "123"},
         }
 
         standalone_send = AsyncMock(return_value={"success": True})
@@ -2092,7 +2099,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             result = _deliver_result(
                 job,
                 "Hello world",
-                adapters={Platform.TELEGRAM: adapter},
+                adapters={Platform.DISCORD: adapter},
                 loop=loop,
             )
 
@@ -2128,7 +2135,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         loop = MagicMock()
         loop.is_running.return_value = True
@@ -2143,7 +2150,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         job = {
             "id": "unconfirmed-job",
             "deliver": "origin",
-            "origin": {"platform": "telegram", "chat_id": "123"},
+            "origin": {"platform": "discord", "chat_id": "123"},
         }
 
         standalone_send = AsyncMock(return_value={"success": True})
@@ -2155,7 +2162,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
             result = _deliver_result(
                 job,
                 "Hello world",
-                adapters={Platform.TELEGRAM: adapter},
+                adapters={Platform.DISCORD: adapter},
                 loop=loop,
             )
         return result, standalone_send
@@ -2244,8 +2251,8 @@ class TestSendMediaTimeoutCancelsFuture:
             (root,),
         )
         media_files = [
-            (str(slow), False),   # times out
-            (str(fast), False),   # succeeds
+            str(slow),   # times out
+            str(fast),   # succeeds
         ]
 
         loop = MagicMock()
@@ -2289,7 +2296,7 @@ class TestCronDeliveryTargets:
     def test_configured_gateway_platforms_are_not_listed_as_targets(self, monkeypatch):
         from cron.scheduler_delivery import cron_delivery_targets
 
-        self._patch_connected(monkeypatch, ["matrix", "telegram"])
+        self._patch_connected(monkeypatch, ["matrix", "slack"])
 
         with patch("hermes_cli.profiles.list_profile_names", return_value=["default"]):
             targets = cron_delivery_targets()
@@ -2298,7 +2305,7 @@ class TestCronDeliveryTargets:
         # Connected gateway platforms are NOT deliver targets: there is no
         # per-platform default destination to offer the UI.
         assert "matrix" not in ids
-        assert "telegram" not in ids
+        assert "slack" not in ids
         # Only Bot Chat entries (machine-local, one per profile) are listed.
         assert ids == ["bot-chat:default"]
 
@@ -2322,7 +2329,7 @@ class TestCronDeliveryMirror:
 
         with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
             _maybe_mirror_cron_delivery(
-                {"id": "j1", "name": "Morning Brief"}, "telegram", "123",
+                {"id": "j1", "name": "Morning Brief"}, "discord", "123",
                 "Market movers today", thread_id=None, enabled=True,
             )
         m.assert_called_once()
@@ -2343,7 +2350,7 @@ class TestCronDeliveryMirror:
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
@@ -2352,7 +2359,7 @@ class TestCronDeliveryMirror:
                 "id": "test-job",
                 "name": "daily-report",
                 "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
+                "origin": {"platform": "discord", "chat_id": "123"},
                 "attach_to_session": True,
             }
             _deliver_result(job, "Here is today's summary.")
@@ -2933,3 +2940,157 @@ class TestFailureStreakNudge:
         from cron.scheduler import _failure_streak_nudge
         with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
             assert "failed 3 runs" in _failure_streak_nudge(self._job(2))
+
+
+class TestRunJobUnreachableRetryRecognition:
+    """The Cowork-style unreachable re-run ladder (cron/unreachable_retry.py) was dead in
+    the field: ``run_job``'s failure path classifies ``RuntimeError(<agent error text>)``
+    — the shape ``_final_response_from_result`` raises — but the recognizer only matched
+    raw transport exception types and DNS needles. These tests pin recognition on the
+    shapes the scheduler actually raises: the agent result's structured verdict
+    (``failure_reason`` / ``failure_retryable``) carried into the failure handler, with
+    the wrapped error text as fallback. The zero-completed-API-calls guard
+    (``agent.session_api_calls``) stays absolute either way.
+    """
+
+    # Real shape from the 2026-11-11/12 field failures: retries exhausted on an
+    # APIConnectionError, transport-classified. ``api_calls`` counts ATTEMPTS (failed
+    # ones included); completed responses are agent.session_api_calls.
+    _TRANSPORT_EXHAUSTED_RESULT = {
+        "final_response": "OpenAI didn't answer after 3 attempts",
+        "messages": [],
+        "api_calls": 3,
+        "completed": False,
+        "failed": True,
+        "error": "Connection error.",
+        "failure_reason": "timeout",
+        "failure_retryable": True,
+        "turn_exit_reason": "all_retries_exhausted_no_response",
+    }
+
+    _run_job_patches = TestRunJobSessionPersistence._run_job_patches
+
+    def _failing_transport_agent(self, agent_cls, *, session_api_calls):
+        agent = agent_cls.return_value
+        agent.session_api_calls = session_api_calls
+        agent.run_conversation.return_value = dict(self._TRANSPORT_EXHAUSTED_RESULT)
+
+    def test_run_job_flags_transport_exhausted_result_at_zero_calls(self, tmp_path):
+        """A failed result whose verdict is a transient transport reason and whose
+        agent completed zero API calls is flagged for the automatic re-run."""
+        job = {"id": "unreachable-zero", "name": "test", "prompt": "hello"}
+        with self._run_job_patches(tmp_path) as (_db, agent_cls):
+            self._failing_transport_agent(agent_cls, session_api_calls=0)
+            success, _output, _final, error = run_job(job)
+
+        assert success is False
+        assert error == "RuntimeError: Connection error."
+        assert job["_model_unreachable"] is True
+
+    def test_run_job_does_not_flag_after_the_model_was_reached(self, tmp_path):
+        """Same failure, but calls completed: possible partial work and side effects,
+        so no automatic re-run (the guard, not the verdict, decides)."""
+        job = {"id": "unreachable-reached", "name": "test", "prompt": "hello"}
+        with self._run_job_patches(tmp_path) as (_db, agent_cls):
+            self._failing_transport_agent(agent_cls, session_api_calls=2)
+            success, *_ = run_job(job)
+
+        assert success is False
+        assert "_model_unreachable" not in job
+
+    @contextlib.contextmanager
+    def _run_one_job_delivery_env(self, tmp_path, monkeypatch, send_calls):
+        """Real ``run_one_job`` against a temp jobs store: REAL ``run_job`` (mocked
+        AIAgent), REAL ``mark_job_run`` (so ``plan_retry`` executes and persists),
+        delivery captured at the platform-sender seam; execution ledger, dispatch claim
+        and incident store stubbed. Mirrors test_cron_failure_deliver.run_env."""
+        home = tmp_path / "cron-home"
+        (home / "cron" / "output").mkdir(parents=True)
+        # A token on the platform block is what the pre-dispatch delivery preflight and
+        # the gateway config both read as "connected" (no env credentials in tests).
+        (home / "config.yaml").write_text(
+            "platforms:\n  discord:\n    enabled: true\n    token: dummy-token\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        import cron.jobs as jobs_mod
+        monkeypatch.setattr(jobs_mod, "HERMES_DIR", home)
+        monkeypatch.setattr(jobs_mod, "CRON_DIR", home / "cron")
+        monkeypatch.setattr(jobs_mod, "JOBS_FILE", home / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", home / "cron" / "output")
+
+        import gateway.platform_registry as reg
+        import hermes_cli.plugins as hp
+        # Discord ships in-tree (plugins/platforms/discord), so the registry entry is
+        # present in every checkout — and the field failures this regression tracks
+        # delivered to Discord.
+        entry = reg.platform_registry.get("discord")
+        if entry is None:
+            hp.discover_plugins()
+            entry = reg.platform_registry.get("discord")
+        if entry is None:
+            pytest.skip("discord platform entry not registered")
+
+        async def fake_sender(pconfig, chat_id, message, *, thread_id=None,
+                              media_files=None, force_document=False, caption=None):
+            send_calls.append({"chat_id": chat_id, "message": message})
+            return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
+
+        monkeypatch.setattr(entry, "standalone_sender_fn", fake_sender)
+        monkeypatch.setattr(hp, "discover_plugins", lambda *a, **k: None)
+
+        extra = (
+            patch("cron.scheduler.create_execution", lambda *a, **k: {"id": "exec-t"}),
+            patch("cron.scheduler.claim_dispatch", lambda *_a, **_k: True),
+            patch("cron.scheduler.mark_execution_running", lambda *_a, **_k: {}),
+            patch("cron.scheduler.finish_execution", lambda *_a, **_k: None),
+            patch("cron.scheduler._upsert_incident_for_failure", lambda *_a, **_k: (False, None)),
+            patch("cron.scheduler.load_config", lambda: {}),
+        )
+        with self._run_job_patches(tmp_path, extra=extra) as (_db, agent_cls):
+            yield agent_cls
+
+    def test_run_one_job_schedules_retry_and_holds_the_failure_notice(
+            self, tmp_path, monkeypatch):
+        """End-to-end through the REAL run_job classification → delivery decision →
+        mark_job_run: a transport-exhausted failure at zero completed API calls gets
+        the first ladder rung (next_run_at pulled to ~5 min, attempt=1) and the
+        interim failure notice is held."""
+        from cron import unreachable_retry as ur
+        from cron.jobs import create_job, get_job
+
+        send_calls = []
+        with self._run_one_job_delivery_env(tmp_path, monkeypatch, send_calls) as agent_cls:
+            self._failing_transport_agent(agent_cls, session_api_calls=0)
+            job = create_job("brief me", "every 24h", name="nightly", deliver="discord:123456")
+            import cron.scheduler as s
+
+            assert s.run_one_job(get_job(job["id"])) is True
+
+        after = get_job(job["id"])
+        assert after[ur.STATE_KEY]["attempt"] == 1
+        nxt = datetime.fromisoformat(after["next_run_at"])
+        assert timedelta(0) < nxt - datetime.now(timezone.utc) <= timedelta(
+            seconds=ur.RETRY_DELAYS_SECONDS[0] + 120)
+        assert send_calls == []
+
+    def test_run_one_job_after_reaching_the_model_delivers_and_stays_on_schedule(
+            self, tmp_path, monkeypatch):
+        """The same failed result with completed model calls: no ladder state, the
+        natural schedule stands, and the failure notice goes out immediately."""
+        from cron import unreachable_retry as ur
+        from cron.jobs import create_job, get_job
+
+        send_calls = []
+        with self._run_one_job_delivery_env(tmp_path, monkeypatch, send_calls) as agent_cls:
+            self._failing_transport_agent(agent_cls, session_api_calls=2)
+            job = create_job("brief me too", "every 24h", name="nightly2", deliver="discord:123456")
+            import cron.scheduler as s
+
+            assert s.run_one_job(get_job(job["id"])) is True
+
+        after = get_job(job["id"])
+        assert after.get(ur.STATE_KEY) is None
+        nxt = datetime.fromisoformat(after["next_run_at"])
+        assert nxt - datetime.now(timezone.utc) > timedelta(hours=1)
+        assert len(send_calls) == 1
+        assert "failed" in send_calls[0]["message"].lower()

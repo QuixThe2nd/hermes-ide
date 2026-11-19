@@ -7,7 +7,7 @@ is still running, and ``_keep_typing`` refreshes the platform typing
 indicator every 2 seconds.
 
 The bug: each ``send_typing`` call is an HTTP round-trip to the platform API
-(Telegram/Discord). If the same network instability that's slowing the model
+(Discord/Slack). If the same network instability that's slowing the model
 call also makes ``send_typing`` slow (5-30s response time), the refresh loop
 stalls inside the ``await self.send_typing(...)`` call. Platform-side typing
 expires at ~5s, so the bubble dies and doesn't come back until that stuck
@@ -36,7 +36,7 @@ from gateway.platforms.base import (
 
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True

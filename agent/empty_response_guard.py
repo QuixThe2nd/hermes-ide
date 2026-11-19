@@ -2,7 +2,7 @@
 
 On an empty completion the loop retries up to 3 times, then walks the fallback chain —
 each attempt re-bills the full input. Signaled refusals (``content_filter``, Anthropic
-``refusal``, Bedrock guardrails) are already terminal; this handles *unsignaled* empties
+``refusal``) are already terminal; this handles *unsignaled* empties
 (success, zero output tokens, generic finish reason — typical of portal-proxied refusals).
 
 Two independent guards, both failing OPEN to legacy behaviour:

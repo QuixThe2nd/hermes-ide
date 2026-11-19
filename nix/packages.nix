@@ -52,21 +52,12 @@
         extraDependencyGroups = [
           "anthropic"
           "azure-identity"
-          "bedrock"
-          "daytona"
-          "edge-tts"
           "exa"
           "fal"
-          "feishu"
           "firecrawl"
           "hindsight"
-          "honcho"
           "messaging"
-          "modal"
           "parallel-web"
-          "tts-premium"
-          "vercel"
-          "voice"
         ]
         # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
         ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
@@ -84,8 +75,8 @@
 
         inherit minimal;
 
-        # Ships discord.py + python-telegram-bot + slack-sdk so a plain
-        # `nix profile install .#messaging` connects to Discord/Telegram/Slack
+        # Ships discord.py + slack-sdk so a plain
+        # `nix profile install .#messaging` connects to Discord/Slack
         # on first run — lazy-install can't write to the read-only /nix/store.
         messaging = minimal.override {
           extraDependencyGroups = [ "messaging" ];

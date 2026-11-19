@@ -724,6 +724,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test "$SKILL_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files found in skills directory"; exit 1)
           echo "PASS: $SKILL_COUNT bundled skills found"
 
+          test -f ${hermes-agent}/share/hermes-agent/skills/dev-lanes/SOUL.md || \
+            (echo "FAIL: canonical dev-lane SOUL missing"; exit 1)
+          test -f ${hermes-agent}/share/hermes-agent/skills/dev-lanes/fork-coding-conventions/SKILL.md || \
+            (echo "FAIL: fork conventions compatibility skill missing"; exit 1)
+          echo "PASS: dev-lane SOUL and compatibility pointer present"
+
           grep -q "HERMES_BUNDLED_SKILLS" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_BUNDLED_SKILLS not in wrapper"; exit 1)
           echo "PASS: HERMES_BUNDLED_SKILLS set in wrapper"
@@ -750,9 +756,18 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -d ${hermes-agent}/share/hermes-agent/plugins || (echo "FAIL: plugins directory missing"; exit 1)
           echo "PASS: plugins directory exists"
 
-          test -f ${hermes-agent}/share/hermes-agent/plugins/platforms/irc/plugin.yaml || \
-            (echo "FAIL: irc plugin manifest missing"; exit 1)
-          echo "PASS: irc plugin manifest present"
+          SOURCE_PLUGIN_COUNT=$(find -L ${../plugins} -name "plugin.yaml" | wc -l)
+          test "$SOURCE_PLUGIN_COUNT" -gt 0 || (echo "FAIL: no source plugin manifests found"; exit 1)
+
+          diff -u \
+            <(cd ${../plugins} && find -L . -name "plugin.yaml" -printf '%P\n' | sort) \
+            <(cd ${hermes-agent}/share/hermes-agent/plugins && find -L . -name "plugin.yaml" -printf '%P\n' | sort) || \
+            (echo "FAIL: packaged plugin manifests differ from source"; exit 1)
+          echo "PASS: $SOURCE_PLUGIN_COUNT source plugin manifests packaged"
+
+          test -f ${hermes-agent}/share/hermes-agent/plugins/memory/hindsight/plugin.yaml || \
+            (echo "FAIL: hindsight plugin manifest missing"; exit 1)
+          echo "PASS: hindsight plugin manifest present"
 
           grep -q "HERMES_BUNDLED_PLUGINS" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_BUNDLED_PLUGINS not in wrapper"; exit 1)
@@ -909,7 +924,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # Verify extraDependencyGroups passes through to python.nix
         extra-dependency-groups = let
           hermesWithGroups = hermes-agent.override {
-            extraDependencyGroups = [ "honcho" ];
+            extraDependencyGroups = [ "hindsight" ];
           };
         in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
           set -e

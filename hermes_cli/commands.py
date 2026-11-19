@@ -1,6 +1,6 @@
 """Slash command registry for the Hermes CLI and gateway.
 
-Every consumer -- CLI help, gateway dispatch, Telegram BotCommands, Slack
+Every consumer -- CLI help, gateway dispatch, Slack
 subcommand mapping, autocomplete -- derives from ``COMMAND_REGISTRY``. To add a
 command, append a ``CommandDef``; to add an alias, set ``aliases=("short",)``.
 """
@@ -48,16 +48,12 @@ VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrup
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
-               gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                args_hint="[name]",
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("incognito", "Start a new incognito session (no external memory, no prior history)", "Session",
                gateway_only=True, args_hint="[name|status]", subcommands=("status",),
                busy_policy="interrupt_then_dispatch", busy_handler="incognito"),
-    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
-               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True, desktop="terminal"),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -121,9 +117,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
-    CommandDef("egress", "Show Docker egress proxy status", "Session",
-               args_hint="[status]", subcommands=("status",), busy_policy="dispatch",
-               busy_handler="egress", execute="egress"),
     CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
                aliases=("ctx",), args_hint="[all]", subcommands=("all",), busy_policy="dispatch"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
@@ -162,24 +155,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("focus", "Toggle focus view — show only your prompt and the final response",
                "Configuration", cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
-    CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
-               "Configuration", args_hint="[on|off|status]", subcommands=("on", "off", "status"),
-               busy_policy="dispatch", desktop="terminal"),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]", argument_mode="options"),
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
                cli_only=True, args_hint=f"[{'|'.join(INDICATOR_STYLES)}]",
                subcommands=INDICATOR_STYLES, desktop="terminal"),
-    CommandDef("voice", "Toggle voice mode", "Configuration",
-               args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status"),
-               desktop="composer-voice"),
-    CommandDef("wake", "Toggle the 'Hey Hermes' wake word listener", "Configuration",
-               cli_only=True, args_hint="[on|off|status]", subcommands=("on", "off", "status")),
-    CommandDef("busy", "Control how messages behave while Hermes is working", "Configuration",
-               args_hint="[queue|steer|interrupt|status]",
-               subcommands=("queue", "steer", "interrupt", "status"),
-               busy_policy="dispatch", desktop="terminal"),
-
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
                args_hint="[list|disable|enable] [name...]", cli_only=True, argument_mode="options"),
@@ -228,13 +208,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch", desktop="terminal"),
-    CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
-               args_hint="[reset [--force]]"),
-    CommandDef("subscription", "View your Nous plan and change it in the browser", "Info",
-               cli_only=True, aliases=("upgrade",)),
-    CommandDef("login", "Sign in with a Nous account (keeps your connectors)", "Info",
-               busy_policy="dispatch", desktop="settings"),
-    CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]", desktop="advanced"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -359,8 +332,8 @@ def is_interrupt_then_dispatch(command_name: str | None) -> bool:
 def should_bypass_active_session(command_name: str | None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
     (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
-    command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /reset)
+    command text reaching the pending queue, so a queued mid-run /model (or /reasoning,
+    /insights, /title, /resume, /retry, /undo, /compress, /reload-mcp, /reset)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue
     #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
     explicit Level-2 handlers; the rest fall through to the catch-all.
@@ -442,9 +415,6 @@ import shutil  # noqa: F401,E402
 import subprocess  # noqa: F401,E402
 import time  # noqa: F401,E402
 
-def _requires_argument(args_hint: str) -> bool:
-    """Return True when selecting a command without text would be incomplete."""
-    return args_hint.strip().startswith("<")
 
 _CMD_NAME_LIMIT = 32
 
@@ -454,7 +424,7 @@ def _clamp_command_names(
 ) -> list[tuple[str, ...]]:
     """Enforce 32-char command name limit with collision avoidance.
 
-    Both Telegram and Discord cap slash command names at 32 characters.
+    Discord caps slash command names at 32 characters.
     Names exceeding the limit are truncated.  If truncation creates a duplicate
     (against *reserved* names or earlier entries in the same batch), the name is
     shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
@@ -505,16 +475,15 @@ def _collect_gateway_skill_entries(
 
     Args:
         platform: Platform identifier for per-platform skill filtering
-            (``"telegram"``, ``"discord"``, etc.).
+            (``"discord"``, etc.).
         max_slots: Maximum number of entries to return (remaining slots after
             built-in/core commands), or ``None`` to return every eligible
             plugin and skill candidate for a caller that applies a global cap.
         reserved_names: Names already taken by built-in commands.  Mutated
             in-place as new names are added.
-        desc_limit: Max description length (40 for Telegram, 100 for Discord).
-        sanitize_name: Optional name transform applied before clamping, e.g.
-            :func:`_sanitize_telegram_name` for Telegram.  May return an
-            empty string to signal "skip this entry".
+        desc_limit: Max description length (100 for Discord).
+        sanitize_name: Optional name transform applied before clamping.  May return an
+        empty string to signal "skip this entry".
 
     Returns:
         ``(entries, hidden_count)`` where *entries* contains
@@ -530,10 +499,6 @@ def _collect_gateway_skill_entries(
         from hermes_cli.plugins import get_plugin_commands
         plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
-            if platform == "telegram":
-                args_hint = str(plugin_cmds[cmd_name].get("args_hint") or "").strip()
-                if _requires_argument(args_hint):
-                    continue
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
@@ -673,21 +638,3 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
-
-
-# ``gateway/run.py`` telegramizes help-text command mentions through
-# ``from hermes_cli.commands import _sanitize_telegram_name`` — a path that predates the
-# commands_platforms split.  Re-export the real object lazily: commands_platforms imports
-# this module at its top, so an eager import here would be circular.  Chained onto the
-# PLUGIN-COMPAT ``__getattr__`` above; the ``globals().get`` capture keeps this hook
-# standing after that block is reverted away.
-_prev_module_getattr = globals().get("__getattr__")
-
-
-def __getattr__(name):  # PEP 562 — chained onto the PLUGIN-COMPAT hook above
-    if name == "_sanitize_telegram_name":
-        import importlib
-        return getattr(importlib.import_module("hermes_cli.commands_platforms"), name)
-    if _prev_module_getattr is not None:
-        return _prev_module_getattr(name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

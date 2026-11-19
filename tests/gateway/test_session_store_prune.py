@@ -72,7 +72,7 @@ def _entry(key: str, age_days: float, *, suspended: bool = False,
         session_id=session_id or f"sid_{key}",
         created_at=now - timedelta(days=age_days + 30),  # arbitrary older
         updated_at=now - timedelta(days=age_days),
-        platform=Platform.TELEGRAM,
+        platform=Platform.DISCORD,
         chat_type="dm",
         suspended=suspended,
     )
@@ -89,7 +89,7 @@ class TestPruneBasics:
             session_id="sid",
             created_at=now - timedelta(days=365),   # ancient
             updated_at=now - timedelta(days=3),     # but just chatted
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_type="dm",
         )
         store._entries["long-lived"] = entry

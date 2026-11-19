@@ -34,7 +34,7 @@ class Client:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["send_document", "send_image_file", "send_video", "send_voice", "send_multiple_images"])
+@pytest.mark.parametrize("method", ["send_document", "send_image_file", "send_video", "send_multiple_images"])
 async def test_media_uses_metadata_target_without_losing_direct_channel(tmp_path, method):
     adapter = DiscordAdapter(PlatformConfig())
     adapter._client = client = Client()
@@ -51,7 +51,7 @@ async def test_media_uses_metadata_target_without_losing_direct_channel(tmp_path
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["send_document", "send_image_file", "send_video", "send_voice"])
+@pytest.mark.parametrize("method", ["send_document", "send_image_file", "send_video"])
 async def test_failed_upload_never_becomes_successful_text_notice(tmp_path, method):
     adapter = DiscordAdapter(PlatformConfig())
     adapter._client = client = Client(fail=True)

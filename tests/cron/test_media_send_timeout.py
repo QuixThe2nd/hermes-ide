@@ -63,7 +63,7 @@ class TestEmptyReasonFallback:
 
         monkeypatch.setattr(
             "gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
-            staticmethod(lambda files, session_key="": [(str(media), False)]),
+            staticmethod(lambda files, session_key="": [str(media)]),
         )
 
         def boom(coro, loop):
@@ -73,11 +73,11 @@ class TestEmptyReasonFallback:
         monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", boom)
 
         class _Adapter:
-            async def send_voice(self, **kw):  # pragma: no cover - never awaited
+            async def send_document(self, **kw):  # pragma: no cover - never awaited
                 pass
 
         errors = _send_media_via_adapter(
-            _Adapter(), "C123", [(str(media), False)], None, loop=object(),
+            _Adapter(), "C123", [str(media)], None, loop=object(),
             job={"id": "job-x"},
         )
         assert len(errors) == 1

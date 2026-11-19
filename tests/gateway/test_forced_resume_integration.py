@@ -167,7 +167,6 @@ def _gateway_runner(store):
     runner._refresh_fallback_model.return_value = None
     runner._consume_pending_native_image_paths.return_value = []
     runner._consume_pending_turn_sidecar_notes.return_value = []
-    runner._is_telegram_topic_lane.return_value = False
     runner._is_discord_auto_thread_lane.return_value = False
     runner._is_relay_discord_channel_lane.return_value = False
     return runner
@@ -486,7 +485,7 @@ _EXPECTED_RESTART_RESULT_WITHOUT_OLD = (
     "verified, then reply to the user about that work."
 )
 
-def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
+def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS, status=None):
     """The exact durable shape left by the dying process's restart control."""
     from plugins.gateway_restart.tool import _result_json
 
@@ -495,7 +494,7 @@ def _restart_tool_tail_history(*, timestamp=None, process=_OLD_PROCESS):
     arguments = "{}"
     result = _result_json(
         SimpleNamespace(_draining=True),
-        {"status": "restarting", "active_agents": 1, "via_service": False},
+        status or {"status": "restarting", "active_agents": 1, "via_service": False},
     )
     payload = json.loads(result)
     if process is None:
@@ -562,6 +561,59 @@ def test_restart_tool_tail_continues_with_process_identity(monkeypatch):
     assert all(row.get("content") != _RESTART_CLOSE_ROW for row in rewritten)
 
 
+def test_chained_restart_tail_continues_with_process_identity(monkeypatch):
+    """A chained (overlap-queued) restart carries the same Old/New identity contract.
+
+    The chained ack names the draining predecessor as ``process``; the
+    successor rewrite must still present Old process = predecessor and
+    New process = itself, never a bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    history = _restart_tool_tail_history(
+        process=_OLD_PROCESS,
+        status={"status": "chained", "active_agents": 1, "via_service": True},
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+
+
+def test_forwarded_restart_tail_continues_with_process_identity(monkeypatch):
+    """A forwarded (array-overlap) restart carries the same Old/New identity contract.
+
+    The forwarded result names the newest generation that took the request
+    (``forwarded_to``) as ``process``; the successor rewrite must still
+    present Old process = that generation and New process = itself, never a
+    bare success without identity.
+    """
+    from gateway.run_turn_recovery import _repair_restart_tool_tail
+
+    forwarded_pid = _NEW_PID - 1
+    history = _restart_tool_tail_history(
+        process=f"pid {forwarded_pid}",
+        status={
+            "status": "forwarded",
+            "active_agents": 1,
+            "via_service": True,
+            "forwarded_to": forwarded_pid,
+        },
+    )[:-1]
+    monkeypatch.setattr(os, "getpid", lambda: _NEW_PID)
+
+    repair = _repair_restart_tool_tail(history)
+
+    assert repair is not None
+    rewritten, changed = repair
+    assert changed is True
+    assert rewritten[-1]["content"] == _EXPECTED_RESTART_RESULT
+
+
 def test_rich_restart_result_is_trusted_and_idempotent(monkeypatch):
     """A second recovery pass in the same successor changes nothing."""
     from gateway.run_turn_recovery import _repair_restart_tool_tail
@@ -620,6 +672,31 @@ def test_idle_restart_requester_keeps_interactive_recovery_note():
     assert kwargs.get("persist_user_message") == run_message
     assert kwargs.get("continue_interrupted_turn") is None
     assert store.rewrites == []
+
+
+def test_restart_requester_task_final_continues_instead_of_asking():
+    """A restart() turn that already wrote its real final must continue the
+    original task, not ask the user what to do next."""
+    history = _restart_tool_tail_history()
+    history.append({
+        "role": "assistant",
+        "content": "Restart is queued. I'll verify the deploy after it comes back.",
+        "timestamp": time.time(),
+    })
+    agent, store = _run_and_capture_agent(history, "", "restart_requester", {})
+
+    run_message, kwargs = agent.run_calls[0]
+    assert "ask what they would like to do next" not in run_message
+    assert "Continue the original task" in run_message
+    assert "re-verify" in run_message
+    assert "do NOT re-execute" in run_message
+    assert kwargs.get("continue_interrupted_turn") is None
+    assert store.rewrites == []
+    model_history = kwargs.get("conversation_history") or []
+    assert any(
+        "verify the deploy after it comes back" in str(row.get("content") or "")
+        for row in model_history
+    ), [r.get("role") for r in model_history]
 
 
 def test_stale_restart_tail_is_not_rewritten():

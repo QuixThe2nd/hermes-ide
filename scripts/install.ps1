@@ -529,7 +529,7 @@ function Discard-LockfileChurn {
         # "workspaces" globs), so a dirty workspace manifest such as
         # web/package.json protects it; reverting it there desyncs spec and
         # lock and every later npm ci fails (#112378). A manifest outside the graph
-        # (website/) has its own lockfile and does not protect the root one.
+        # (sub-manifests like scripts/whatsapp-bridge/) have their own lockfiles and do not protect the root one.
         $rootLockProtected = $dirtyPackageDirs.Contains("")
         if (-not $rootLockProtected -and $dirtyPackageDirs.Count -gt 0) {
             $workspaceGlobs = @()
@@ -2047,7 +2047,7 @@ function Install-SystemPackages {
         $needRipgrep = $true
     }
 
-    Write-Info "Checking ffmpeg (TTS voice messages)..."
+    Write-Info "Checking ffmpeg (media conversions)..."
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
         Write-Success "ffmpeg found"
         $script:HasFfmpeg = $true
@@ -2070,7 +2070,7 @@ function Install-SystemPackages {
         $scoopPkgs += "ripgrep"
     }
     if ($needFfmpeg) {
-        $descParts += "ffmpeg for TTS voice messages"
+        $descParts += "ffmpeg for media conversions"
         $wingetPkgs += "Gyan.FFmpeg"
         $chocoPkgs += "ffmpeg"
         $scoopPkgs += "ffmpeg"
@@ -2191,7 +2191,7 @@ function Install-SystemPackages {
         Write-Info "  winget install BurntSushi.ripgrep.MSVC"
     }
     if ($needFfmpeg) {
-        Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
+        Write-Warn "ffmpeg not installed (media conversions will be limited)"
         Write-Info "  winget install Gyan.FFmpeg"
     }
 }
@@ -3713,13 +3713,13 @@ function Install-PlatformSdks {
     #    lower tier when the first fails (common when RL git deps choke),
     #    which silently skips some messaging SDKs from [messaging].
     # 2. `uv` creates the venv without pip.  If a messaging SDK ends up
-    #    missing, the user can't `pip install python-telegram-bot` to
+    #    missing, the user can't `pip install discord.py` to
     #    recover -- pip simply isn't in their venv.
     #
     # Strategy: bootstrap pip via `python -m ensurepip` (idempotent), then
     # for each token set in .env, verify the matching SDK imports.  If not,
     # run one targeted `pip install` as last-chance recovery.  Keeps fresh
-    # Windows installs from hitting silent "python-telegram-bot not installed"
+    # Windows installs from hitting silent "discord.py not installed"
     # at runtime.
     if ($NoVenv) {
         Write-Info "Skipping platform-SDK verification (-NoVenv: no venv to bootstrap)"
@@ -3739,8 +3739,7 @@ function Install-PlatformSdks {
     # Map: env var set in .env -> (import name, pip spec matching [messaging] extra).
     # Specs mirror pyproject.toml to avoid version drift.
     $sdkMap = @(
-        @{ Var = "TELEGRAM_BOT_TOKEN"; Import = "telegram";  Spec = "python-telegram-bot[webhooks]>=22.6,<23" },
-        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py[voice]>=2.7.1,<3" },
+        @{ Var = "DISCORD_BOT_TOKEN";  Import = "discord";   Spec = "discord.py>=2.7.1,<3" },
         @{ Var = "SLACK_BOT_TOKEN";    Import = "slack_sdk"; Spec = "slack-sdk>=3.27.0,<4" },
         @{ Var = "SLACK_APP_TOKEN";    Import = "slack_bolt";Spec = "slack-bolt>=1.18.0,<2" },
         @{ Var = "WHATSAPP_ENABLED";   Import = "qrcode";    Spec = "qrcode>=7.0,<8" }
@@ -3850,7 +3849,7 @@ function Start-GatewayIfConfigured {
 
     $hasMessaging = $false
     $content = Get-Content $envPath -ErrorAction SilentlyContinue
-    foreach ($var in @("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "WHATSAPP_ENABLED")) {
+    foreach ($var in @("DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "WHATSAPP_ENABLED")) {
         $match = $content | Where-Object { $_ -match "^${var}=.+" -and $_ -notmatch "your-token-here" }
         if ($match) { $hasMessaging = $true; break }
     }
@@ -3955,7 +3954,7 @@ function Write-Completion {
     Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
     Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
+    Write-Host "Start messaging gateway (Discord, Slack, etc.)"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""

@@ -161,7 +161,7 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # MCP tool discovery (external MCP servers from config) used to run here as a module-level side effect.
     # It was removed because discover_mcp_tools() internally uses a blocking future.result(timeout=120)
     # wait, and the gateway lazy-imports this module from inside the asyncio event loop on the first user
-    # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
+    # message — freezing gateway platform heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
@@ -189,7 +189,6 @@ _LEGACY_TOOLSET_MAP = {
                       "browser_back", "browser_press", "browser_get_images", "browser_vision", "browser_console"],
     "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
-    "tts_tools": ["text_to_speech"],
 }
 
 
@@ -438,8 +437,8 @@ _LANE_TOOL_NAMES = (
 
 def _rewrite_delegate_agent_lanes(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
     """Point lane-shaped work at the lane tools, but only when one is actually present —
-    the lane tools are availability-gated (lanes must be configured), and naming absent
-    tools teaches the model ghost vocabulary (same rule as _rewrite_browser_navigate)."""
+    the lane tools are harness-reachability-gated, and naming absent tools teaches the
+    model ghost vocabulary (same rule as _rewrite_browser_navigate)."""
     if not any(name in available for name in _LANE_TOOL_NAMES):
         return td
     fn = td["function"]
@@ -553,7 +552,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
 _AGENT_LOOP_TOOLS = {"todo", "todo_list", "memory", "session_search"}
 
 # Delegate names are NOT stubbed: delegate_agent must execute its real handler
-# wherever delegation is legal - backend-routed (claude/cursor) calls that the
+# wherever delegation is legal - backend-routed (claude) calls that the
 # turn loop deliberately falls through to the registry, and child/cron/resumed
 # sessions that dispatch without any turn-loop interceptor. _execute_tool
 # forwards the ambient dispatch context's agent as ``parent_agent``; with no

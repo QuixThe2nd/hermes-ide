@@ -126,7 +126,7 @@ _EXCLUDED_PREFIXES = (
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
 # drives the container-boot reconciler (a foreign value leaves the gateway stuck "starting" and
-# disconnected from the Nous portal); PID/lock/registry files reference source PIDs. Mirrors
+# disconnected from its relay connector); PID/lock/registry files reference source PIDs. Mirrors
 # ``container_boot._STALE_RUNTIME_FILES``; import filters too because older backups predate the
 # backup-side exclusions.
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
@@ -137,7 +137,7 @@ _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.
 # excluded browser-profile/ snapshot) but must come back owner-only.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
 
-# Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
+# Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.hindsight, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not
 # under home are skipped.
 _EXTERNAL_PREFIX = "_external/"
@@ -684,7 +684,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         _iter_backup_files(hermes_root, out_path, skipped_dirs)
     )
 
-    # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
+    # External memory-provider state (e.g. ~/.hindsight) lives
     # outside HERMES_HOME, so the walk above never sees it. Ask the active
     # provider for its declared paths and stage them under the reserved
     # ``_external/`` arc prefix, encoded relative to the user's home dir.
@@ -910,7 +910,7 @@ def run_import(args) -> None:
         for member in members:
             # External memory-provider state captured under the reserved
             # ``_external/`` arc prefix restores to its original home-relative
-            # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
+            # location (e.g. ~/.hindsight/), NOT under HERMES_HOME.
             if member.startswith(_EXTERNAL_PREFIX):
                 ext_rel = member[len(_EXTERNAL_PREFIX):]
                 if not ext_rel:
@@ -951,8 +951,8 @@ def run_import(args) -> None:
             # Never overwrite volatile gateway/process runtime state. These are
             # namespaced to the machine/container the backup was taken on;
             # clobbering them (especially gateway_state.json) breaks the gateway
-            # reconciler on the target and disconnects hosted instances from the
-            # Nous portal. Matched by basename so both the root profile and
+            # reconciler on the target and disconnects hosted instances from their
+            # relay connector. Matched by basename so both the root profile and
             # named profiles (profiles/<name>/gateway_state.json) are covered.
             if Path(rel).name in _IMPORT_SKIP_NAMES:
                 skipped_runtime.append(rel)
@@ -1424,7 +1424,7 @@ def _create_quick_snapshot_locked(
             if other == snap_dir or not other.is_dir():
                 continue
             try:
-                with open(other / "manifest.json", encoding="utf-8") as f:
+                with open(other / "manifest.json", encoding="utf-8-sig") as f:
                     other_files = json.load(f).get("files")
             except (OSError, ValueError, AttributeError):
                 continue
@@ -2069,7 +2069,7 @@ def _load_db_verdicts(root: Path) -> dict:
     try:
         if _is_non_regular_path(path):
             return {}
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
@@ -2236,7 +2236,7 @@ def _snapshot_db_coverage(
 
     db_rels: Optional[Iterable[str]] = None
     try:
-        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
+        with open(snap_dir / "manifest.json", encoding="utf-8-sig") as f:
             files = json.load(f).get("files")
         if isinstance(files, dict):
             db_rels = [rel for rel in files if isinstance(rel, str)]

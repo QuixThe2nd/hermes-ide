@@ -49,7 +49,6 @@ def _make_runner():
     runner.adapters = {}
     runner.session_store = None
     runner.config = None
-    runner._voice_mode = {}
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
@@ -66,7 +65,6 @@ def _make_runner():
     runner._pending_model_notes = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []

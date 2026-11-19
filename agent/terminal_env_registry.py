@@ -22,11 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 #: Names owned by in-tree backends in tools/environments/ — never
-#: registrable by plugins. Includes internal-mode aliases (managed_modal).
-BUILTIN_BACKEND_NAMES = frozenset({
-    "local", "docker", "singularity", "modal", "managed_modal",
-    "daytona", "vercel_sandbox", "ssh",
-})
+#: registrable by plugins.
+BUILTIN_BACKEND_NAMES = frozenset({"local", "ssh"})
 
 
 def _reject_builtin_collision(name: str) -> None:
@@ -49,6 +46,12 @@ def plugin_backend_names(*, scope: Optional[str] = None) -> List[str]:
     """Names of all registered plugin backends (sorted)."""
     return [p.name.strip().lower() for p in _registry.list_providers(scope=scope)]
 
+def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[TerminalEnvironmentProvider]:
+    """Provider registered under *name* (``None`` when absent) — the lookup the
+    terminal tool's plugin path (``tools.terminal_tool_config._get_plugin_env_provider``)
+    resolves through."""
+    return _registry.get_provider(name, scope=scope)
+
 
 def provider_flag(name: str, attr: str, default=False):
     """Read a classification attribute off the provider for *name*.
@@ -69,7 +72,7 @@ def provider_flag(name: str, attr: str, default=False):
 def plugin_strip_env_keys() -> frozenset:
     """Union of every registered provider's ``strip_env_keys`` — across ALL scopes, not
     just the active backend: a token in the process environment is strippable regardless of
-    which backend is selected (as MODAL_*/DAYTONA_API_KEY sit in the static tier-1 set)."""
+    which backend is selected (legacy static tokens sit in the tier-1 set)."""
     keys: set = set()
     with _registry._lock:
         all_providers = list(_registry._providers.values())

@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -23,8 +22,6 @@ logger = logging.getLogger(__name__)
 # Branches never considered for deletion, in any mode.
 _PROTECTED_BRANCHES = {"main", "master", "develop", "dev", "trunk"}
 
-# Legacy trees owned by another lifecycle — never touched.
-_KANBAN_RE = re.compile(r"^t_[0-9a-f]+$")
 
 # Bounded cherry probe: a branch this far ahead of upstream is a stale-base
 # lane, not merged scratch; checking it is expensive and it stays preserved.
@@ -124,8 +121,6 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
 def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads) -> tuple[str, str, List[str]]:
     """Return (verdict, reason, untracked) for one tree under ``.worktrees/``."""
     path = str(entry)
-    if _KANBAN_RE.match(entry.name):
-        return "keep", "kanban task tree (legacy ownership)", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)

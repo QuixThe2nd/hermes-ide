@@ -366,10 +366,8 @@ class CompressionSettings(SimpleNamespace):
 
 
 _EXPLICIT_API_MODES = {
-    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
+    "chat_completions", "codex_responses", "anthropic_messages", "codex_app_server",
 }
-
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
@@ -393,15 +391,6 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     elif url.rstrip("/").endswith("/anthropic"):
         # Third-party Anthropic-compatible endpoints (MiniMax, DashScope) end in /anthropic.
         agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        host.startswith("bedrock-runtime.") and base_url_host_matches(url, "amazonaws.com")
-    ):
-        agent.api_mode = "bedrock_converse"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
-        # AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
-        agent.api_mode = nous_api_mode(agent.model)
     else:
         # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
         # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
@@ -439,17 +428,6 @@ def _finalize_routing(agent, api_mode, credential_pool):
     with suppress(Exception):
         agent._get_transport()
 
-    # The Nous agent key lives ~1 h. Without the proactive refresher every agent in the process
-    # discovers expiry reactively, on its own next request, all in the same minute: with 200
-    # in-process subagents that was a 401 storm each hour (620 in one run) and the credential
-    # pool benched the provider for all of them. The gateway and web server start this thread
-    # at boot; the CLI process (and everything spawned inside it) never did. Idempotent,
-    # process-wide, daemon.
-    if agent.provider == "nous":
-        with suppress(Exception):
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
-            start_nous_auth_keepalive()
-
     with suppress(Exception):
         from hermes_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS, normalize_model_for_provider
@@ -457,11 +435,6 @@ def _finalize_routing(agent, api_mode, credential_pool):
 
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
-
-    # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
-    # swap can change the route later, so ``_swap_credential`` applies the same helper again.
-    from hermes_cli.anon_auth import pin_model_for_route
-    agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
 
     # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
     # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
@@ -578,11 +551,7 @@ _TURN_STATE: Dict[str, Any] = {
     # Registry generation of the tool snapshot (set in _load_tools): a late refresh rejects
     # a stale rebuild instead of clobbering a newer one.
     "_tool_snapshot_generation": 0,
-    "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
-    # Credits tracking (dev-only, HERMES_DEV_CREDITS) from x-nous-credits-* headers; session
-    # start is latched on the first header so cumulative spend can be reported.
-    "_credits_state": None,
-    "_credits_session_start_micros": None,
+    "_rate_limit_state": None,  # captured from x-ratelimit-* response headers
     "_or_cache_hits": 0,  # X-OpenRouter-Cache-Status: HIT count
 }
 
@@ -689,8 +658,6 @@ def _init_turn_state(agent, run_budget_seconds):
     # Wall-clock run budget per turn: constructor arg wins, else agent.run_budget_seconds
     # (in _apply_agent_section). None = fully off (no clock reads, injection, or capping).
     agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
-    from agent.credits_tracker import new_credits_latch
-    agent._credits_latch = new_credits_latch()  # threshold-notice latch (sticky keys + gates)
 
 
 def _setup_logging(agent):
@@ -719,19 +686,12 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
-    """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
+    """anthropic_messages: native Anthropic SDK."""
     from agent.anthropic_adapter import build_anthropic_client
     from agent.anthropic_credentials import resolve_anthropic_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
-    if agent.provider == "bedrock":
-        # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
-        from agent.bedrock_adapter import bind_bedrock_runtime
-        bind_bedrock_runtime(agent, base_url, "anthropic_messages")
-        if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {agent._bedrock_region})")
-        return
     # ANTHROPIC_TOKEN fallback only for native Anthropic — other anthropic_messages providers
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
@@ -783,15 +743,6 @@ def _init_moa_client(agent, api_key):
     bind_moa_runtime(agent, agent.model, api_key)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
-
-
-def _init_bedrock_client(agent, base_url):
-    """bedrock_converse: boto3 directly, no OpenAI client."""
-    from agent.bedrock_adapter import bind_bedrock_runtime
-    bind_bedrock_runtime(agent, base_url, "bedrock_converse")
-    if not agent.quiet_mode:
-        _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-        print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
 
 
 def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict[str, Any]:
@@ -926,13 +877,6 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         agent.api_mode = "chat_completions"
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
-    try:
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
-        configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
-    except Exception:
-        if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
-            raise
-
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
     _apply_openai_header_policy(agent, client_kwargs)
     agent.api_key = client_kwargs.get("api_key", "")
@@ -962,8 +906,6 @@ def _build_client(agent, api_key, base_url, fallback_model):
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":
         _init_moa_client(agent, api_key)
-    elif agent.api_mode == "bedrock_converse":
-        _init_bedrock_client(agent, base_url)
     else:
         _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout)
 
@@ -1206,7 +1148,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
+    # Session title (memory providers derive chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
             _st = agent._session_db.get_session_title(agent.session_id)
@@ -1216,7 +1158,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
                 if _source:
                     kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
+    # provider session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:
@@ -2013,14 +1955,14 @@ def _warn_nonagentic_hermes_model(agent):
 def _inject_context_engine_tools(agent):
     # Context engine tool schemas (lcm_*), deduped against existing names (plugins may
     # register the same schemas; duplicates 400 provider-side) and gated on enabled_toolsets
-    # so `platform_toolsets: telegram: []` can't leak them.
+    # so `platform_toolsets: <platform>: []` can't leak them.
     # Skip names that are already present — the model_tools.get_tool_definitions() quiet_mode cache returned a
     # shared list pre-#17335, so a stray mutation here would poison subsequent agent inits in the same
     # Gateway process and trip provider-side 'duplicate tool name' errors. Even with the cache fix, dedup is
     # the right defense against plugin paths that may register the same schemas via ctx.register_tool().
     # Mirrors the memory tools dedup above. Respect the platform's enabled_toolsets configuration (#5544):
     # context engine tools follow the same gating pattern as memory provider tools — without the gate,
-    # `platform_toolsets: telegram: []` would still leak lcm_* tools into the tool surface and incur the
+    # `platform_toolsets: <platform>: []` would still leak lcm_* tools into the tool surface and incur the
     # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
     if (
@@ -2246,7 +2188,7 @@ _PASSTHROUGH_PARAMS = (
     "max_tokens", "reasoning_config", "service_tier",
 )
 # Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
-# per-chat key (e.g. agent:main:telegram:dm:123).
+# per-chat key (e.g. agent:main:discord:dm:123).
 _GATEWAY_IDENTITY_PARAMS = (
     "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
     "gateway_session_key",
@@ -2311,7 +2253,7 @@ def init_agent(
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
         assistant message — use structured outputs there instead.
-      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
+      skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md injection;
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
     _install_safe_stdio()

@@ -53,7 +53,7 @@ def test_resolve_profile_namespaced_key_does_not_adopt_main_row(tmp_path, monkey
 def test_resolve_db_fallback_rejects_row_started_after_flush(tmp_path):
     """A row created after the flush timestamp cannot be the message's origin; only a row that
     already existed at flush time is adopted, and it comes back with its owning db."""
-    key = "agent:main:telegram:dm:42"
+    key = "agent:main:discord:dm:42"
     db = _FakeGatewayDB({key: {"id": "late-row", "started_at": 1700000100.0}})
     store = _store(tmp_path, db)
     assert store.resolve_session_id_for_key(key, not_after=1700000000) is None

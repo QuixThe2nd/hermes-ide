@@ -56,8 +56,6 @@ _HERMES_CORE_TOOLS = [
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console",
     "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
-    # Text-to-speech
-    "text_to_speech",
     # Planning & memory
     "todo_list", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
@@ -70,10 +68,9 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation. delegate_agent is the ONE delegation
-    # dispatch surface: backend=claude (Claude Code CLI) and backend=cursor
-    # (Cursor My Machines cloud) route inside it with a per-backend
-    # prerequisite check; the old delegate_claude_agent /
-    # delegate_cursor_agent names are hidden dispatchable aliases.
+    # dispatch surface: backend=claude (Claude Code CLI) routes inside it
+    # with a prerequisite check; the old delegate_claude_agent name is a
+    # hidden dispatchable alias.
     "execute_code", "delegate_agent",
     # MoA consultation (gated via check_fn on the default MoA preset)
     "moa_ask", "moa_debate",
@@ -231,12 +228,6 @@ TOOLSETS = {
     # plugin removes the toolset with it — the core catalog keeps no
     # plugin-specific lanes.
 
-    "tts": {
-        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
-        "tools": ["text_to_speech"],
-        "includes": []
-    },
-    
     "todo": {
         "description": "Task planning and tracking for multi-step work",
         "tools": ["todo_list"],
@@ -325,7 +316,7 @@ TOOLSETS = {
     },
 
     "quota_channels": {
-        "description": "Discord voice-channel quota display for Codex, Kimi, z.ai, Cursor, and Grok",
+        "description": "Discord voice-channel quota display for Codex, Kimi, z.ai, and Grok",
         "tools": ["quota_channels_tick"],
         "includes": [],
     },
@@ -349,12 +340,11 @@ TOOLSETS = {
         "includes": [],
     },
 
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
     "discord": {
-        "description": "Discord read and participate tools (fetch messages, search members, create threads, resolve tickets)",
-        "tools": ["discord", "resolve_ticket"],
+        "description": "Discord read and participate tools (fetch messages, search members, create threads)",
+        "tools": ["discord"],
         "includes": [],
     },
 
@@ -383,7 +373,7 @@ TOOLSETS = {
 
     # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
-    # for while pairing on code and drops the rest (messaging, tts, image_gen,
+    # for while pairing on code and drops the rest (messaging, image_gen,
     # home-assistant, cron, computer-use).
     #
     # The GUI pane/browser affordances are NOT listed here: they belong to the
@@ -478,13 +468,12 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS + [
             "discord",
             "discord_admin",
-            "resolve_ticket",
         ],
         "includes": []
     },
     
     "hermes-whatsapp": {
-        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
+        "description": "WhatsApp bot toolset - personal messaging, more trusted",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },

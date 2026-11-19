@@ -38,7 +38,7 @@ def test_discord_ids_in_source_and_fixtures_are_obviously_synthetic():
             continue
         if any(part in {"__pycache__", ".pytest_cache"} for part in path.parts):
             continue
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         for match in SNOWFLAKE.finditer(text):
             value = match.group(0)
             if not _is_obviously_synthetic(value):

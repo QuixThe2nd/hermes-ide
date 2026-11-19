@@ -15,64 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 # Flag names (stable — used as config.yaml keys under onboarding.seen)
-BUSY_INPUT_FLAG = "busy_input_prompt"
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
-OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 PROFILE_BUILD_FLAG = "profile_build_offered"
-
-
-# Busy-input hints are keyed by the effective busy_input_mode that was just
-# applied so the message matches reality; "interrupt" is the default branch.
-_BUSY_INPUT_HINTS_GATEWAY = {
-    "queue": (
-        "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages "
-        "stop the current task immediately, or `/busy status` to check. This notice won't appear again."
-    ),
-    "steer": (
-        "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool "
-        "call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy "
-        "status` to check. This notice won't appear again."
-    ),
-    "redirect": (
-        "💡 First-time tip — I redirected the current run using your message. Completed work stays in "
-        "context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or "
-        "`/busy status` to check. This notice won't appear again."
-    ),
-}
-_BUSY_INPUT_HINT_GATEWAY_DEFAULT = (
-    "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue "
-    "follow-ups for after the current task instead, `/busy steer` to inject them mid-run without "
-    "interrupting, or `/busy status` to check. This notice won't appear again."
-)
-
-_BUSY_INPUT_HINTS_CLI = {
-    "queue": (
-        "(tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current "
-        "run instead, or /busy steer to inject mid-run. This tip only shows once."
-    ),
-    "steer": (
-        "(tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy "
-        "interrupt or /busy queue to change this. This tip only shows once."
-    ),
-    "redirect": (
-        "(tip) Your correction redirected the current run without discarding completed work. Use /stop to "
-        "cancel or /busy queue to wait for a separate turn. This tip only shows once."
-    ),
-}
-_BUSY_INPUT_HINT_CLI_DEFAULT = (
-    "(tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn "
-    "instead, or /busy steer to inject mid-run. This tip only shows once."
-)
-
-
-def busy_input_hint_gateway(mode: str) -> str:
-    """Hint shown the first time a user messages while the agent is busy (markdown)."""
-    return _BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT)
-
-
-def busy_input_hint_cli(mode: str) -> str:
-    """CLI version of the busy-input hint (plain text, no markdown)."""
-    return _BUSY_INPUT_HINTS_CLI.get(mode, _BUSY_INPUT_HINT_CLI_DEFAULT)
 
 
 def tool_progress_hint_gateway() -> str:
@@ -83,25 +27,6 @@ def tool_progress_hint_gateway() -> str:
 def tool_progress_hint_cli() -> str:
     return ("(tip) That tool ran for a while. Use /verbose to cycle tool-progress "
             "display modes (all -> new -> off -> verbose). This tip only shows once.")
-
-
-def openclaw_residue_hint_cli() -> str:
-    """Banner shown the first time Hermes finds ``~/.openclaw/``: migrate first, cleanup (which breaks OpenClaw) after."""
-    return (
-        "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.\n"
-        "If you've already migrated and want to archive the old directory, run `hermes claw cleanup` "
-        "(renames it to ~/.openclaw.pre-migration — OpenClaw will stop working after this).\n"
-        "This tip only shows once."
-    )
-
-
-def detect_openclaw_residue(home: Optional[Path] = None) -> bool:
-    """True if ``$HOME/.openclaw`` is a directory (``home`` override for tests)."""
-    try:
-        return ((home or Path.home()) / ".openclaw").is_dir()
-    except OSError:
-        return False
 
 
 def _onboarding_section(config: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -174,8 +99,6 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 
 
 __all__ = [
-    "BUSY_INPUT_FLAG", "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
-    "busy_input_hint_gateway", "busy_input_hint_cli", "tool_progress_hint_gateway", "tool_progress_hint_cli",
-    "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
+    "tool_progress_hint_gateway", "tool_progress_hint_cli",
     "is_seen", "mark_seen",
 ]

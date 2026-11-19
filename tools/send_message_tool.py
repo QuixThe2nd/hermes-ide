@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 from tools.send_message_targets import resolve_send_target
 from tools.send_message_senders import (
-    _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
+    _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _sanitize_error_text,
     _send_matrix_via_adapter)
@@ -58,11 +58,9 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
-_TOKEN_UNSET = object()
 
 
-def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
-                            native_token=_TOKEN_UNSET) -> str | None:
+def _authorize_relay_target(platform_name: str, chat_id, thread_id=None) -> str | None:
     """Relay egress-authorization guard (P5a); None when the send may proceed.
 
     Thin delegate to ``gateway.relay.egress`` so the tool keeps working in
@@ -124,18 +122,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         )
 
     try:
-        # ONE SNAPSHOT. `native_token` is the token from the SAME pconfig the
-        # dispatch below will actually send with. Letting the guard reload
-        # config independently allowed a transition where authorization saw a
-        # connector-only setup (exemption granted) while dispatch still held a
-        # native token and sent the unattested handle itself.
-        if native_token is _TOKEN_UNSET:
-            # A caller that forgets the snapshot must NOT silently look like
-            # "no native token", which would grant the @handle exemption.
-            return authorize_relay_target(platform_name, chat_id, thread_id)
-        return authorize_relay_target(
-            platform_name, chat_id, thread_id, native_token=native_token
-        )
+        return authorize_relay_target(platform_name, chat_id, thread_id)
     except Exception:  # noqa: BLE001 - the guard faulted; FAIL CLOSED
         logger.exception(
             "relay target authorization FAILED for %s — refusing the send",
@@ -239,8 +226,7 @@ def _handle_send(args):
     # that caused the outage it was meant to prevent.
     # thread_id is part of the DESTINATION: on Discord the thread is the literal
     # REST target, so an attested parent must not vouch for an arbitrary thread.
-    _relay_denial = _authorize_relay_target(platform_name, chat_id, thread_id,
-                                            native_token=getattr(pconfig, "token", None))
+    _relay_denial = _authorize_relay_target(platform_name, chat_id, thread_id)
     if _relay_denial:
         return tool_error(_relay_denial)
 
@@ -381,10 +367,8 @@ def _describe_media_for_mirror(media_files):
         return ""
     if len(media_files) != 1:
         return f"[Sent {len(media_files)} media attachments]"
-    media_path, is_voice = media_files[0]
+    media_path = media_files[0]
     ext = os.path.splitext(media_path)[1].lower()
-    if is_voice and ext in _VOICE_EXTS:
-        return "[Sent voice message]"
     kind = next((k for exts, k in ((_IMAGE_EXTS, "image"), (_VIDEO_EXTS, "video"), (_AUDIO_EXTS, "audio"))
                  if ext in exts), "document")
     return f"[Sent {kind} attachment]"
@@ -423,15 +407,11 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
             return {"error": f"Adapter send failed: {_bounded_send_error(last_result.error)}"}
     from gateway.platforms.base import BasePlatformAdapter
     total = len(media_files)
-    for index, descriptor in enumerate(media_files):
-        media_path = descriptor[0] if isinstance(descriptor, (list, tuple)) and descriptor else None
-        if not isinstance(media_path, str) or not media_path:
-            return {"error": f"Adapter media send failed: invalid media descriptor {index + 1}/{total}"}
-        is_voice = len(descriptor) > 1 and bool(descriptor[1])
+    for index, media_path in enumerate(media_files):
         if not os.path.exists(media_path):
             return {"error": f"Adapter media send failed: media file {index + 1}/{total} was not found"}
         ext = os.path.splitext(media_path)[1].lower()
-        method_name, media_kind = _adapter_media_method(ext, is_voice or ext in _AUDIO_EXTS, force_document)
+        method_name, media_kind = _adapter_media_method(ext, force_document)
         adapter_method = getattr(type(adapter), method_name, None)
         if adapter_method is None or adapter_method is getattr(BasePlatformAdapter, method_name):
             return {"error": (f"Live adapter does not implement native {media_kind} delivery; "

@@ -225,7 +225,7 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "F4_FIVE_STEP"
-    db.create_session(session_id, source="telegram")
+    db.create_session(session_id, source="discord")
     db.append_message(session_id, "user", "original durable")
 
     agent = _build_agent_with_db(db, session_id)
@@ -329,7 +329,7 @@ def test_f5_session_contextvar_rebound_after_rotation(
 
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "F5_CTXVAR_PARENT"
-    db.create_session(parent_sid, source="telegram")
+    db.create_session(parent_sid, source="discord")
     agent = _build_agent_with_db(db, parent_sid)
     agent.compression_in_place = False  # rotation mode
     agent._cached_system_prompt = "sys"
@@ -342,7 +342,7 @@ def test_f5_session_contextvar_rebound_after_rotation(
     )
 
     # Simulate the gateway's bound session context for the caller.
-    tokens = set_session_vars(session_id=parent_sid, platform="telegram")
+    tokens = set_session_vars(session_id=parent_sid, platform="discord")
     try:
         assert get_session_env("HERMES_SESSION_ID") == parent_sid
 

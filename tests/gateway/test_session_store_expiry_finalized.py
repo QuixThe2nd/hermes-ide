@@ -26,8 +26,8 @@ def db(tmp_path: Path) -> SessionDB:
     return SessionDB(tmp_path / "state.db")
 
 
-_SESSION_KEY = "agent:main:telegram:dm:8494508720"
-_SOURCE = "telegram"
+_SESSION_KEY = "agent:main:discord:dm:8494508720"
+_SOURCE = "discord"
 _USER_ID = "8494508720"
 
 

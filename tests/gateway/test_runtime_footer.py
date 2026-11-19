@@ -12,7 +12,6 @@ from gateway.runtime_footer import (
     _model_short,
     build_footer_line,
     format_runtime_footer,
-    resolve_footer_config,
 )
 
 
@@ -79,63 +78,8 @@ def test_format_footer_skips_missing_context_length():
 
 
 # ---------------------------------------------------------------------------
-# resolve_footer_config
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_platform_override_wins():
-    user = {
-        "display": {
-            "runtime_footer": {"enabled": True, "fields": ["model"]},
-            "platforms": {
-                "slack": {"runtime_footer": {"enabled": False}},
-            },
-        },
-    }
-    # Telegram picks up the global enable
-    assert resolve_footer_config(user, "telegram")["enabled"] is True
-    # Slack overrides to off
-    assert resolve_footer_config(user, "slack")["enabled"] is False
-
-
-def test_resolve_platform_can_add_fields_only():
-    user = {
-        "display": {
-            "runtime_footer": {"enabled": True},
-            "platforms": {
-                "discord": {"runtime_footer": {"fields": ["context_pct"]}},
-            },
-        },
-    }
-    tg = resolve_footer_config(user, "telegram")
-    assert tg["enabled"] is True
-    assert tg["fields"] == _DEFAULT_FOOTER_FIELDS
-    dc = resolve_footer_config(user, "discord")
-    assert dc["enabled"] is True
-    assert dc["fields"] == ["context_pct"]
-
-
-# ---------------------------------------------------------------------------
 # build_footer_line — top-level entry point used by gateway/run.py
 # ---------------------------------------------------------------------------
-
-
-def test_build_footer_per_platform_off_suppresses():
-    user = {
-        "display": {
-            "runtime_footer": {"enabled": True},
-            "platforms": {"slack": {"runtime_footer": {"enabled": False}}},
-        },
-    }
-    out = build_footer_line(
-        user_config=user,
-        platform_key="slack",
-        model="openai/gpt-5.4",
-        context_tokens=10, context_length=100,
-        cwd="/tmp",
-    )
-    assert out == ""
-
 
 
 # ---------------------------------------------------------------------------
@@ -231,27 +175,6 @@ def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
     assert out == "gpt-5.4 · 68% · 1m05s · ~"
 
 
-def test_build_footer_line_threads_turn_seconds(monkeypatch):
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    out = build_footer_line(
-        user_config={
-            "display": {
-                "runtime_footer": {
-                    "enabled": True,
-                    "fields": ["model", "latency"],
-                }
-            }
-        },
-        platform_key="discord",
-        model="gpt-5.4",
-        context_tokens=0,
-        context_length=None,
-        cwd="",
-        turn_seconds=22.0,
-    )
-    assert out == "gpt-5.4 · 22s"
-
-
 # ---------------------------------------------------------------------------
 # Default behaviour: footer is ON with the timing + call-count fields; cwd,
 # latency and served_model stay opt-in.
@@ -267,7 +190,8 @@ _VAR_DATA = os.path.abspath("/var/data")
 
 
 def test_default_fields_include_timing_and_exclude_optins():
-    fields = resolve_footer_config({}, "telegram")["fields"]
+    from gateway.runtime_footer import _DEFAULT_FIELDS
+    fields = list(_DEFAULT_FIELDS)
     assert fields == _DEFAULT_FOOTER_FIELDS
     for optin in ("cwd", "latency", "served_model"):
         assert optin not in fields
@@ -310,52 +234,13 @@ def test_reasoning_field_skipped_when_unset():
     assert out == "m"
 
 
-def test_build_footer_line_forwards_reasoning_effort(monkeypatch):
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    common = dict(
-        user_config={"display": {"runtime_footer": {"enabled": True}}},
-        platform_key="discord",
-        model="gpt-5.4",
-        context_tokens=0,
-        context_length=None,
-    )
-    out = build_footer_line(**common, reasoning_effort="high")
-    assert out.endswith("· high")
-    # Disabled footer short-circuits before any field renders, reasoning included.
-    off = build_footer_line(
-        **{**common, "user_config": {"display": {"runtime_footer": {"enabled": False}}}},
-        reasoning_effort="high",
-    )
-    assert off == ""
-
-
-def test_footer_enabled_by_default_and_matches_config_defaults():
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-    resolved = resolve_footer_config({}, "telegram")
-    assert resolved["enabled"] is True
-    cfg = DEFAULT_CONFIG["display"]["runtime_footer"]
-    assert cfg["enabled"] is resolved["enabled"]
-    assert cfg["fields"] == resolved["fields"]
-
-
 def test_enabled_without_fields_gives_timing():
     out = build_footer_line(
-        user_config={"display": {"runtime_footer": {"enabled": True}}},
-        platform_key="discord", model="openai/gpt-5.4",
+        model="openai/gpt-5.4",
         context_tokens=50_000, context_length=1_000_000,
         turn_time=20.0, api_time=12.0, tool_time=5.0, api_calls=3, tool_calls=9,
     )
     assert out == "gpt-5.4 · 5% · 20s · api 12s · tools 5.0s · other 3.0s · 3 calls · 9 tools"
-
-
-def test_explicit_disable_and_explicit_fields_win():
-    common = dict(platform_key="discord", model="m", context_tokens=10, context_length=100,
-                  tool_calls=2)
-    assert build_footer_line(
-        user_config={"display": {"runtime_footer": {"enabled": False}}}, **common) == ""
-    assert build_footer_line(
-        user_config={"display": {"runtime_footer": {"fields": ["model"]}}}, **common) == "m"
 
 
 @pytest.mark.parametrize("count,expected", [(1, "1 tool"), (9, "9 tools"), (0, ""), (None, "")])
@@ -395,8 +280,6 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     """build_footer_line with default fields is unaffected by turn_seconds."""
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     common = dict(
-        user_config={"display": {"runtime_footer": {"enabled": True}}},
-        platform_key="discord",
         model="openai/gpt-5.4",
         context_tokens=50_247,
         context_length=1_000_000,

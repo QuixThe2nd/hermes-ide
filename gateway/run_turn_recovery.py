@@ -48,12 +48,10 @@ def _rebuild_durable_history(turn, preparation: TurnMessagePreparation) -> None:
     (
         preparation.agent_history,
         preparation.observed_group_context,
-        turn._cursor_recovery_note,
     ) = _build_gateway_agent_history(
         ctx.history,
         channel_prompt=ctx.channel_prompt,
         inject_timestamps=_message_timestamps_enabled(ctx.user_config),
-        hermes_session_id=ctx.session_id,
     )
     preparation.history_media_paths = _collect_history_media_paths(
         preparation.agent_history
@@ -217,10 +215,114 @@ def _parse_restart_success_content(content: Any) -> Optional[tuple[Optional[str]
     return old_process, new_process
 
 
+def _trusted_restart_result(content: Any) -> tuple[bool, Optional[str]]:
+    """Trusted restart result → (trusted, old process identity if recoverable)."""
+    from agent.turn_control import GATEWAY_RESTART_CONTROL, TURN_CONTROL_FIELD
+
+    if content == "Restarted successfully":
+        return True, None
+    rich = _parse_restart_success_content(content)
+    if rich is not None:
+        return True, rich[0]
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        payload = None
+    if not (
+        isinstance(payload, dict)
+        and payload.get("success") is True
+        and payload.get(TURN_CONTROL_FIELD) == GATEWAY_RESTART_CONTROL
+    ):
+        return False, None
+    process = payload.get("process")
+    old_process = (
+        process.strip()
+        if isinstance(process, str) and process.strip()
+        else None
+    )
+    return True, old_process
+
+
+_RESTART_CLOSE_MARKER = (
+    "[Turn ended here: gateway restart was queued by the restart tool]"
+)
+
+
+def _is_restart_requester_task_final(history: list) -> bool:
+    """A completed restart() turn already wrote a real assistant final.
+
+    True only when the history holds a restart tool call with a trusted
+    result (the same trust rules ``_repair_restart_tool_tail`` uses) that a
+    later assistant text final — not merely the synthetic close marker —
+    follows, and the user message that preceded the call was not a bare
+    ``/restart`` (which keeps the interactive ask-what-next note).
+    """
+    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+
+    if not isinstance(history, list):
+        return False
+    for index, row in enumerate(history):
+        if not (isinstance(row, dict) and row.get("role") == "assistant"):
+            continue
+        tool_calls = row.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        restart_call = None
+        for call in tool_calls:
+            if (
+                isinstance(call, dict)
+                and isinstance(call.get("function"), dict)
+                and call["function"].get("name") == "restart"
+            ):
+                restart_call = call
+                break
+        if restart_call is None:
+            continue
+        for prior in reversed(history[:index]):
+            if isinstance(prior, dict) and prior.get("role") == "user":
+                if str(prior.get("content") or "").strip() == "/restart":
+                    return False
+                break
+        id_variants = tool_call_id_variants(restart_call)
+        result_seen = False
+        for later in history[index + 1:]:
+            if not isinstance(later, dict):
+                continue
+            if later.get("role") == "tool" and not id_variants.isdisjoint(
+                tool_result_id_variants(later.get("tool_call_id"))
+            ):
+                if not _trusted_restart_result(later.get("content"))[0]:
+                    return False
+                result_seen = True
+                continue
+            if (
+                result_seen
+                and later.get("role") == "assistant"
+                and not later.get("tool_calls")
+                and isinstance(later.get("content"), str)
+                and later.get("content").strip()
+                and later.get("content") != _RESTART_CLOSE_MARKER
+            ):
+                return True
+    return False
+
+
+def _restart_requester_task_final_resume(
+    reason: Optional[str], message: Any, history: list
+) -> bool:
+    """An empty-message restart_requester resume whose task already has a final."""
+    from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON
+
+    return (
+        reason == RESTART_REQUESTER_RESUME_REASON
+        and not (isinstance(message, str) and message.strip())
+        and _is_restart_requester_task_final(history)
+    )
+
+
 def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
     """Return the exact successful restart result the successor must resume from."""
     from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
-    from agent.turn_control import GATEWAY_RESTART_CONTROL, TURN_CONTROL_FIELD
 
     if not history:
         return None
@@ -230,8 +332,7 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
         isinstance(close_row, dict)
         and close_row.get("role") == "assistant"
         and not close_row.get("tool_calls")
-        and close_row.get("content")
-        == "[Turn ended here: gateway restart was queued by the restart tool]"
+        and close_row.get("content") == _RESTART_CLOSE_MARKER
     )
     if drop_close:
         tail_index -= 1
@@ -282,26 +383,9 @@ def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
         if id_variants.isdisjoint(tool_result_id_variants(row.get("tool_call_id"))):
             continue
         content = row.get("content")
-        trusted_result = content == "Restarted successfully"
-        if not trusted_result:
-            rich_result = _parse_restart_success_content(content)
-            if rich_result is not None:
-                old_process, _rich_new_process = rich_result
-                trusted_result = True
-        if not trusted_result:
-            try:
-                payload = json.loads(content)
-            except (TypeError, ValueError):
-                payload = None
-            trusted_result = bool(
-                isinstance(payload, dict)
-                and payload.get("success") is True
-                and payload.get(TURN_CONTROL_FIELD) == GATEWAY_RESTART_CONTROL
-            )
-            if trusted_result and isinstance(payload, dict):
-                process = payload.get("process")
-                if isinstance(process, str) and process.strip():
-                    old_process = process.strip()
+        trusted_result, result_old_process = _trusted_restart_result(content)
+        if trusted_result and result_old_process:
+            old_process = result_old_process
         if not trusted_result:
             return None
         matching_results.append(index)
@@ -468,14 +552,6 @@ def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None
     preparation.blocked_error = "forced_resume_text_tail_trim_failed"
 
 
-def _append_cursor_recovery_note(turn, preparation: TurnMessagePreparation) -> None:
-    ctx = turn._ctx
-    note = getattr(turn, "_cursor_recovery_note", None)
-    if not note:
-        return
-    ctx.message = f"{note}\n\n{ctx.message}" if ctx.message else note
-    preparation.continue_interrupted_turn = False
-
 
 def prepare_turn_message(
     turn,
@@ -492,6 +568,9 @@ def prepare_turn_message(
         build_resume_recovery_note,
         is_forced_interruption_reason,
     )
+    from gateway.serving_identity import serving_identity_clause
+
+    serving_identity = serving_identity_clause(turn._runner)
 
     ctx = turn._ctx
     preparation = TurnMessagePreparation(
@@ -541,10 +620,12 @@ def prepare_turn_message(
                         resume_reason,
                         ctx.message,
                         interactive=turn._resume_note_interactive(),
+                        continue_task=_restart_requester_task_final_resume(
+                            resume_reason, ctx.message, ctx.history
+                        ),
+                        serving_identity=serving_identity,
                     )
                 )
-        if not restart_tool_continuation:
-            _append_cursor_recovery_note(turn, preparation)
     elif fresh_tool_tail:
         preparation.persist_user_message = ctx.message
         ctx.message = (
@@ -554,9 +635,6 @@ def prepare_turn_message(
             "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
             + ctx.message
         )
-    elif not resume_pending:
-        # Preserve ordinary observed-group cursor recovery outside resume.
-        _append_cursor_recovery_note(turn, preparation)
 
     turn._prepend_pending_note("_pending_skills_reload_notes")
     if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
@@ -571,5 +649,9 @@ def prepare_turn_message(
                 resume_reason,
                 "",
                 interactive=turn._resume_note_interactive(),
+                continue_task=_restart_requester_task_final_resume(
+                    resume_reason, "", ctx.history
+                ),
+                serving_identity=serving_identity,
             )
     return preparation

@@ -2,7 +2,7 @@
 
 A host that mints one physical ``session_id`` per RESPONSE re-keys every
 conversation-affinity hint Hermes sends — ``prompt_cache_key`` on both
-OpenAI-wire transports, the OpenRouter/Nous sticky ``session_id``, and xAI's
+OpenAI-wire transports, the OpenRouter sticky ``session_id``, and xAI's
 ``x-grok-conv-id`` — so the conversation never lands back on the routing
 bucket it warmed. Hermes cannot infer the logical conversation from the id's
 syntax (#79017's failure class), but it does not have to: the host declares
@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.portal_tags import (
+from agent.conversation_scope import (
     get_affinity_scope,
     reset_affinity_scope,
     reset_conversation_context,
@@ -41,7 +41,7 @@ from hermes_state import SessionDB
 # UUID4 hex) and the ``POST /v1/responses`` shape (a bare ``str(uuid4())``).
 RUN_1 = "gc_run_room7_default_Reviewer_11111111111141118111111111111111"
 RUN_2 = "gc_run_room7_default_Reviewer_22222222222242228222222222222222"
-CHAT_KEY = "agent:main:telegram:group:-100123:456"
+CHAT_KEY = "agent:main:discord:group:-100123:456"
 
 
 @pytest.fixture()
@@ -93,7 +93,7 @@ class TestDeclaredConversationScope:
 
     def test_distinct_declarations_stay_isolated(self, db):
         db.create_session(RUN_1, source="api_server")
-        other = _agent(RUN_1, db, "agent:main:telegram:group:-100123:999")
+        other = _agent(RUN_1, db, "agent:main:discord:group:-100123:999")
 
         assert resolve_prompt_cache_scope(
             _agent(RUN_1, db, CHAT_KEY)
@@ -109,7 +109,7 @@ class TestDeclaredConversationScope:
         scope = resolve_prompt_cache_scope(_agent(RUN_1, db, CHAT_KEY))
 
         assert scope.startswith("gwk_")
-        assert "telegram" not in scope
+        assert "discord" not in scope
         assert "-100123" not in scope
         assert len(scope) <= 64  # provider key budget
 
@@ -139,10 +139,10 @@ class TestDeclaredConversationScope:
 
     def test_branch_child_ignores_the_shared_chat_key(self, db):
         """/branch keys off session_id, not the chat key — #79161 isolation."""
-        db.create_session("root-sess", source="telegram")
+        db.create_session("root-sess", source="discord")
         db.create_session(
             "branch-child",
-            source="telegram",
+            source="discord",
             parent_session_id="root-sess",
             model_config={"_branched_from": "root-sess"},
         )
@@ -157,10 +157,10 @@ class TestDeclaredConversationScope:
         )
 
     def test_delegate_child_ignores_the_declaration(self, db):
-        db.create_session("parent-sess", source="telegram")
+        db.create_session("parent-sess", source="discord")
         db.create_session(
             "delegate-child",
-            source="telegram",
+            source="discord",
             parent_session_id="parent-sess",
             model_config={"_delegate_from": "parent-sess"},
         )
@@ -171,7 +171,7 @@ class TestDeclaredConversationScope:
         )
 
     def test_tool_child_ignores_the_declaration(self, db):
-        db.create_session("parent-sess", source="telegram")
+        db.create_session("parent-sess", source="discord")
         db.create_session("tool-child", source="tool", parent_session_id="parent-sess")
 
         assert (
@@ -181,7 +181,7 @@ class TestDeclaredConversationScope:
 
     def test_background_review_fork_ignores_the_declaration(self, db):
         """The review fork clones the live runtime, key included."""
-        db.create_session("live-sess", source="telegram")
+        db.create_session("live-sess", source="discord")
         agent = _agent("review-fork", db, CHAT_KEY)
         agent._persist_disabled = True
 
@@ -261,7 +261,7 @@ class TestOneIdentityReadPerResolution:
 
             def get_session(self, sid):
                 calls.append(("row", sid))
-                return {"source": "telegram"}
+                return {"source": "discord"}
 
             def latest_conversation_boundary(self, key, source):
                 return None
@@ -423,19 +423,6 @@ class TestProviderStickyKeys:
 
         assert headers["x-grok-conv-id"] == headers_next["x-grok-conv-id"] == scope
 
-    def test_nous_sticky_key_follows_the_declared_scope(self):
-        from providers import get_provider_profile
-
-        scope = declared_conversation_scope(_agent(RUN_1, None, CHAT_KEY))
-        token = set_affinity_scope(scope)
-        try:
-            body = get_provider_profile("nous").build_extra_body(session_id=RUN_1)
-            body_next = get_provider_profile("nous").build_extra_body(session_id=RUN_2)
-        finally:
-            reset_affinity_scope(token)
-
-        assert body["session_id"] == body_next["session_id"] == scope
-
 
 class TestConversationGenerationRotates:
     """The declared key must not outlive the conversation it names.
@@ -451,12 +438,12 @@ class TestConversationGenerationRotates:
     and the two fences cannot drift.
     """
 
-    KEY = "agent:main:telegram:dm:123"
+    KEY = "agent:main:discord:dm:123"
 
     def _keyed(self, db, session_id):
         db.create_session(
             session_id=session_id,
-            source="telegram",
+            source="discord",
             session_key=self.KEY,
         )
         return _agent(session_id, db, self.KEY)
@@ -531,9 +518,9 @@ class TestConversationGenerationRotates:
         mine = self._keyed(db, "sess-mine")
         scope_mine = resolve_prompt_cache_scope(mine)
 
-        other_key = "agent:main:telegram:dm:999"
+        other_key = "agent:main:discord:dm:999"
         db.create_session(
-            session_id="sess-other", source="telegram", session_key=other_key
+            session_id="sess-other", source="discord", session_key=other_key
         )
         db.end_session("sess-other", "session_reset")
 
@@ -546,7 +533,7 @@ class TestConversationGenerationRotates:
         rotated = self._keyed(db, "sess-B")
         scope = resolve_prompt_cache_scope(rotated)
         assert self.KEY not in scope
-        assert "telegram" not in scope
+        assert "discord" not in scope
         assert scope.startswith("gwk_")
         assert len(scope) == len("gwk_") + 24
 
@@ -612,7 +599,7 @@ class TestPeerIdentityIsSourceQualified:
     """The generation and the carrier use the same identity tuple as recovery.
 
     ``X-Hermes-Session-Key`` accepts any authenticated caller-supplied string,
-    so an API conversation may legally carry the same key as a Telegram row in
+    so an API conversation may legally carry the same key as a Discord row in
     one database. Keying on the string alone let a ``/new`` on that unrelated
     row rotate this conversation's affinity identity, while
     ``find_latest_gateway_session_for_peer`` correctly refused to cross the
@@ -634,7 +621,7 @@ class TestPeerIdentityIsSourceQualified:
         before = resolve_prompt_cache_scope(mine)
 
         # Same key string, different platform, reset only over there.
-        self._row(db, "tg-1", "telegram")
+        self._row(db, "tg-1", "discord")
         db.end_session("tg-1", "session_reset")
 
         assert resolve_prompt_cache_scope(self._row(db, "api-2", "api_server")) == before
@@ -647,14 +634,14 @@ class TestPeerIdentityIsSourceQualified:
 
     def test_equal_keys_under_different_sources_never_share_a_scope(self, db):
         mine = resolve_prompt_cache_scope(self._row(db, "api-1", "api_server"))
-        theirs = resolve_prompt_cache_scope(self._row(db, "tg-1", "telegram"))
+        theirs = resolve_prompt_cache_scope(self._row(db, "tg-1", "discord"))
         assert mine != theirs
         assert mine.startswith("gwk_") and theirs.startswith("gwk_")
 
     def test_the_boundary_read_is_peer_scoped(self, db):
-        db.create_session(session_id="tg-1", source="telegram", session_key=self.KEY)
+        db.create_session(session_id="tg-1", source="discord", session_key=self.KEY)
         db.end_session("tg-1", "session_reset")
-        assert db.latest_conversation_boundary(self.KEY, "telegram") is not None
+        assert db.latest_conversation_boundary(self.KEY, "discord") is not None
         assert db.latest_conversation_boundary(self.KEY, "api_server") is None
         assert db.latest_conversation_boundary(self.KEY, "") is None
 
@@ -672,8 +659,8 @@ class TestGenerationSurvivesPruning:
     history, and only ever increments.
     """
 
-    KEY = "agent:main:telegram:dm:777"
-    SOURCE = "telegram"
+    KEY = "agent:main:discord:dm:777"
+    SOURCE = "discord"
 
     def _keyed(self, db, sid):
         db.create_session(session_id=sid, source=self.SOURCE, session_key=self.KEY)
@@ -780,7 +767,7 @@ class TestSourceOverrideDomain:
     override, and hashed the same scope (@andrexibiza on #98811).
     """
 
-    KEY = "agent:main:telegram:dm:888"
+    KEY = "agent:main:discord:dm:888"
 
     def test_the_pre_row_source_matches_persistence(self, db, monkeypatch):
         from agent.prompt_cache_scope import _agent_source
@@ -788,7 +775,7 @@ class TestSourceOverrideDomain:
         monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
         agent = SimpleNamespace(
             session_id="s-none", _session_db=db, _gateway_session_key=self.KEY,
-            platform="telegram",
+            platform="discord",
         )
         assert _agent_source(agent, "", db) == "override-src"
 
@@ -801,7 +788,7 @@ class TestSourceOverrideDomain:
             )
             return SimpleNamespace(
                 session_id=sid, _session_db=db,
-                _gateway_session_key=self.KEY, platform="telegram",
+                _gateway_session_key=self.KEY, platform="discord",
             )
 
         before = resolve_prompt_cache_scope(keyed("s-a"))

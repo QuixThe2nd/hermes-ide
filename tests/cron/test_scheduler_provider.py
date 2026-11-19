@@ -466,6 +466,78 @@ def test_failing_tick_records_liveness_but_not_success():
     assert all(b is False for b in beats), "a failing tick wrongly bumped the success marker"
 
 
+def test_suppressed_dispatch_records_liveness_but_not_success():
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    beats = []
+    loop_beat = threading.Event()
+    stop = threading.Event()
+
+    def heartbeat(success=False):
+        beats.append(success)
+        if len(beats) >= 2:
+            loop_beat.set()
+
+    provider = InProcessCronScheduler()
+    with patch.object(provider, "recover_interrupted", return_value=0), \
+         patch("cron.scheduler.tick") as tick, \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=heartbeat):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 60, "can_dispatch": lambda: False},
+            daemon=True,
+        )
+        thread.start()
+        assert loop_beat.wait(10), "ticker did not record a suppressed-tick heartbeat"
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    tick.assert_not_called()
+    assert beats[:2] == [False, False]
+
+
+def test_dispatch_withdrawn_during_locked_tick_is_not_success():
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    beats = []
+    inner_admission = []
+    loop_beat = threading.Event()
+    stop = threading.Event()
+    gate_values = iter([True, False])
+
+    def heartbeat(success=False):
+        beats.append(success)
+        if len(beats) >= 2:
+            loop_beat.set()
+
+    def tick(*args, **kwargs):
+        inner_admission.append(kwargs["can_dispatch"]())
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch.object(provider, "recover_interrupted", return_value=0), \
+         patch("cron.scheduler.tick", side_effect=tick), \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=heartbeat):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 60, "can_dispatch": lambda: next(gate_values)},
+            daemon=True,
+        )
+        thread.start()
+        try:
+            assert loop_beat.wait(10), "ticker did not record a suppressed-tick heartbeat"
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert inner_admission == [False]
+    assert beats[:2] == [False, False]
+
+
 def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     """record_ticker_heartbeat writes fresh timestamps atomically; the age
     getters read them back as small positive ages."""
@@ -598,6 +670,44 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
     # With 2 profiles and multiple iterations, we should have seen at least 2 calls.
     assert len(tick_count) >= len(profile_homes), \
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
+
+
+def test_multiplex_suppressed_dispatch_does_not_mark_any_profile_clean(tmp_path):
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    home = tmp_path / "default"
+    (home / "cron").mkdir(parents=True)
+    beats = []
+    loop_beat = threading.Event()
+    stop = threading.Event()
+
+    def heartbeat(success=False):
+        beats.append(success)
+        if len(beats) >= 2:
+            loop_beat.set()
+
+    provider = InProcessCronScheduler()
+    with patch.object(provider, "recover_interrupted", return_value=0), \
+         patch("cron.scheduler.tick") as tick, \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=heartbeat):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 60,
+                "can_dispatch": lambda: False,
+                "profile_homes": [("default", home)],
+            },
+            daemon=True,
+        )
+        thread.start()
+        assert loop_beat.wait(10), "multiplex ticker did not record a suppressed-tick heartbeat"
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    tick.assert_not_called()
+    assert beats[:2] == [False, False]
 
 
 def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):

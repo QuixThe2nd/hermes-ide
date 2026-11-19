@@ -11,6 +11,7 @@ from __future__ import annotations
 from plugins.deep_research.citations import (
     extract_report_urls,
     normalize_url,
+    strip_safe_unledgered_urls,
     validate_citations,
 )
 
@@ -65,3 +66,38 @@ class TestParenProvenance:
         assert normalize_url(PAREN_URL) == PAREN_URL
         # An unbalanced trailing paren is prose, not URL.
         assert normalize_url("https://example.org/a)") == "https://example.org/a"
+
+
+class TestStripSafeUnledgeredUrls:
+    LEDGERED = "https://example.org/primary"
+
+    def test_sources_item_with_only_unledgered_url_is_dropped(self) -> None:
+        text = "## Sources\n\n- https://example.com/homepage\n- kept\n"
+        out = strip_safe_unledgered_urls(text, [self.LEDGERED])
+        assert "https://example.com/homepage" not in out
+        assert "- kept" in out
+
+    def test_mixed_sources_item_keeps_ledgered_url_and_label(self) -> None:
+        text = f"## Sources\n\n- label [s]({self.LEDGERED}) plus https://example.net/x\n"
+        out = strip_safe_unledgered_urls(text, [self.LEDGERED])
+        assert self.LEDGERED in out and "label" in out
+        assert "https://example.net/x" not in out
+
+    def test_body_line_with_only_invented_url_is_unchanged(self) -> None:
+        text = f"A body claim on [fake](https://example.com/i-made-this-up) alone.\n"
+        assert strip_safe_unledgered_urls(text, [self.LEDGERED]) == text
+
+    def test_table_row_loses_only_the_unledgered_url(self) -> None:
+        row = f"| a | [good]({self.LEDGERED}) and https://example.org/redundant-row |\n"
+        out = strip_safe_unledgered_urls(row, [self.LEDGERED])
+        assert self.LEDGERED in out
+        assert "https://example.org/redundant-row" not in out
+
+    def test_notes_heading_ends_the_summary_section(self) -> None:
+        text = (
+            "## Sources\n\n- https://example.com/homepage\n\n"
+            "## Notes\n\n- https://example.com/also-fake\n"
+        )
+        out = strip_safe_unledgered_urls(text, [self.LEDGERED])
+        assert "https://example.com/homepage" not in out
+        assert "https://example.com/also-fake" in out

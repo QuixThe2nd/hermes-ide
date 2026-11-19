@@ -89,10 +89,6 @@
    "mixin_class": "GatewayInboundMixin"
   },
   {
-   "name": "GatewayRunner._prepare_clarify_reply_text",
-   "mixin_class": "GatewayInboundMixin"
-  },
-  {
    "name": "GatewayRunner._consume_pending_native_image_paths",
    "mixin_class": "GatewayInboundMixin"
   },
@@ -122,26 +118,6 @@
   },
   {
    "name": "GatewayRunner._enrich_message_with_vision",
-   "mixin_class": "GatewayInboundMixin"
-  },
-  {
-   "name": "GatewayRunner._enrich_message_with_transcription",
-   "mixin_class": "GatewayInboundMixin"
-  },
-  {
-   "name": "GatewayRunner._pending_event_audio_paths",
-   "mixin_class": "GatewayInboundMixin"
-  },
-  {
-   "name": "GatewayRunner._transcribe_pending_audio_event_once",
-   "mixin_class": "GatewayInboundMixin"
-  },
-  {
-   "name": "GatewayRunner._echo_pending_stt_transcripts_once",
-   "mixin_class": "GatewayInboundMixin"
-  },
-  {
-   "name": "GatewayRunner._transcribe_and_echo_pending_voice",
    "mixin_class": "GatewayInboundMixin"
   }
  ]

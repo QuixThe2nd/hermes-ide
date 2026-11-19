@@ -13,7 +13,7 @@ from gateway.run import (
 from gateway.run_inbound import GatewayInboundMixin
 
 
-KEY = "agent:main:telegram:dm:106963"
+KEY = "agent:main:discord:dm:106963"
 
 
 class _RecordingAgent:

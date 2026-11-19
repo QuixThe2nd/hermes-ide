@@ -1,7 +1,7 @@
 """Repair of gateway sessions that lost their routing identity (#82616).
 
 Incident shape (production, Aug 2026): a state.db write-path failure left the
-live Telegram DM in a session row that never received its identity columns.
+live Discord DM in a session row that never received its identity columns.
 That row is invisible to ``find_latest_gateway_session_for_peer`` — both of
 its queries require the very columns the row lacks — so after a gateway
 restart the chat resolved to a keyed sibling three days older and the
@@ -21,9 +21,9 @@ from hermes_state import SessionDB
 
 
 PEER = {
-    "source": "telegram",
+    "source": "discord",
     "user_id": "6308981865",
-    "session_key": "agent:main:telegram:dm:6308981865",
+    "session_key": "agent:main:discord:dm:6308981865",
     "chat_id": "6308981865",
     "chat_type": "dm",
 }
@@ -41,7 +41,7 @@ def _mk_session(
     session_id,
     *,
     keyed=True,
-    source="telegram",
+    source="discord",
     user_id=PEER["user_id"],
     started_at=None,
     last_activity_at=None,
@@ -76,7 +76,7 @@ def _mk_session(
                 "UPDATE sessions SET origin_json = ?, display_name = ? "
                 "WHERE id = ?",
                 (
-                    '{"platform": "telegram", "chat_id": "6308981865"}',
+                    '{"platform": "discord", "chat_id": "6308981865"}',
                     "Teknium",
                     session_id,
                 ),
@@ -191,7 +191,7 @@ class TestDetection:
         with db._lock:
             db._conn.execute(
                 "UPDATE sessions SET session_key = ? WHERE id = ?",
-                ("agent:main:telegram:dm:999", "20260803_120104_other"),
+                ("agent:main:discord:dm:999", "20260803_120104_other"),
             )
             db._conn.commit()
         record = db.find_orphaned_gateway_sessions()[0]
@@ -236,7 +236,7 @@ class TestDetection:
         stale, _ = _incident(db)
         with db._lock:
             db._conn.execute(
-                "UPDATE sessions SET source = 'discord' WHERE id = ?", (stale,)
+                "UPDATE sessions SET source = 'slack' WHERE id = ?", (stale,)
             )
             db._conn.commit()
         record = db.find_orphaned_gateway_sessions()[0]
@@ -296,7 +296,7 @@ class TestAdoption:
         stale, orphan = _incident(db)
         with db._lock:
             db._conn.execute(
-                "UPDATE sessions SET source = 'discord' WHERE id = ?", (orphan,)
+                "UPDATE sessions SET source = 'slack' WHERE id = ?", (orphan,)
             )
             db._conn.commit()
         assert db.adopt_orphaned_gateway_session(orphan, stale) is False

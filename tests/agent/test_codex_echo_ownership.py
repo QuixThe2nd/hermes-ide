@@ -16,7 +16,7 @@ from run_agent import AIAgent
 def test_only_submitted_leading_echo_is_excluded(tmp_path, platform_id, projection):
     db = SessionDB(tmp_path / "state.db")
     try:
-        db.create_session(session_id="echo", source="telegram", model="codex")
+        db.create_session(session_id="echo", source="discord", model="codex")
         agent = object.__new__(AIAgent)
         agent.session_id = "echo"
         agent._session_db = db

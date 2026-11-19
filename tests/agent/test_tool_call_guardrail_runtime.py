@@ -96,7 +96,7 @@ def _hard_stop_config(**overrides) -> dict:
 
 
 def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
-    agent = _make_agent("web_search", platform="telegram")
+    agent = _make_agent("web_search", platform="discord")
     args = {"query": "same"}
 
     _seed_exact_failures(agent, "web_search", args, count=5)

@@ -265,15 +265,6 @@ class CLISessionMixin:
             ctx_label = None
 
         lines = ["Hermes CLI Status", "", *status_lines(fields, "session_id", "path", "title", "model")]
-        try:
-            from agent.i18n import t
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
-
-            if resolve_provider("auto") == "nous" and guest_carries_inference():
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         optional = (("Reasoning", reasoning_label), ("Context", ctx_label))
         for label, value in optional:
             if value:

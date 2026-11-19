@@ -102,7 +102,7 @@ class TestClarifyDictChoices:
 
     LLMs sometimes emit [{"description": "..."}] instead of bare strings. The
     naive str(c) coercion leaked the Python dict repr onto every surface (CLI
-    panel, Discord buttons, Telegram list) AND returned it verbatim as the
+    panel, Discord buttons, Slack list) AND returned it verbatim as the
     user's answer. _flatten_choice normalises at the one platform-agnostic
     entry point so the whole class is fixed in one place.
     """

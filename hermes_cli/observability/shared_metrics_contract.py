@@ -415,7 +415,7 @@ _SURFACE_ALIASES = {
     "api_server": "api",
     **dict.fromkeys(("cron", "scheduler", "scheduled"), "scheduled_task"),
 }
-_KNOWN_GATEWAY_PLATFORMS = frozenset({"discord", "email", "slack", "telegram", "teams", "whatsapp"})
+_KNOWN_GATEWAY_PLATFORMS = frozenset({"discord", "email", "slack", "teams", "whatsapp"})
 
 
 def execution_surface(kwargs: dict[str, Any]) -> str:

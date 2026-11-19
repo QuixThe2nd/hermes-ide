@@ -31,7 +31,6 @@ class TestApiModeRegistration:
             "chat_completions",
             "codex_responses",
             "anthropic_messages",
-            "bedrock_converse",
         ):
             assert mode in _VALID_API_MODES
 
@@ -75,7 +74,7 @@ class TestMaybeApplyCodexAppServerRuntime:
             "xai",
             "qwen-oauth",
             "opencode-zen",
-            "bedrock",
+            "vertex",
             "",
         ],
     )
@@ -367,7 +366,7 @@ class TestSpawnEnvSecretStripping:
     def test_tier1_and_internal_secrets_stripped_from_spawn_env(self, monkeypatch):
         for var, val in {
             "GH_TOKEN": "ghp-secret",
-            "TELEGRAM_BOT_TOKEN": "bot-secret",
+            "DISCORD_BOT_TOKEN": "bot-secret",
             "MODAL_TOKEN_SECRET": "modal-secret",
             "HERMES_DASHBOARD_SESSION_TOKEN": "dash-secret",
             "AUXILIARY_VISION_API_KEY": "aux-secret",
@@ -379,7 +378,7 @@ class TestSpawnEnvSecretStripping:
 
         env = self._capture_spawn_env(monkeypatch)
         for var in (
-            "GH_TOKEN", "TELEGRAM_BOT_TOKEN", "MODAL_TOKEN_SECRET",
+            "GH_TOKEN", "DISCORD_BOT_TOKEN", "MODAL_TOKEN_SECRET",
             "HERMES_DASHBOARD_SESSION_TOKEN", "AUXILIARY_VISION_API_KEY",
             "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_DELIVERY_KEY",
         ):

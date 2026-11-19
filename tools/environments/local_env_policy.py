@@ -7,14 +7,12 @@ import os
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
-# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"`` (Bedrock):
-# only the Bedrock bearer token, which no aws/terraform/boto3 toolchain uses. The
-# general AWS chain stays inheritable on purpose — the local terminal is the user's
-# trusted operator shell (SECURITY.md §3.2) and env_passthrough can never re-allow a
-# blocklisted name (GHSA-rhgp-j443-p4rf), so blocking it would be unrecoverable.
-_AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({"AWS_BEARER_TOKEN_BEDROCK"})
 
 _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
+    # Bedrock bearer token from before the provider strip (#32314): kept on the
+    # static list so old tokens in a user's env never leak to child processes,
+    # even though no bundled provider uses auth_type="aws_sdk" anymore.
+    "AWS_BEARER_TOKEN_BEDROCK",
     "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_ORG_ID",
     "OPENAI_ORGANIZATION", "OPENROUTER_API_KEY", "ANTHROPIC_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "LLM_MODEL", "GOOGLE_API_KEY",
@@ -47,8 +45,6 @@ def _build_provider_env_blocklist() -> frozenset:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
-            if pconfig.auth_type == "aws_sdk":
-                blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
     except ImportError:
@@ -130,7 +126,7 @@ _PROFILE_GATE_ENV_MARKERS = (
 
 
 def is_profile_gate_env(name: str) -> bool:
-    """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
+    """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_ALLOW_ALL_USERS``,
     ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
     for ANOTHER profile must never inherit."""
     upper = name.upper()
@@ -165,8 +161,8 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # GitHub auth
     "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID",
-    # Gateway / messaging bot tokens and access control
-    "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
+    # Gateway / messaging bot tokens and access control.
+    "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
     # Gateway relay auth triplet. _SECRET/_DELIVERY_KEY are also matched by
     # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be

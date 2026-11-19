@@ -286,7 +286,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     from tools.terminal_tool_config import _is_container_backend
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
-        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
+        _select_image, get_session_cwd, resolve_task_overrides)
 
     config = _get_env_config()
     env_type = config["env_type"]
@@ -316,7 +316,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     terminal_env = _create_configured_env(
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+        host_cwd=None,
         local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
@@ -1193,8 +1193,7 @@ PATCH_SCHEMA = {
         "Returns a unified diff. Auto-runs syntax checks after editing. "
         "Finds a unique string and replaces it. "
         "Source-code edits do not belong here — route code changes through "
-        "delegate_agent(backend=\"cursor\") (small/medium) or "
-        "delegate_agent(backend=\"claude\") with /goal (medium/large); "
+        "delegate_agent(backend=\"claude\") with /goal; "
         "this tool is for configs, docs, memory, and scratch."
     ),
     "parameters": {
@@ -1242,8 +1241,7 @@ _PATCH_V4A_DESCRIPTION = (
     "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
     "REQUIRED PARAMETERS: mode, patch. "
     "Source-code edits do not belong here — route code changes through "
-    "delegate_agent(backend=\"cursor\") (small/medium) or "
-    "delegate_agent(backend=\"claude\") with /goal (medium/large); "
+    "delegate_agent(backend=\"claude\") with /goal; "
     "this tool is for configs, docs, memory, and scratch."
 )
 
@@ -1267,7 +1265,7 @@ def _is_openai_family_main() -> bool:
 
     Provider-family-coarse on purpose (no per-model training-diet table to
     go stale): direct OpenAI providers always qualify; on aggregators
-    (openrouter/nous/azure...) the MODEL slug decides (gpt-*/o-series/
+    (openrouter/azure...) the MODEL slug decides (gpt-*/o-series/
     codex). Fail-closed to the universal replace-only schema.
     """
     try:

@@ -177,7 +177,6 @@ _PREFIX_PATTERNS = [
     r"syt_[A-Za-z0-9]{10,}",            # Matrix access token
     r"retaindb_[A-Za-z0-9]{10,}",       # RetainDB API key
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
-    r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
@@ -493,9 +492,6 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 # values would otherwise leak when a curl command is echoed into tool output.
 _SECRET_HEADER_NAMES = r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
 _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
-
-# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars.
-_TELEGRAM_RE = re.compile(r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 
@@ -919,7 +915,6 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
-        text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     if "BEGIN" in text and "-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)

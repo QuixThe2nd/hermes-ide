@@ -76,9 +76,9 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
     transport = agent._get_transport()
     if agent.api_mode == "anthropic_messages":
         return transport.response_finish_reason(response)
-    normalized = transport.normalize_response(response)  # Bedrock already normalized at dispatch
+    normalized = transport.normalize_response(response)
     finish_reason = normalized.finish_reason
-    if agent.api_mode != "bedrock_converse" and agent._should_treat_stop_as_truncated(
+    if agent._should_treat_stop_as_truncated(
         finish_reason, normalized, messages
     ):
         agent._vprint(
@@ -201,14 +201,6 @@ def check_api_response(
         _last_preflight_pressure = None
 
     _retry.has_retried_429 = False
-    # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.
-    if agent.provider == "nous":
-        try:
-            from agent.nous_rate_guard import clear_nous_rate_limit
-            from hermes_cli.anon_auth import is_anonymous_agent
-            clear_nous_rate_limit(anonymous=is_anonymous_agent(agent))
-        except Exception:
-            pass
     from agent import relay_llm
 
     relay_llm.complete_logical_call(api_request_id, outcome="success")

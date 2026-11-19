@@ -40,7 +40,7 @@ class TestConnectionsToolsetMigration:
         """A list saved before the toolset shipped is offered it (and records the offer)."""
         platforms = {
             "cli": ["file", "terminal", "web"],
-            "telegram": ["file", "web"],
+            "matrix": ["file", "web"],
         }
         self._write_config(
             tmp_path,
@@ -57,7 +57,7 @@ class TestConnectionsToolsetMigration:
         raw = self._read_config(tmp_path)
 
         assert "connections" in raw["platform_toolsets"]["cli"]
-        assert "connections" in raw["platform_toolsets"]["telegram"]
+        assert "connections" in raw["platform_toolsets"]["matrix"]
         # The offer is recorded so a later uncheck is a recorded decline, not another migration.
         assert "connections" in raw["known_builtin_toolsets"]["cli"]
         added = [entry for entry in results["config_added"] if "connections" in entry.lower()]

@@ -40,7 +40,7 @@ def _jev_decision(label, confidence=0.9):
 
 @pytest.fixture
 def jev_key(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("LITELLM_API_KEY", "test-key")
     return "test-key"
 
 
@@ -75,7 +75,7 @@ def test_classifier_posts_one_jev_decision_and_reuses_contract_draft(jev_key):
     assert post.call_args.kwargs["timeout"] == goal_intent._JEV_TIMEOUT_S
     assert post.call_args.kwargs["allow_redirects"] is False
     body = post.call_args.kwargs["json"]
-    assert body["model"] == "typesafe/jev-1.13"
+    assert body["model"] == "jev-1.14.0"
     assert body["state"]["message"] == message
     assert body["state"]["assistant_last_reply"].startswith("The public route")
     assert body["state"]["user_previous_message"] == "is the service public?"
@@ -186,6 +186,7 @@ def test_classifier_transport_errors_are_fail_safe_after_retry(jev_key, error):
 def test_classifier_without_credential_makes_no_http_call(monkeypatch):
     from hermes_cli.goal_intent import classify
 
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with patch("hermes_cli.goal_intent.requests.post") as post:
         result = classify("status?", {})
@@ -199,7 +200,7 @@ def test_classifier_scoped_credential_wins_over_environment(monkeypatch, jev_key
     from hermes_cli.goal_intent import classify
 
     scope = SimpleNamespace(
-        get_secret=lambda name: "scoped-key" if name == "OPENROUTER_API_KEY" else None,
+        get_secret=lambda name: "scoped-key" if name == "LITELLM_API_KEY" else None,
         installed=True,
     )
     import sys
@@ -230,6 +231,37 @@ def test_classifier_caps_state_fields(jev_key):
     assert len(state["message"]) == goal_intent._MESSAGE_LIMIT == 3000
     assert len(state["assistant_last_reply"]) == goal_intent._LAST_ASSISTANT_LIMIT == 1200
     assert len(state["user_previous_message"]) == goal_intent._PREVIOUS_USER_LIMIT == 1500
+
+
+def test_goal_context_recovers_task_before_empty_tool_call_row(hermes_home):
+    """The current chase and an empty tool-call row must not hide the prior exchange."""
+    from hermes_cli import goals
+    from hermes_cli.goal_intent import build_goal_context
+
+    db = goals._get_session_db()
+    session_id = "goal-context-idle-chase"
+    task = "recover my Snapchat account"
+    reply = "I started checking recovery options."
+    db.create_session(session_id=session_id, source="telegram")
+    db.append_message(session_id, "user", task)
+    db.append_message(session_id, "assistant", reply)
+    db.append_message(
+        session_id,
+        "assistant",
+        "",
+        tool_calls=[{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "terminal", "arguments": "{}"},
+        }],
+    )
+    db.append_message(session_id, "tool", "done", tool_call_id="call-1")
+    db.append_message(session_id, "user", "status?")
+
+    context = build_goal_context(session_id)
+
+    assert context["last_assistant"] == reply
+    assert context["user_previous_message"] == task
 
 
 def test_suppression_control_phrases():
@@ -287,7 +319,7 @@ def _write_record(path, *, ts, label, excerpt, session="s1"):
     record = {
         "ts": ts,
         "session_id": session,
-        "platform": "telegram",
+        "platform": "discord",
         "message_excerpt": excerpt,
         "label": label,
         "reason": f"reason for {excerpt}",

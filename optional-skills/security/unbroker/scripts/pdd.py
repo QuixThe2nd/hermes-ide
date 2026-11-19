@@ -143,8 +143,6 @@ def cmd_doctor(args) -> None:
     rows = [
         ("Camofox browser", caps["camofox"],
          "anti-detect browser for site workflows; CAPTCHAs still require the human path", "set CAMOFOX_URL"),
-        ("Email auto (AgentMail)", caps["agentmail"],
-         "send + auto-verify, per-broker aliases (Mode B/C)", "install agentmail skill / set AGENTMAIL_API_KEY"),
         ("Email send (CLI SMTP)", caps["smtp_send"],
          "`send-email` delivers opt-outs itself (Mode B)", "set EMAIL_ADDRESS / EMAIL_PASSWORD (+ EMAIL_SMTP_HOST)"),
         ("Verify-link poll (CLI IMAP)", caps["imap_read"],
@@ -506,7 +504,7 @@ def cmd_send_email(args) -> None:
         sys.exit(f"error: unknown broker {args.broker!r}")
     cfg = config_mod.load_config()
     mode = cfg.get("email_mode")
-    if mode not in ("programmatic", "alias", "browser"):
+    if mode not in ("programmatic", "browser"):
         sys.exit("error: email_mode is draft_only; run `setup --email-mode browser` (no password; "
                  "sends via your logged-in webmail) or `--email-mode programmatic`, or use "
                  "`render-email` and send it yourself")

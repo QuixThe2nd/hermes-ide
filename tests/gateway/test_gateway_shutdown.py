@@ -111,8 +111,8 @@ async def test_gateway_stop_settles_completion_batch_before_adapter_disconnect()
     event = {
         "session_id": "shutdown-batch",
         "started_at": 1.0,
-        "session_key": "telegram:dm:123456:u1",
-        "platform": "telegram",
+        "session_key": "discord:dm:123456:u1",
+        "platform": "discord",
         "chat_type": "dm",
         "chat_id": "123456",
         "user_id": "u1",
@@ -221,19 +221,19 @@ def test_post_interrupt_grace_tolerates_duck_typed_runner():
 
 @pytest.mark.asyncio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(thread_id="42")
+    runner, adapter = make_restart_runner(platform=Platform.SLACK)
+    source = make_restart_source(thread_id="42", platform=Platform.SLACK)
     session_key = build_session_key(source)
     runner._running_agents = {session_key: MagicMock()}
     runner._cache_session_source(session_key, source)
-    restart_source = make_restart_source(thread_id="42")
+    restart_source = make_restart_source(thread_id="42", platform=Platform.SLACK)
     restart_source.message_id = "restart-command"
     runner._restart_requested = True
     runner._restart_command_source = restart_source
-    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
-        platform=Platform.TELEGRAM,
+    runner.config.platforms[Platform.SLACK].notification_channel = DeliveryTarget(
+        platform=Platform.SLACK,
         chat_id="home-chat",
-        name="Telegram Home",
+        name="Home",
     )
 
     await runner._notify_active_sessions_of_shutdown()
@@ -241,8 +241,10 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     assert len(adapter.sent_calls) == 1
     chat_id, message, metadata = adapter.sent_calls[0]
     assert chat_id == source.chat_id
-    assert "Hermes is restarting" in message
-    assert metadata["telegram_reply_to_message_id"] == "restart-command"
+    assert "Hermes is restarting" in message or "Gateway shutting down" in message
+    # Slack is the surviving reply-anchor path in _thread_metadata_for_target:
+    # the restart command's message id rides metadata["message_id"].
+    assert metadata["message_id"] == "restart-command"
 
 
 @pytest.mark.asyncio

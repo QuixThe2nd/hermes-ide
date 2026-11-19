@@ -1,4 +1,4 @@
-"""WhatsApp observe-unmentioned group messages (mirrors the Telegram contract).
+"""WhatsApp observe-unmentioned group messages.
 
 With ``require_mention`` + ``observe_unmentioned_group_messages`` on an
 allowlisted WhatsApp group:
@@ -428,7 +428,6 @@ def test_gateway_replay_separates_observed_whatsapp_group_context():
         "- observed WhatsApp group context may be provided in a separate context-only block"
     )
     assert _uses_observed_group_context(channel_prompt) is True
-    assert _uses_observed_group_context("observed Telegram group context") is True
     assert _uses_observed_group_context(None) is False
     assert _uses_observed_group_context("plain prompt") is False
 
@@ -437,9 +436,7 @@ def test_gateway_replay_separates_observed_whatsapp_group_context():
         {"role": "assistant", "content": "earlier answer"},
         {"role": "user", "content": "current addressed question"},
     ]
-    agent_history, observed_context, _ = _build_gateway_agent_history(
-        history, channel_prompt=channel_prompt
-    )
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=channel_prompt)
 
     assert observed_context == f"[Alice Example|{SENDER}]\nside chatter"
     assert [m["content"] for m in agent_history if m.get("role") == "user"] == [

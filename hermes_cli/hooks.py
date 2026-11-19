@@ -36,7 +36,7 @@ def _cmd_list(_args) -> None:
     if not specs and not outbound:
         print("No shell hooks or outbound webhooks configured in ~/.hermes/config.yaml.")
         print("See `hermes hooks --help` or")
-        print("    website/docs/user-guide/features/hooks.md")
+        print("    https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks")
         print("for the config schema and worked examples.")
         return
 

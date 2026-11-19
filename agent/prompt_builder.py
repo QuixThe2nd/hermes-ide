@@ -33,8 +33,8 @@ from utils import atomic_json_write, file_signature
 logger = logging.getLogger(__name__)
 
 
-# Default read deadline for context files (SOUL.md, AGENTS.md, .cursorrules,
-# ...); overridable via ``context_file_read_timeout`` in config.yaml.
+# Default read deadline for context files (SOUL.md, AGENTS.md, ...);
+# overridable via ``context_file_read_timeout`` in config.yaml.
 # Intentionally short: network-backed filesystems (iCloud Drive, OneDrive,
 # NFS) can fault-in an evicted file and block a cold read indefinitely, which
 # stalls system-prompt assembly before the first turn.
@@ -81,7 +81,7 @@ def _read_text_with_timeout(
 
 
 def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
-    """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
+    """Scan a context file (AGENTS.md, CLAUDE.md, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
@@ -90,7 +90,7 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     SOUL.md is user-authored and project checkouts never supply it — so a user
     who *documents* "ignore previous instructions" in their security guidance
     must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
-    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
+    (repo AGENTS.md / CLAUDE.md / .hermes.md) arrive with the checkout and keep blocking, and so does
     a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
     ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
@@ -343,7 +343,7 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
 )
 
 # Universal tool-call narration guidance.  Addresses a visibility failure
-# mode on chat platforms (Discord/Telegram/Slack): models silently fire long
+# mode on chat platforms (Discord/Slack): models silently fire long
 # chains of tool calls with no visible explanation, leaving the user staring
 # at a frozen chat with no idea what is happening or whether the agent went
 # off the rails.  This block instructs the model to narrate each tool call —
@@ -581,7 +581,7 @@ _LOCAL_CRON_DELIVERY_NOTE = (
     "Cron jobs scheduled from this session are LOCAL-ONLY: their output is saved (viewable via cronjob "
     "action='list') but is NOT delivered back into this session — there is no live-delivery channel here. If "
     "the user wants to be notified when a job runs, the job's `deliver` must target a gateway-connected "
-    "messaging platform (e.g. deliver='telegram' or 'all'). Do not promise that a deliver='origin' or "
+    "messaging platform (e.g. deliver='discord' or 'all'). Do not promise that a deliver='origin' or "
     "default-deliver cron job will message them in this session."
 )
 
@@ -595,17 +595,9 @@ PLATFORM_HINTS = {
     "whatsapp_cloud": (
         "You are on WhatsApp (Meta Business Cloud API). Standard markdown auto-converts to WhatsApp syntax "
         "\u2014 write markdown freely. No tables \u2014 use bullets or labeled lines. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, audio as voice/audio, other files as "
-        "documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
+        f"{_MEDIA_NATIVE}Images (.jpg, .png) send as photos, videos (.mp4) inline, other files (audio "
+        "included) as documents; ![alt](url) works. NOTE: Meta refuses free-form replies when the user hasn't messaged in "
         "24h (error 131047) \u2014 relevant only for delayed/scheduled sends."
-    ),
-    "telegram": (
-        "You are on Telegram. Standard Markdown auto-converts: **bold**, "
-        "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
-        "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
-        f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
-        "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
-        "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "
@@ -687,15 +679,14 @@ PLATFORM_HINTS = {
         "blockquotes, and links render. Do NOT use tables (popular clients like Element X collapse them into run-on "
         "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
         "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
-        f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
-        "messages, video (.mp4) inline, other files as attachments."
+        f"{_MEDIA_NATIVE}Images send as inline photos, video (.mp4) inline, audio and other "
+        "files as attachments."
     ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "
         "messages — bold, italic, code blocks, and links are supported. You can send media files natively: "
         "include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are uploaded and "
-        "displayed inline, audio files as native voice messages (non-Opus formats are transcoded "
-        "automatically; without ffmpeg they fall back to file attachments), and other files as attachments."
+        "displayed inline, and audio and other files as downloadable attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
@@ -744,16 +735,10 @@ WSL_ENVIRONMENT_HINT = (
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
+_REMOTE_TERMINAL_BACKENDS = frozenset({"ssh"})
 
 # Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
-    "docker": "a Docker container (Linux)",
-    "singularity": "a Singularity container (Linux)",
-    "modal": "a Modal sandbox (Linux)",
-    "managed_modal": "a managed Modal sandbox (Linux)",
-    "daytona": "a Daytona workspace (Linux)",
-    "vercel_sandbox": "a Vercel sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -823,8 +808,6 @@ def _tenv_read(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-_BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
-# (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
 _BACKEND_PROBE_CMD = (
     "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
@@ -835,18 +818,14 @@ _BACKEND_PROBE_CMD = (
 
 def _run_backend_probe(env_type: str, terminal_tool) -> str:
     """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_backends import _create_environment, _ssh_config_from_config
     from tools.terminal_tool_lifecycle import _cleanup_env
 
     config = terminal_tool._get_env_config()
-    # Same container_config shaper as the live terminal path: a private copy of the key table here
-    # drifted (no docker_network) and gave the probe a bridge-networked container under lockdown.
     env = _create_environment(
-        env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "", cwd=config.get("cwd", ""),
+        env_type=env_type, image="", cwd=config.get("cwd", ""),
         timeout=config.get("timeout", 180),
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=(_container_config_from_config(config)
-                          if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
         # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
         # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
@@ -1548,14 +1527,6 @@ def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return found
 
 
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
-    candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if _is_dir_or_denied(cursor_rules_dir):
-        candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
-
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are
 # shadowed. Both the prompt build (loaders below) and the /context manifest
@@ -1564,7 +1535,6 @@ _CONTEXT_FILE_CANDIDATES = {
     "hermes_md": _hermes_md_candidates,
     "agents_md": _agents_md_candidates,
     "claude_md": _claude_md_candidates,
-    "cursorrules": _cursorrules_candidates,
 }
 
 
@@ -1625,18 +1595,6 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
-    cursorrules_content = "".join(
-        f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
-    )
-    if not cursorrules_content:
-        return ""
-    return _truncate_content(cursorrules_content, ".cursorrules", context_length=context_length,
-                             read_path=str(cwd_path / ".cursorrules"))
-
-
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1644,7 +1602,7 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
+    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
@@ -1656,7 +1614,7 @@ def build_context_files_prompt(
         sections = []
     else:
         sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+                    or _load_claude_md(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

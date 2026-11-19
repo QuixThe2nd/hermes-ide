@@ -1,14 +1,13 @@
 # Durable & Background Systems
 
 Three systems run alongside the main conversation loop. Quick reference
-here; full developer notes live in `AGENTS.md`, user-facing docs under
-`website/docs/user-guide/features/`.
+here; full developer notes live in `AGENTS.md`.
 
 ### Delegation (`delegate_agent`)
 
 Spawn a subagent with an isolated context + terminal session. One lifecycle
-across all four delegate tools (`delegate_agent`, `delegate_claude_agent`,
-`delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the
+across all three delegate tools (`delegate_agent`, `delegate_claude_agent`,
+`delegate_assistant`): the mode comes only from the
 explicit `background` argument.
 
 - **Single:** `delegate_agent(goal, context)`.

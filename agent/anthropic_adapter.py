@@ -17,7 +17,7 @@ from utils import normalize_proxy_env_vars
 from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
-    _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
+    _is_minimax_anthropic_endpoint, _is_opencode_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
 )
@@ -208,7 +208,7 @@ def _supports_fast_mode(model: str) -> bool:
 # Beta headers safe on ordinary/native Anthropic requests. GA on Claude 4.6+ (harmless no-op
 # there) but older Claude and compatible endpoints still gate on them. Do NOT add
 # ``context-1m-2025-08-07``: accounts without the long-context beta get HTTP 400, breaking short
-# auxiliary calls. Bedrock/Azure still need it for 1M context and opt in on their own paths.
+# auxiliary calls. Azure still needs it for 1M context and opts in on its own path.
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when the tool-streaming beta is
 # present. ``_FAST_MODE_BETA`` enables the ``speed: "fast"`` request parameter.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
@@ -284,8 +284,8 @@ def _common_betas_for_base_url(base_url: str | None, *, drop_context_1m_beta: bo
     """Beta headers safe for the configured endpoint. MiniMax (Bearer-auth) rejects both the
     fine-grained-tool-streaming beta (every tool-use message errors) and the 1M-context beta.
     Azure AI Foundry also uses Bearer auth but keeps both — it needs the 1M beta for 1M context,
-    which native Anthropic does not get by default (some subscriptions reject it; Bedrock opts in
-    via its own client helper). ``drop_context_1m_beta`` strips the 1M beta after a
+    which native Anthropic does not get by default (some subscriptions reject it).
+    ``drop_context_1m_beta`` strips the 1M beta after a
     subscription/endpoint rejected it."""
     betas = list(_COMMON_BETAS)
     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
@@ -438,29 +438,6 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def build_anthropic_bedrock_client(region: str):
-    """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
-    SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
-    budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
-    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
-    A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
-    (primary, auxiliary, per-request rebuild) enforces it."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
-    sdk = _require_sdk("the Bedrock provider")
-    if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
-    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
-    # launch profile's process env); unscoped passes nothing and keeps the default chain.
-    scoped = scoped_aws_session_kwargs()
-    aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
-                  "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
-    return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
-        max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
-        default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
-    )
-
-
 def _normalize_to_mcp_wire(name: str) -> str:
     """OAuth wire form of a tool name (no aliasing): ``mcp__<...>``. Anthropic's OAuth billing
     classifier treats a single-underscore ``mcp_`` tool name as a third-party-app fingerprint
@@ -578,10 +555,7 @@ def build_anthropic_kwargs(
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
-    # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
-    # make the model unresolvable there (prefix AND dots kept).
-    if not _is_nous_portal_endpoint(base_url):
-        model = normalize_model_name(model, preserve_dots=preserve_dots)
+    model = normalize_model_name(model, preserve_dots=preserve_dots)
     # Non-positive/non-finite values fail locally instead of 400-ing upstream.
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)
     if context_length and effective_max_tokens > context_length:
@@ -621,7 +595,7 @@ def build_anthropic_kwargs(
         for key in ("temperature", "top_p", "top_k"):
             kwargs.pop(key, None)
     # Fast mode: native Anthropic only — third-party providers reject the unknown beta/param and
-    # Anthropic scopes it to the Claude API (not Bedrock/Vertex/Foundry). Per-request extra_headers
+    # Anthropic scopes it to the Claude API (not Vertex/Foundry). Per-request extra_headers
     # OVERRIDE the client-level anthropic-beta header, so rebuild the full beta list.
     if fast_mode and not _is_third_party_anthropic_endpoint(base_url) and _supports_fast_mode(model):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
@@ -674,12 +648,7 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
-    if "stream" in err_lower and "not supported" in err_lower:
-        return True
-    if "invokemodelwithresponsestream" not in err_lower:
-        return False
-    from agent.bedrock_adapter import is_streaming_access_denied_error
-    return is_streaming_access_denied_error(exc)
+    return "stream" in err_lower and "not supported" in err_lower
 
 
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
@@ -726,11 +695,10 @@ def create_anthropic_message(
     """Create an Anthropic message, aggregating via stream when available. Some Anthropic-compatible
     gateways are SSE-only and answer ``create()`` with ``text/event-stream``, which the SDK surfaces
     as raw text (callers then crash on ``.content``), so prefer ``messages.stream()`` like the main
-    turn path and fall back to ``create()`` only for providers that explicitly don't support
-    streaming (restricted Bedrock roles). Both callbacks are best-effort and fire only on the
+    turn path and fall back to ``create()`` only for providers that don't support streaming.
+    Both callbacks are best-effort and fire only on the
     streaming path: ``on_stream_event(event)`` lets liveness watchdogs see forward progress;
-    ``on_response(httpx_response)`` exposes headers the parsed Message drops (Nous Portal's
-    ``x-nous-credits-*`` balance family)."""
+    ``on_response(httpx_response)`` exposes headers the parsed Message drops."""
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
     messages_api = getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)

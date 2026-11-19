@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import build_anthropic_client, build_anthropic_bedrock_client, build_anthropic_kwargs
+from agent.anthropic_adapter import build_anthropic_client, build_anthropic_kwargs
 from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
 from agent.anthropic_endpoints import _is_azure_anthropic_endpoint
 from agent.credential_pool import PooledCredential

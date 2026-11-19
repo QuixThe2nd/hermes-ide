@@ -17,13 +17,22 @@ import logging
 import os
 import socket
 import struct
+import tempfile
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
+import psutil
 
 from agent.async_utils import consume_detached_task_result
+from gateway.generations import (
+    AttachedGeneration,
+    RoutingState,
+    handoff_eligible,
+    register_decision,
+    route_choice,
+)
 from hermes_constants import get_default_hermes_root
 
 logger = logging.getLogger(__name__)
@@ -36,15 +45,14 @@ def _pid_gone(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        process = psutil.Process(pid)
+    except psutil.NoSuchProcess:
         return True
-    except OSError:
+    except psutil.Error:
         return False
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except OSError:
+        return process.status() == psutil.STATUS_ZOMBIE
+    except psutil.Error:
         return False
 
 
@@ -65,6 +73,7 @@ class DiscordSessionRouter:
         self._versions: Dict[str, int] = {}
         self._current: Optional[str] = None
         self._undelivered: list[Dict[str, Any]] = []
+        self._store_path: Optional[Path] = None
         self._lock = asyncio.Lock()
         self._transport = transport
         self._version_field = version_field
@@ -77,6 +86,44 @@ class DiscordSessionRouter:
     @property
     def undelivered(self) -> list[Dict[str, Any]]:
         return list(self._undelivered)
+
+    def bind_store(self, path: Path) -> None:
+        """Mirror held events to *path* so a hub restart replays them on attach."""
+        if self._store_path is not None:
+            return
+        self._store_path = Path(path)
+        try:
+            rows = json.loads(self._store_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            rows = []
+        if isinstance(rows, list):
+            self._undelivered[:0] = [row for row in rows if isinstance(row, dict)]
+        self._save_undelivered()
+
+    def _save_undelivered(self) -> None:
+        path = self._store_path
+        if path is None:
+            return
+        try:
+            if not self._undelivered:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(self._undelivered, handle, separators=(",", ":"))
+            os.replace(tmp, path)
+        except (OSError, TypeError, ValueError):
+            logger.warning("%s hub could not persist held events", self._transport, exc_info=True)
+
+    def _hold(self, record: Dict[str, Any]) -> None:
+        self._undelivered.append(record)
+        self._save_undelivered()
+
+    def owners_snapshot(self) -> Dict[str, str]:
+        """Copy of the session-key → generation ownership map (diagnostics)."""
+        return dict(self._owners)
 
     def owner_for(self, session_key: str) -> Optional[str]:
         return self._owners.get(session_key)
@@ -114,34 +161,33 @@ class DiscordSessionRouter:
             raise ValueError("session_key is required")
         async with self._lock:
             owner = self._owners.get(session_key)
-            if owner is not None and owner != generation_id and owner in self._clients:
+            if not register_decision(self._routing_state(), session_key, generation_id):
                 return {"owner": owner, "version": None}
             version = self._versions.get(session_key, 0) + 1
             self._versions[session_key] = version
             self._owners[session_key] = generation_id
             return {"owner": generation_id, "version": version}
 
+    def _routing_state(self) -> RoutingState:
+        """Snapshot of the router state the canonical routing core sees."""
+        return RoutingState(
+            attached=tuple(
+                AttachedGeneration(generation_id, self._client_pids.get(generation_id, 0))
+                for generation_id in self._clients
+            ),
+            owners=dict(self._owners),
+        )
+
     async def _route_locked(self, session_key: str, record: Dict[str, Any], *,
                             excluded: frozenset[str] = frozenset(),
                             target_pid: Optional[int] = None) -> Optional[str]:
         owner = self._owners.get(session_key)
-        if target_pid is not None:
-            generation = next((
-                candidate for candidate, pid in self._client_pids.items()
-                if pid == target_pid and candidate in self._clients
-                and candidate not in excluded
-            ), None)
-        else:
-            generation = (
-                owner if owner in self._clients and owner not in excluded else None
-            )
-            if generation is None:
-                generation = next((
-                    candidate for candidate in reversed(self._clients)
-                    if candidate not in excluded
-                ), None)
+        generation = route_choice(
+            self._routing_state(), session_key,
+            excluded=excluded, target_pid=target_pid,
+        )
         if generation is None:
-            self._undelivered.append(record)
+            self._hold(record)
             logger.warning(
                 "%s hub retained an event for %s: no eligible Hermes client is attached",
                 self._transport, session_key,
@@ -179,7 +225,7 @@ class DiscordSessionRouter:
                     session_key, record, excluded=excluded | {generation},
                 )
             # Do not send a possibly-received event to a second generation.
-            self._undelivered.append(record)
+            self._hold(record)
             logger.exception("%s hub retained an event for %s after delivery failed", self._transport, session_key)
             return None
         self._owners[session_key] = generation
@@ -207,9 +253,8 @@ class DiscordSessionRouter:
         async with self._lock:
             if self._versions.get(session_key) != version:
                 return False
-            if target_pid is not None and not any(
-                pid == target_pid and candidate in self._clients and candidate not in visited
-                for candidate, pid in self._client_pids.items()
+            if target_pid is not None and not handoff_eligible(
+                self._routing_state(), visited=visited, target_pid=target_pid,
             ):
                 return False
             # None means the hub retained the record after a delivery failure or
@@ -227,16 +272,39 @@ class DiscordSessionRouter:
         for record in pending:
             key = str(record.get("session_key") or "")
             if not key:
-                self._undelivered.append(record)
+                self._hold(record)
                 continue
             if await self.route(key, record) is not None:
                 delivered += 1
+        self._save_undelivered()
         return delivered
 
 
+# Tightest AF_UNIX bind limit on supported platforms: macOS's sun_path holds
+# 104 bytes including the NUL terminator (Linux allows 108), so a path of at
+# most 103 bytes binds everywhere.
+_MAX_UNIX_SOCKET_PATH = 103
+
+
 def default_socket_path() -> Path:
-    """One installation-wide endpoint, shared by every profile and generation."""
-    return get_default_hermes_root() / "gateway" / "discord-hub.sock"
+    """One installation-wide endpoint, shared by every profile and generation.
+
+    Prefers ``<hermes root>/gateway/discord-hub.sock``. Long hermes roots (CI
+    runners, deep custom HERMES_HOMEs) can push that past the AF_UNIX
+    ``sun_path`` limit, where every bind fails with ``OSError: AF_UNIX path
+    too long``. Then the endpoint moves into a deterministic hashed directory
+    under the process temp dir (``tempfile.gettempdir()``; Hermes sets TMPDIR)
+    — hashed on the hermes root, so every profile and generation still
+    converges on the one shared endpoint, and the hub's 0o700 parent-dir
+    chmod lands on a directory this installation owns, never the shared
+    temp root.
+    """
+    root = get_default_hermes_root()
+    candidate = root / "gateway" / "discord-hub.sock"
+    if len(str(candidate).encode("utf-8")) <= _MAX_UNIX_SOCKET_PATH:
+        return candidate
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"hermes-discord-hub-{digest}" / "discord-hub.sock"
 
 
 def _token_key(token: str) -> str:
@@ -249,14 +317,10 @@ _SYNC_RPC_METHODS = frozenset({
     "prefers_fresh_final_streaming",
     "format_tool_preview",
     "claim_startup_resume_inbound",
-    "voice_mixer_active",
-    "is_in_voice_channel",
-    "get_voice_channel_info",
-    "get_voice_channel_context",
 })
 _MATRIX_SYNC_RPC_METHODS = frozenset({"get_diagnostics"})
 # Dispatched as tasks: they call out to Discord/Matrix and may block on rate limits.
-_CONCURRENT_RPC_METHODS = frozenset({"rpc", "sync_rpc", "spawn_gateway"})
+_CONCURRENT_RPC_METHODS = frozenset({"rpc", "sync_rpc", "spawn_gateway", "generation_control"})
 _PICKER_CALLBACK_KWARGS = {
     "send_model_picker": "on_model_selected",
     "send_choice_picker": "on_choice_selected",
@@ -322,7 +386,7 @@ def _socket_peer_pid(writer: asyncio.StreamWriter) -> Optional[int]:
 
 
 class DiscordHubServer:
-    """Host shared Discord and Matrix transports for attached gateways."""
+    """Host shared Discord, Matrix, and browser sidebar transports."""
 
     def __init__(self, socket_path: Optional[Path] = None) -> None:
         from gateway.overlap_registry import OverlapSuccessorRegistry
@@ -340,8 +404,11 @@ class DiscordHubServer:
         self._adapter_profiles: Dict[str, set[str]] = {}
         self._adapter_routes: Dict[str, list] = {}
         self._raw_messages: "OrderedDict[str, Any]" = OrderedDict()
-        self._successors = OverlapSuccessorRegistry()
+        self._successors = OverlapSuccessorRegistry(
+            state_path=self.socket_path.parent / "hub-overlap-successors.json")
         self.matrix = MatrixHub(self)
+        from plugins.platforms.browser_sidebar.hub import BrowserSidebarHub
+        self.browser_sidebar = BrowserSidebarHub()
         self._stopping = False
 
     def _router_for(self, token_key: str) -> DiscordSessionRouter:
@@ -350,6 +417,9 @@ class DiscordHubServer:
             # Keep the first router as the single-token/test convenience API.
             router = self.router if not self._routers else DiscordSessionRouter()
             self._routers[token_key] = router
+            bind = getattr(router, "bind_store", None)
+            if callable(bind):
+                bind(self.socket_path.parent / f"hub-undelivered-discord-{token_key[:16]}.json")
         return router
 
     async def start(self) -> None:
@@ -365,7 +435,9 @@ class DiscordHubServer:
                 writer.close()
                 await writer.wait_closed()
                 raise RuntimeError(f"Discord hub is already listening on {self.socket_path}")
-        self._server = await asyncio.start_unix_server(self._serve_client, path=str(self.socket_path))
+        self._server = await asyncio.start_unix_server(
+            self._serve_client, path=str(self.socket_path), limit=2 * 1024 * 1024,
+        )
         self.socket_path.chmod(0o600)
         logger.info("Discord hub listening on %s (pid %s)", self.socket_path, os.getpid())
 
@@ -381,12 +453,12 @@ class DiscordHubServer:
         self._adapters.clear()
         self._adapter_tokens.clear()
         await self.matrix.stop()
+        await self.browser_sidebar.stop()
         self.socket_path.unlink(missing_ok=True)
 
     async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
-        """Stop the event producer before detachable transport/voice cleanup."""
-        # DiscordAdapter.disconnect() deliberately leaves voice before awaiting bot cancellation.
-        # Recovery cannot let that earlier step strand a reconnecting bot after the deadline.
+        """Stop the event producer before detachable adapter cleanup."""
+        # Recovery cannot let a slow disconnect strand a reconnecting bot after the deadline.
         adapter._disconnecting = True
         bot_task = getattr(adapter, "_bot_task", None)
         if bot_task is not None and not bot_task.done():
@@ -553,6 +625,7 @@ class DiscordHubServer:
                         client.peer_pid = peer_pid
                         if peer_pid is not None and gateway_pid and gateway_pid != peer_pid:
                             raise RuntimeError("attached gateway PID does not match the socket peer")
+                        attach_result: Dict[str, Any] = {}
                         if platform_name == "matrix":
                             token_key, router = await self.matrix.attach(
                                 config_data=config_data,
@@ -562,6 +635,14 @@ class DiscordHubServer:
                                 secret_scope=params.get("secret_scope") or {},
                             )
                             client.platform = "matrix"
+                        elif platform_name == "browser_sidebar":
+                            client.platform = "browser_sidebar"
+                            token_key = ""
+                            attach_result, router = await self.browser_sidebar.attach(
+                                client, config_data, str(params.get("profile") or "default"),
+                                store_dir=self.socket_path.parent,
+                                session_key=str(params.get("session_key") or ""),
+                            )
                         elif platform_name == "discord":
                             token_key = _token_key(str(config_data.get("token") or ""))
                             await self._attach_adapter(
@@ -582,16 +663,18 @@ class DiscordHubServer:
                         client.token_key = token_key
                         client.router = router
                         self._clients[generation] = client
-                        client.router.attach(
-                            generation, client.deliver, gateway_pid=gateway_pid,
-                        )
+                        if client.router is not None:
+                            client.router.attach(
+                                generation, client.deliver, gateway_pid=gateway_pid,
+                            )
                         await client.send({"id": request_id, "result": {
                             "generation_id": generation, "pid": os.getpid(),
-                            "token_key": token_key,
+                            "token_key": token_key, **attach_result,
                         }})
-                        await client.router.replay_undelivered()
+                        if client.router is not None:
+                            await client.router.replay_undelivered()
                         continue
-                    if client is None and method not in {"sync_rpc", "overlap_successors"}:
+                    if client is None and method not in {"sync_rpc", "overlap_successors", "browser_sidebar_status"}:
                         raise RuntimeError("attach is required before hub RPC")
                     if client is not None and method in _CONCURRENT_RPC_METHODS:
                         # Platform API calls (Discord REST, Matrix) can sit in a
@@ -616,10 +699,13 @@ class DiscordHubServer:
             if client is not None:
                 if client.platform == "matrix":
                     self.matrix.detach(client)
+                elif client.platform == "browser_sidebar":
+                    self.browser_sidebar.detach(client)
                 else:
                     await self._reap_client_processing_reactions(client)
                 self._clients.pop(client.generation_id, None)
-                (client.router or self.router).detach(client.generation_id)
+                if client.router is not None:
+                    client.router.detach(client.generation_id)
                 for future in client.controls.values():
                     if not future.done():
                         future.cancel()
@@ -654,6 +740,12 @@ class DiscordHubServer:
     async def _dispatch(self, client: _Client, method: str, params: Dict[str, Any]) -> Any:
         if method == "overlap_successors":
             return {"successors": self._successors.snapshot()}
+        if method == "browser_sidebar_status":
+            return self.browser_sidebar.status()
+        if method == "browser_send":
+            if client is None or client.platform != "browser_sidebar":
+                raise ValueError("an attached browser sidebar generation is required")
+            return await self.browser_sidebar.send(client, params.get("frame"))
         if method == "register_matrix_prompt":
             if client is None or client.platform != "matrix":
                 raise ValueError("an attached Matrix generation is required")
@@ -683,6 +775,16 @@ class DiscordHubServer:
                 "pid": os.getpid(),
                 "current_generation": (client.router or self.router).current_generation,
             }
+        if method == "generation_control":
+            if client is None:
+                raise RuntimeError("an attached generation is required")
+            target = (client.router or self.router).current_generation
+            if not target or target == client.generation_id:
+                raise RuntimeError("no newer generation is attached to receive a control")
+            return await self._request_generation_control(
+                target, str(params.get("method") or ""), dict(params.get("params") or {}),
+                timeout=float(params.get("timeout") or 30),
+            )
         if method == "spawn_gateway":
             return await self._spawn_gateway(params)
         if method == "register_spawned_gateway":
@@ -785,14 +887,6 @@ class DiscordHubServer:
                 event.raw_message = raw_message
             args[0] = event
             args[1] = ProcessingOutcome(args[1])
-        elif method == "join_voice_channel" and args and isinstance(args[0], dict):
-            channel_id = int(args[0]["id"])
-            channel = adapter._client.get_channel(channel_id)
-            if channel is None:
-                channel = await adapter._client.fetch_channel(channel_id)
-            if channel is None:
-                raise RuntimeError(f"Discord voice channel {channel_id} is unavailable")
-            args[0] = channel
         callback_keyword = _PICKER_CALLBACK_KWARGS.get(method)
         if callback_keyword is not None:
             if client is None:
@@ -811,12 +905,6 @@ class DiscordHubServer:
         result = fn(*args, **kwargs)
         if inspect.isawaitable(result):
             result = await result
-        if method == "get_user_voice_channel":
-            if result is None:
-                return {"value": None}
-            return {"value": {
-                "id": result.id, "name": result.name, "guild_id": result.guild.id,
-            }}
         return _send_result_dict(result)
 
     async def _request_generation_control(self, generation_id: str, method: str,

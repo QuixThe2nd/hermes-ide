@@ -208,7 +208,7 @@ def resolve_name_list(key: str, *, default: frozenset[str]) -> frozenset[str]:
 
 
 # --------------------------------------------------------------------------- Bounded execution — async
-# flavor. Generalizes plugins/platforms/telegram/adapter.py:_await_with_thread_deadline (the #63309 fix):
+# flavor. Generalizes the #63309 fix (first shipped in a since-removed platform adapter):
 # the deadline is driven by a daemon threading.Timer so a blocked event loop cannot disable it, and a second
 # timer dumps all thread stacks when the loop provably failed to process the expiry — the one piece of
 # information loop-blocked hangs otherwise never surface.

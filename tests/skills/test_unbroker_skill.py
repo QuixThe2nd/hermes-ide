@@ -385,8 +385,8 @@ def test_auto_configure_picks_most_autonomous():
         cfg = config.auto_configure(env={"EMAIL_ADDRESS": "agent@gmail.com",
                                          "EMAIL_PASSWORD": "app-pass"})
         assert cfg["email_mode"] == "programmatic"
-        # AgentMail only -> alias mode
-        assert config.auto_configure(env={"AGENTMAIL_API_KEY": "am"})["email_mode"] == "alias"
+        # AgentMail key alone no longer selects an email backend -> draft_only floor
+        assert config.auto_configure(env={"AGENTMAIL_API_KEY": "am"})["email_mode"] == "draft_only"
         # encryption auto-on exactly when age is installed (free privacy, zero human cost)
         assert config.auto_configure(env={})["encryption"] == ("age" if _AGE else "none")
 

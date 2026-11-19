@@ -65,12 +65,12 @@ class TestCliHandoffFrontedSet:
     """The CLI pre-check derives the fronted set from deploy env (no live adapter)."""
 
     def test_fronted_set_from_env(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,telegram")
+        monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,matrix")
         monkeypatch.delenv("GATEWAY_RELAY_BOT_IDS", raising=False)
         from gateway.relay import relay_platform_identities
 
         fronted = {p for p, _ in relay_platform_identities()}
         assert "discord" in fronted
-        assert "telegram" in fronted
+        assert "matrix" in fronted
         assert "slack" not in fronted
 

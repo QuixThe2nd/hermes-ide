@@ -49,10 +49,10 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"
     config = GatewayConfig()
-    config.platforms[Platform.TELEGRAM] = PlatformConfig(
+    config.platforms[Platform.DISCORD] = PlatformConfig(
         enabled=True,
         notification_channel=DeliveryTarget(
-            platform=Platform.TELEGRAM, chat_id="ops-chat", name="Ops"
+            platform=Platform.DISCORD, chat_id="ops-chat", name="Ops"
         ),
     )
     runner.config = config
@@ -66,7 +66,7 @@ def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, 
     # adapter — no monkeypatch needed, and no dependence on the gateway.run
     # plugin-compat re-export of resolve_delivery_transport (gateway.run binds
     # the name at import, so patching gateway.delivery would never be seen).
-    runner.adapters = {Platform.TELEGRAM: _Adapter()}
+    runner.adapters = {Platform.DISCORD: _Adapter()}
     asyncio.run(runner._send_session_db_warning_notifications())
 
     assert sent, "warning must be broadcast to notification channels"
@@ -165,7 +165,7 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"
     sent = []
-    monkeypatch.setattr(runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())])
+    monkeypatch.setattr(runner, "_home_channel_transports", lambda: [("discord", {}, "home-chat", object())])
 
     async def _capture_send(_platform, _home, _transport, message, _log_fmt):
         sent.append(message)

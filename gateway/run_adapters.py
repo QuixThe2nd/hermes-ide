@@ -127,23 +127,13 @@ class GatewayAdapterLifecycleMixin:
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT if override is None else override
 
     def _platform_connect_timeout_secs(self, platform=None, *, initial: bool = False) -> float:
-        """Per-platform connect timeout. Telegram's full 180s is NOT spent at cold start (it would
-        hold the gateway out of ``running``); the watcher retries with the full budget.
+        """Per-platform connect timeout.
 
-        ``initial=True`` marks the cold-start connect awaited before the gateway reaches ``running``. The
-        cold-start wait is capped and the platform is handed to the reconnect watcher, which retries with
-        the full budget (and ``is_reconnect=True``, preserving the offline update queue — #46621).
+        ``initial=True`` marks the cold-start connect awaited before the gateway reaches ``running``.
         """
-        from gateway.run import (
-            _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT, _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT,
-            _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT,
-        )
+        from gateway.run import _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
         override = self._env_timeout_override("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT")
-        if override is not None:
-            return override
-        if platform != Platform.TELEGRAM:
-            return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
-        return _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT if initial else _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT
+        return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT if override is None else override
 
     async def _connect_adapter_with_timeout(
         self, adapter, platform, *, is_reconnect: bool = False, initial: bool = False
@@ -155,8 +145,6 @@ class GatewayAdapterLifecycleMixin:
         first boot (drop any stale server-side queue) from a watcher reconnect after a prolonged outage
         (preserve the queue so messages sent during the outage are delivered rather than silently dropped —
         #46621).
-        ``initial`` selects the capped cold-start budget for platforms whose full connect budget is too long
-        to spend before the gateway reaches ``running`` (#85993 — Telegram's 180s).
         """
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
         if timeout <= 0:
@@ -764,18 +752,16 @@ class GatewayAdapterLifecycleMixin:
         del self._failed_platforms[platform]
 
     def _publish_primary_adapter(self, platform, adapter) -> None:
-        """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
+        """Register a connected primary adapter."""
         self.adapters[platform] = adapter
-        self._sync_voice_mode_state_to_adapter(adapter)
-        self._bind_voice_input_callback(adapter)
 
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
         self._publish_primary_adapter(platform, adapter)
         self.delivery_router.adapters = self.adapters
         del self._failed_platforms[platform]
-        # connect() returning True does not mean the receive path is confirmed -- Telegram's degraded
-        # reconnect returns True so the gateway stays up while its own ladder retries. Stamping "connected"
+        # connect() returning True does not mean the receive path is confirmed -- an adapter in a
+        # degraded reconnect returns True so the gateway stays up while its own ladder retries. Stamping "connected"
         # here would undo the adapter's accurate status.
         _degraded = adapter.send_path_degraded
         self._update_platform_runtime_status(
@@ -1006,7 +992,6 @@ class GatewayAdapterLifecycleMixin:
             )
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
-        self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "
@@ -1142,7 +1127,6 @@ class GatewayAdapterLifecycleMixin:
 
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
-        self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "
@@ -1302,9 +1286,6 @@ class GatewayAdapterLifecycleMixin:
                     )
                 if success:
                     profile_map[platform] = adapter
-                    # Restore persisted /voice state for this bot (#84872) —
-                    # primary startup and every reconnect path already do.
-                    self._sync_voice_mode_state_to_adapter(adapter)
                     if credential_claim is not None:
                         claimed[credential_claim] = profile_name
                     if listener_claim is not None:
@@ -1327,7 +1308,6 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
@@ -1338,12 +1318,13 @@ class GatewayAdapterLifecycleMixin:
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
-        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        _set_restart = getattr(adapter, "set_restart_request_handler", None)
+        if callable(_set_restart):
+            _set_restart(self._handle_forwarded_restart)
         adapter.set_authorization_check(
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
-        adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
         self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform
@@ -1358,7 +1339,6 @@ class GatewayAdapterLifecycleMixin:
             _set_owner(profile_name)
         # Voice transcripts from this bot's channels dispatch through THIS adapter (primary wiring lives at
         # connect time; see #75198).
-        text_modes = getattr(self, "_busy_text_modes_by_profile", None)
         self._wire_adapter_handlers(
             adapter,
             message_handler=self._make_profile_message_handler(profile_name),
@@ -1366,14 +1346,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
-            busy_text_mode=(
-                text_modes.get(profile_name, self._busy_text_mode)
-                if isinstance(text_modes, dict)
-                else self._busy_text_mode
-            ),
         )
-        # Voice transcripts from this bot's channels dispatch through THIS adapter.
-        self._bind_voice_input_callback(adapter)
         # Secondary adapters carry their profile so prune paths namespace topic bindings correctly.
         # See #76423.
         adapter._hermes_profile_name = profile_name
@@ -1440,7 +1413,6 @@ class GatewayAdapterLifecycleMixin:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
-                            self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name
@@ -1538,10 +1510,13 @@ class GatewayAdapterLifecycleMixin:
         profile_pending = pending.setdefault(profile_name, {})
         if platform in profile_pending:
             return
-        profile_pending[platform] = self._retain_background_task(asyncio.create_task(
+        task = asyncio.create_task(
             self._run_secondary_profile_reconnect(profile_name, platform),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
-        ))
+        )
+        # Permanent retry service, not finite work for the restart drain to await.
+        task._hermes_supervised_watcher = True  # type: ignore[attr-defined]
+        profile_pending[platform] = self._retain_background_task(task)
 
     def _make_profile_fatal_error_handler(
         self, profile_name: str, platform: Platform

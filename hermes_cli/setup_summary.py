@@ -2,26 +2,8 @@
 resolved through the module object so test patches on ``hermes_cli.setup.<name>`` take effect."""
 
 import logging
-from tools import tool_backend_helpers
-from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
-
-# provider -> (label, env vars: any one set means available; empty = always).
-# Local engines are (label, module, hint) and must be importable.
-_TTS_SUMMARY_ROWS = {
-    "elevenlabs": ("ElevenLabs", ("ELEVENLABS_API_KEY",)),
-    "openai": ("OpenAI", ("VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY")),
-    "minimax": ("MiniMax", ("MINIMAX_API_KEY",)), "mistral": ("Mistral Voxtral", ("MISTRAL_API_KEY",)),
-    "gemini": ("Google Gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
-    "neutts": ("NeuTTS", "neutts", "run 'hermes setup tts'"),
-    "kittentts": ("KittenTTS", "kittentts", "run 'hermes setup tts'")}
-_TTS_SUMMARY_DEFAULT = ("Edge TTS", ())
-_STT_SUMMARY_ROWS = {
-    "openai": ("OpenAI", ("VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY")), "groq": ("Groq Whisper", ("GROQ_API_KEY",)),
-    "elevenlabs": ("ElevenLabs Scribe", ("ELEVENLABS_API_KEY",)), "xai": ("xAI", ()),
-    "deepinfra": ("DeepInfra", ("DEEPINFRA_API_KEY",))}
-_STT_SUMMARY_DEFAULT = ("Local Whisper", "faster_whisper", "run 'hermes tools' → Speech-to-Text")
 
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
                 "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")
@@ -41,20 +23,6 @@ _EDIT_CONFIG_ROWS = (
 _READY_ROWS = (
     ("hermes", "              Start chatting"), ("hermes gateway", "      Start messaging gateway"),
     ("hermes doctor", "       Check for issues"))
-
-
-def _voice_provider_status(kind: str, provider: str, rows: dict, default: tuple) -> tuple:
-    """Summary row for a TTS/STT provider. A keyed provider whose key is missing
-    falls through to the default row, matching the runtime fallback."""
-    row = rows.get(provider, default)
-    if isinstance(row[1], tuple) and row[1] and not any(_setup.get_env_value(v) for v in row[1]):
-        row = default
-    if isinstance(row[1], tuple):
-        return (f"{kind} ({row[0]})", True, None)
-    label, module, hint = row
-    if _setup._module_installed(module):
-        return (f"{kind} ({label}{' local' if kind == 'Text-to-Speech' else ''})", True, None)
-    return (f"{kind} ({label} — not installed)", False, hint)
 
 
 def _first_available_plugin_provider(registry: str, skip: str = None):
@@ -77,7 +45,7 @@ def _first_available_plugin_provider(registry: str, skip: str = None):
     return None
 
 
-# ---- tool_status row builders: each takes (config, subscription_features) and returns
+# ---- tool_status row builders: each takes (config, _) and returns
 # a (name, available, hint) row or None (row omitted). Evaluated in _TOOL_ROW_BUILDERS order.
 
 def _vision_row(config, feats):
@@ -90,18 +58,13 @@ def _vision_row(config, feats):
     return ("Vision (image analysis)", ok, None if ok else "run 'hermes setup' to configure")
 
 
-def _managed_or_provider_row(feature, name: str, managed_label: str, missing_hint: str):
-    """Row for a Nous-manageable feature: managed > available (with provider) > missing hint."""
-    if feature.managed_by_nous:
-        return (f"{name} ({managed_label})", True, None)
-    if feature.available:
-        return (f"{name} ({feature.current_provider})" if feature.current_provider else name, True, None)
-    return (name, False, missing_hint)
-
-
 def _web_row(config, feats):
-    # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
-    return _managed_or_provider_row(feats.web, "Web Search & Extract", "Nous subscription", _WEB_MISSING)
+    try:
+        from hermes_cli.tools_config import _toolset_has_keys
+        configured = _toolset_has_keys("web", config)
+    except Exception:
+        configured = False
+    return ("Web Search & Extract", configured, None if configured else _WEB_MISSING)
 
 
 def _browser_row(config, feats):
@@ -111,13 +74,8 @@ def _browser_row(config, feats):
 
 
 def _image_gen_row(config, feats):
-    # FAL (direct or via Nous), or any plugin-registered provider (OpenAI, etc.)
-    if feats.image_gen.managed_by_nous:
-        return ("Image Generation (Nous subscription)", True, None)
-    if feats.image_gen.available:
-        return ("Image Generation", True, None)
-    # Probe plugin-registered providers so OpenAI-only setups don't show as "missing FAL_KEY".
-    backend = _first_available_plugin_provider("image_gen_registry", skip="fal")
+    # Include direct and plugin-registered providers so an OpenAI-only setup is reported accurately.
+    backend = _first_available_plugin_provider("image_gen_registry")
     if backend:
         return (f"Image Generation ({backend})", True, None)
     return ("Image Generation", False, "FAL_KEY or OPENAI_API_KEY")
@@ -126,38 +84,8 @@ def _image_gen_row(config, feats):
 def _video_gen_row(config, feats):
     # Opt-in via `hermes tools` → Video Generation. Only show the row when a plugin reports
     # available so we don't badger users who don't care about video gen with a "missing" line.
-    if feats.video_gen.managed_by_nous:
-        return ("Video Generation (FAL via Nous subscription)", True, None)
     backend = _first_available_plugin_provider("video_gen_registry")
     return (f"Video Generation ({backend})", True, None) if backend else None
-
-
-def _tts_row(config, feats):
-    # Configured provider, gated on its key (or local install)
-    if feats.tts.managed_by_nous:
-        return ("Text-to-Speech (OpenAI via Nous subscription)", True, None)
-    provider = _setup.cfg_get(config, "tts", "provider", default="edge")
-    return _voice_provider_status("Text-to-Speech", provider, _TTS_SUMMARY_ROWS, _TTS_SUMMARY_DEFAULT)
-
-
-def _stt_row(config, feats):
-    stt_feature = feats.features.get("stt")
-    if stt_feature is not None and stt_feature.managed_by_nous:
-        return ("Speech-to-Text (OpenAI via Nous subscription)", True, None)
-    provider = _setup.cfg_get(config, "stt", "provider", default="local") or "local"
-    return _voice_provider_status("Speech-to-Text", provider, _STT_SUMMARY_ROWS, _STT_SUMMARY_DEFAULT)
-
-
-def _modal_row(config, feats):
-    if feats.modal.managed_by_nous:
-        return ("Modal Execution (Nous subscription)", True, None)
-    if _setup.cfg_get(config, "terminal", "backend") == "modal":
-        if feats.modal.direct_override:
-            return ("Modal Execution (direct Modal)", True, None)
-        return ("Modal Execution", False, "run 'hermes setup terminal'")
-    if tool_backend_helpers.managed_nous_tools_enabled() and feats.nous_auth_present:
-        return ("Modal Execution (optional via Nous subscription)", True, None)
-    return None
 
 
 def _home_assistant_row(config, feats):
@@ -176,8 +104,8 @@ def _always_on_rows(config, feats):
 
 
 _TOOL_ROW_BUILDERS = (
-    _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row, _tts_row, _stt_row,
-    _modal_row, _home_assistant_row, _skills_hub_row, _always_on_rows)
+    _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row,
+    _home_assistant_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):
@@ -202,17 +130,14 @@ def _print_setup_summary(config: dict, hermes_home):
     except Exception:
         print()
         _setup.print_warning("No inference provider is configured — Hermes cannot chat yet.")
-        _setup._info("  Finish this one step with either of:",
-              "    hermes model            (pick any provider/model)",
-              "    hermes setup --portal   (Nous Portal OAuth, no API key)")
+        _setup._info("  Finish setup with `hermes model` to pick a provider and model.")
 
     print()
     _setup.print_header("Tool Availability Summary")
 
     tool_status = []
-    subscription_features = nous_subscription.get_nous_subscription_features(config)
     for build in _TOOL_ROW_BUILDERS:
-        row = build(config, subscription_features)
+        row = build(config, None)
         tool_status.extend(row if isinstance(row, list) else [] if row is None else [row])
 
     available_count = sum(1 for _, avail, _ in tool_status if avail)

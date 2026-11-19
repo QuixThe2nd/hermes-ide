@@ -69,14 +69,6 @@ gateway:
     full_logs_hint:        "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint:            "サポートを受けるには、このリンクを Hermes チームに共有してください。"
 
-  footer:
-    status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
-    usage:                 "使い方: `/footer [on|off|status]`"
-    saved:                 "📎 ランタイムフッター: **{state}**{example}\n_(グローバルに保存しました — 次のメッセージから有効)_"
-    example_line:          "\n例: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
   goal:
     unavailable:           "このセッションでは目標機能を利用できません。"
     no_goal_set:           "目標が設定されていません。"
@@ -252,17 +244,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     current_with_title:    "📌 セッション: `{session_id}`\nタイトル: **{title}**"
     current_no_title:      "📌 セッション: `{session_id}`\nタイトル未設定。使い方: `/title セッション名`"
 
-  topic:
-    not_telegram_dm:         "/topic コマンドは Telegram のプライベートチャットでのみ利用できます。"
-    no_session_db:           "セッションデータベースを利用できません。"
-    unauthorized:            "この bot で /topic を使用する権限がありません。"
-    restore_needs_topic:     "セッションを復元するには、まず Telegram topic を作成または開いてから、その topic 内で /topic <session-id> を送信してください。新しい topic を作成するには、All Messages を開いて任意のメッセージを送信してください。"
-    topics_disabled:         "この bot ではまだ Telegram topics が有効になっていません。\n\n有効にする方法:\n1. @BotFather を開きます。\n2. 自分の bot を選びます。\n3. Bot Settings → Threads Settings を開きます。\n4. Threaded Mode をオンにし、ユーザーが新しいスレッドを作成できるように設定します。\n\nそして /topic をもう一度送信してください。"
-    topics_user_disallowed:  "Telegram topics は有効ですが、ユーザーは topic を作成できません。\n\n@BotFather → 自分の bot → Bot Settings → Threads Settings を開き、'Disallow users to create new threads' をオフにしてください。\n\nそして /topic をもう一度送信してください。"
-    enable_failed:           "Telegram topic モードの有効化に失敗しました: {error}"
-    bound_status:            "この topic は次にリンクされています:\nセッション: {label}\nID: {session_id}\n\nこの topic を新しいセッションに置き換えるには /new を使用してください。\n並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
-    thread_ready:            "Telegram のマルチセッション topics が有効です。\n\nこの topic は独立した Hermes セッションとして使用されます。この topic の現在のセッションを置き換えるには /new を使用してください。並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
-    untitled_session:        "無題のセッション"
 
   undo:
     nothing:               "元に戻せる操作がありません。"
@@ -276,41 +257,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     start_failed:            "✗ 更新の開始に失敗しました: {error}"
     starting:                "☤ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
 
-  usage:
-    rate_limits:              "⏱️ **レート制限:** {state}"
-    header_session:           "📊 **セッショントークン使用状況**"
-    label_model:              "モデル: `{model}`"
-    label_input_tokens:       "入力トークン: {count}"
-    label_cache_read:         "キャッシュ読み取りトークン: {count}"
-    label_cache_write:        "キャッシュ書き込みトークン: {count}"
-    label_output_tokens:      "出力トークン: {count}"
-    label_total:              "合計: {count}"
-    label_api_calls:          "API 呼び出し: {count}"
-    label_cost:               "コスト: {prefix}${amount}"
-    label_cost_included:      "コスト: 含まれています"
-    label_context:            "コンテキスト: {used} / {total} ({pct}%)"
-    label_compressions:       "圧縮回数: {count}"
-    breakdown_header: "🧩 **コンテキスト内訳** _(推定)_"
-    breakdown_line: "• {label}: 約{count} ({pct}%)"
-    breakdown_cat_system_prompt: "システムプロンプト"
-    breakdown_cat_tool_definitions: "ツール定義"
-    breakdown_cat_rules: "ルール"
-    breakdown_cat_skills: "スキル"
-    breakdown_cat_mcp: "MCP"
-    breakdown_cat_subagent_definitions: "サブエージェント定義"
-    breakdown_cat_memory: "メモリ"
-    breakdown_cat_conversation: "会話"
-    header_session_info:      "📊 **セッション情報**"
-    label_messages:           "メッセージ数: {count}"
-    label_estimated_context:  "推定コンテキスト: ~{count} トークン"
-    detailed_after_first:     "_(詳細な使用状況は最初のエージェント応答後に利用可能)_"
-    no_data:                  "このセッションの使用データはありません。"
-    unknown_subcommand:       "不明な /usage サブコマンド: `{args}`。`/usage` または `/usage reset [--force]` をお試しください。"
-    reset_wrong_provider:     "バンクされた使用制限リセットは openai-codex プロバイダーでのみ利用できます。まず `/model` で切り替えてください。"
-
-  credits:
-    not_logged_in:            "Nous Portal にログインしていません。ログインすると残高の確認とチャージができます。"
-
   verbose:
     not_enabled:           "`/verbose` コマンドはメッセージングプラットフォームで有効になっていません。\n\n`config.yaml` で有効にしてください:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ ツール進捗: **OFF** — ツールの動作は表示されません。"
@@ -320,23 +266,6 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_log:              "⚙️ ツール進捗: **LOG** — チャットには表示せず、ツール呼び出しを ~/.hermes/logs/tool_calls.log に記録します。"
     saved_suffix:          "_(**{platform}** に保存しました — 次のメッセージから有効)_"
     save_failed:           "_(設定に保存できませんでした: {error})_"
-
-  voice:
-    enabled_voice_only:    "音声モードを有効にしました。\n音声メッセージを送ると音声で返信します。\nすべてのメッセージへの音声返信は /voice tts を使ってください。"
-    disabled_text:         "音声モードを無効にしました。テキストのみで返信します。"
-    tts_enabled:           "自動 TTS を有効にしました。\nすべての返信に音声メッセージが含まれます。"
-    status_mode:           "音声モード: {label}"
-    status_channel:        "音声チャンネル: #{channel}"
-    status_participants:   "参加者: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (発話中)"
-    enabled_short:         "音声モードを有効にしました。"
-    disabled_short:        "音声モードを無効にしました。"
-    label_off:             "オフ (テキストのみ)"
-    label_voice_only:      "オン (音声メッセージにのみ音声で返信)"
-    label_all:             "TTS (すべてのメッセージに音声で返信)"
-    help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
-    help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
 
   shared:
     session_db_unavailable:      "セッションデータベースが利用できません。"

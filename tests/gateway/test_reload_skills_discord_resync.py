@@ -171,7 +171,7 @@ class TestHandleReloadSkillsCallsRefreshSkillGroup:
         runner.adapters = {
             "discord": AsyncAdapter(),
             "slack": SyncAdapter(),
-            "telegram": NoOpAdapter(),
+            "matrix": NoOpAdapter(),
         }
 
         # Mock reload_skills itself so no disk scan runs.

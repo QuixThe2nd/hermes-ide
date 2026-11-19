@@ -36,7 +36,10 @@ first line. Callers stay free to pass one long ``task`` string: an
 over-limit ``/goal`` task is rewritten before spawn, writing the original
 task to ``<workdir>/.hermes-claude-goal-brief.md`` and replacing the ``-p``
 argument with a short ``/goal`` condition (first line plus a pointer to
-that file). Non-goal tasks are never rewritten.
+that file). Non-goal tasks are never rewritten. If that brief path already
+exists AND is tracked by the workdir's git repo, the run refuses to start
+instead of silently dirtying the caller's tree; untracked leftovers from
+earlier spill runs are overwritten as before.
 
 Log format
 ----------
@@ -86,7 +89,7 @@ from tools.claude_viewer_url import watch_url
 from tools.delegate_evidence_gate import apply_evidence_gate
 from tools.delegate_tool_config import _cfg
 from tools.delegation_ownership import (
-    CODEBASE_OWNERSHIP_GUIDANCE,
+    FORK_CODING_CONVENTIONS,
     ensure_codebase_ownership,
 )
 from tools.registry import registry
@@ -279,6 +282,7 @@ def parse_claude_agent_log(log_text: str) -> Dict[str, Any]:
         "num_turns": result_event.get("num_turns"),
         "duration_ms": result_event.get("duration_ms"),
         "total_cost_usd": result_event.get("total_cost_usd"),
+        "terminal_reason": result_event.get("terminal_reason"),
         "models_used": models_used,
         "permission_denials": permission_denials,
     }
@@ -321,6 +325,39 @@ def extract_log_warnings(log_text: str) -> List[str]:
         if len(warnings) >= _MAX_LOG_WARNINGS:
             break
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Terminal-status classification
+# ---------------------------------------------------------------------------
+
+def classify_claude_terminal_status(
+    *,
+    terminal_reason: Optional[str],
+    texts: List[str],
+    existing_status: str,
+) -> str:
+    """Classify a finished Claude Code run's terminal status.
+
+    An ``interrupted``/``timeout`` verdict is final — a log tail that
+    happens to mention a closed connection must not rewrite it. A
+    structured ``terminal_reason`` of ``api_error`` from the CLI's result
+    event, or transport-death prose (ECONNRESET / connection reset /
+    connection closed) in the run's result/error/log text, names the death
+    ``api_error`` so the caller can tell a retryable provider-transport
+    failure from a real task failure. Everything else keeps the existing
+    status.
+    """
+    if existing_status in ("interrupted", "timeout"):
+        return existing_status
+    if str(terminal_reason or "").strip().lower() == "api_error":
+        return "api_error"
+    haystack = "\n".join(str(text or "") for text in texts).lower()
+    if any(needle in haystack for needle in (
+        "econnreset", "connection reset", "connection closed",
+    )):
+        return "api_error"
+    return existing_status
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +515,29 @@ def _shorten_goal_condition(condition: str) -> str:
     return first_line + _GOAL_BRIEF_SUFFIX
 
 
+def _brief_file_is_git_tracked(workdir: Path, name: str) -> bool:
+    """True when ``name`` at the root of ``workdir`` is tracked by git.
+
+    Untracked leftovers from earlier spill runs are the normal case and must
+    not block a rewrite; only a path the repo actually tracks makes the
+    overwrite destructive (it silently dirties the caller's worktree). Any
+    probe failure — not a git repo, git missing, timeout — counts as
+    untracked so the guard can never block on its own error.
+    """
+    try:
+        return (
+            subprocess.run(
+                ["git", "-C", str(workdir), "ls-files", "--error-unmatch", "--", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tool implementation
 # ---------------------------------------------------------------------------
@@ -551,7 +611,7 @@ def delegate_claude_agent(
                 error=f"system_prompt_file does not exist: {system_prompt_file}",
             )
         try:
-            system_prompt_material = prompt_path.read_text(encoding="utf-8")
+            system_prompt_material = prompt_path.read_text(encoding="utf-8-sig")
         except OSError as exc:
             return _make_result(
                 success=False,
@@ -584,6 +644,18 @@ def delegate_claude_agent(
     goal_condition = _extract_goal_condition(prompt)
     if goal_condition is not None and len(goal_condition) > GOAL_CONDITION_MAX_CHARS:
         brief_path = workdir_path / GOAL_BRIEF_FILENAME
+        if brief_path.exists() and _brief_file_is_git_tracked(
+            workdir_path, GOAL_BRIEF_FILENAME
+        ):
+            return _make_result(
+                success=False,
+                error=(
+                    f"refusing to overwrite git-tracked file {brief_path}: "
+                    f"spilling the /goal brief there would silently modify a "
+                    f"tracked repo file. Untrack/remove it or use another "
+                    f"workdir."
+                ),
+            )
         try:
             brief_path.write_text(str(task), encoding="utf-8")
             os.chmod(brief_path, 0o644)
@@ -629,19 +701,19 @@ def delegate_claude_agent(
         "-p",
     ]
     if system_prompt_file is not None:
-        if CODEBASE_OWNERSHIP_GUIDANCE in (system_prompt_material or ""):
-            # Lane soul material already includes ownership. Pin it at the
-            # harness level without adding a second system-prompt source.
+        if FORK_CODING_CONVENTIONS in (system_prompt_material or ""):
+            # Lane soul material already includes the complete conventions. Pin
+            # it at the harness level without adding a second prompt source.
             cmd.extend(["--append-system-prompt-file", str(system_prompt_file)])
         else:
-            # Custom files get the same guidance through one inline flag;
-            # never rely on combining both append-system-prompt forms.
+            # Custom or legacy ownership-only files get the complete document
+            # through one inline flag; never combine both append forms.
             cmd.extend([
                 "--append-system-prompt",
                 ensure_codebase_ownership(system_prompt_material or ""),
             ])
     else:
-        cmd.extend(["--append-system-prompt", CODEBASE_OWNERSHIP_GUIDANCE])
+        cmd.extend(["--append-system-prompt", FORK_CODING_CONVENTIONS])
     if model_name:
         cmd.extend(["--model", model_name])
     cmd.extend(
@@ -747,10 +819,24 @@ def _run_claude_agent_sync(
 
     if returncode != 0:
         tail = log_text.strip()[-2000:] if log_text.strip() else ""
+        error = (
+            f"Claude Code exited with code {returncode}"
+            + (f": {tail}" if tail else "")
+        )
+        terminal_status = classify_claude_terminal_status(
+            terminal_reason=parsed.get("terminal_reason"),
+            texts=[log_text, error],
+            existing_status="error",
+        )
+        extra = (
+            {"terminal_status": terminal_status}
+            if terminal_status == "api_error" else {}
+        )
         return _make_result(
             success=False,
-            error=f"Claude Code exited with code {returncode}" + (f": {tail}" if tail else ""),
+            error=error,
             **base_fields,
+            **extra,
         )
 
     if not parsed:
@@ -789,10 +875,24 @@ def _run_claude_agent_sync(
             f"refusal: {base_fields['final_report'][:200]}"
         )
 
+    extra: Dict[str, Any] = {}
+    if not success:
+        # Only failures gain a transport-death token; a normal success
+        # result never does.
+        terminal_status = classify_claude_terminal_status(
+            terminal_reason=parsed.get("terminal_reason"),
+            texts=[base_fields["final_report"], log_text]
+            + ([error] if error else []),
+            existing_status="error",
+        )
+        if terminal_status == "api_error":
+            extra["terminal_status"] = "api_error"
+
     result_json = _make_result(
         success=success,
         error=error,
         **base_fields,
+        **extra,
     )
     if not success:
         return result_json
@@ -801,6 +901,34 @@ def _run_claude_agent_sync(
     if gated is payload:
         return result_json
     return json.dumps(gated, ensure_ascii=False)
+
+
+def _claude_background_status(payload: Dict[str, Any]) -> str:
+    """Collapse a finished sync payload into the shared delegation status.
+
+    Success reads ``completed``, anything else ``error``; the run's own
+    ``interrupted``/``timeout`` verdict and the worker thread's interrupt
+    bit keep precedence over every other classification.
+    """
+    status = "completed" if payload.get("success") else "error"
+    if payload.get("error") in ("interrupted", "timeout"):
+        status = payload["error"]
+    elif payload.get("terminal_status") == "api_error" and not payload.get("success"):
+        # A named transport death beats the generic error; interrupted,
+        # timeout, and the interrupt-bit override below still win over it.
+        status = "api_error"
+    try:
+        from tools.interrupt import is_interrupted
+
+        if is_interrupted():
+            # This thread's interrupt bit is only ever set by
+            # `_signal_runner_interrupt`, so a run that ended because of a
+            # stop request reports `interrupted` even when the direct
+            # process kill won the race against the cooperative poll.
+            status = "interrupted"
+    except Exception:
+        pass
+    return status
 
 
 def _dispatch_claude_background(
@@ -825,8 +953,24 @@ def _dispatch_claude_background(
     """
     from tools.async_delegation import (
         RESULT_KIND_CLI_AGENT,
+        _new_delegation_id,
         dispatch_background_delegation,
+        record_spawn_log_path,
     )
+
+    # Pre-minted handle: the spawn hook below can merge the run's log path
+    # into THIS delegation's durable row the moment the CLI's log file is
+    # known, so an owner exit before the result lands still names the jsonl
+    # recovery should point at.
+    delegation_id = _new_delegation_id()
+    spawn_hook = on_spawn
+
+    def _spawn_with_log_record(log_path: Path) -> None:
+        if spawn_hook is not None:
+            spawn_hook(log_path)
+        else:
+            _emit_viewer_progress_notice(log_path)
+        record_spawn_log_path(delegation_id, str(log_path))
 
     live: Dict[str, subprocess.Popen] = {}
     # Shared with the delegation record: stamped when the REAL child process
@@ -854,25 +998,12 @@ def _dispatch_claude_background(
             log_dir=log_dir,
             run_timestamp=run_timestamp,
             goal_brief_path=goal_brief_path,
-            on_spawn=on_spawn,
+            on_spawn=_spawn_with_log_record,
             on_proc=_on_proc,
             task_text=task_text,
         )
         payload = json.loads(out)
-        status = "completed" if payload.get("success") else "error"
-        if payload.get("error") in ("interrupted", "timeout"):
-            status = payload["error"]
-        try:
-            from tools.interrupt import is_interrupted
-
-            if is_interrupted():
-                # This thread's interrupt bit is only ever set by
-                # `_signal_runner_interrupt`, so a run that ended because of
-                # a stop request reports `interrupted` even when the direct
-                # process kill won the race against the cooperative poll.
-                status = "interrupted"
-        except Exception:
-            pass
+        status = _claude_background_status(payload)
         # Same vocabulary `_run_single_child` produces, so the shared
         # completion block renders a claude run exactly like any other
         # delegation; the run artifacts ride along additively.
@@ -883,6 +1014,7 @@ def _dispatch_claude_background(
             "duration_seconds": payload.get("duration_seconds"),
             "model": model_name or None,
             "log_path": payload.get("log_path"),
+            "terminal_status": payload.get("terminal_status"),
             "child_session_id": payload.get("session_id"),
             "cost_usd": payload.get("cost_usd"),
             "models_used": payload.get("models_used") or [],
@@ -935,6 +1067,7 @@ def _dispatch_claude_background(
         goal=goal,
         goals=[goal],
         runner=_runner,
+        delegation_id=delegation_id,
         interrupt_fn=_interrupt,
         session_key=session_key,
         parent_session_id=parent_session_id,
@@ -992,8 +1125,8 @@ def _coerce_str(value: Any) -> str:
 DELEGATE_CLAUDE_AGENT_SCHEMA = {
     "name": "delegate_claude_agent",
     "description": (
-        "Lane rule: use for MEDIUM TO LARGE jobs; small to medium goes to "
-        "delegate_cursor_agent. Default the task to /goal <observable done "
+        "Lane rule: use for MEDIUM TO LARGE jobs. "
+        "Default the task to /goal <observable done "
         "condition> — goal mode auto-continues until done; a one-shot prompt "
         "is the exception. "
         "Delegate a software development task to the Claude Code CLI running "

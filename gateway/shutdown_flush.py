@@ -165,7 +165,7 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
     entries = []
     for path in candidates:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         # A parseable non-object file (scalar/list) cannot be attributed to any session: skip it
@@ -246,7 +246,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
             # One unparseable payload or rejected append must only skip THIS file: the file is
             # never unlinked, so aborting the pass would re-poison every later boot.
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 # Agent-history snapshots are for manual operator recovery, not automatic DB
                 # insertion.
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
@@ -315,7 +315,7 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
         logger.warning("Cannot recover structurally invalid pending message from %s; "
                        "the flush file has been preserved", path)
         return False
-    # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
+    # session_key is a gateway routing key (e.g. "agent:main:discord:..."); appending a row
     # needs the real session_id, which real payloads lack — the resolver supplies it together with
     # the store owning the key. ``session_db`` (the owned default) serves only payloads that already
     # carry a session_id; a resolver-resolved payload goes to the resolver's db alone, never the

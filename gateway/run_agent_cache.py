@@ -81,14 +81,6 @@ class GatewayAgentCacheMixin:
         except Exception:
             out["tools.registry_generation"] = None
 
-        # Honcho identity-mapping keys live in honcho.json, not user_config.
-        # Only read that file when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        if isinstance(provider, str) and provider.lower() == "honcho":
-            out.update(cls._extract_honcho_cache_busting_config())
-        else:
-            out.update(cls._empty_honcho_cache_busting_config())
-
         return out
 
     # Kept for the process lifetime: loading a provider imports its plugin module, and this runs on every inbound message.
@@ -140,17 +132,15 @@ class GatewayAgentCacheMixin:
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
         carried by the current message's gateway source.  They participate
-        in the cache key because the Honcho memory provider freezes them
-        into ``HonchoSessionManager`` at first-message init (see
-        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
-        them in the signature, a shared-thread session_key (one in which
+        in the cache key because a memory provider may freeze them into
+        its per-session manager at first-message init.  Without them in
+        the signature, a shared-thread session_key (one in which
         ``build_session_key`` intentionally omits the participant ID,
         e.g. ``thread_sessions_per_user=False``) would reuse the cached
-        AIAgent across distinct users, causing the second user's messages
-        to be attributed to the first user's resolved Honcho peer.  This
-        broke #27371's per-user-peer contract in multi-user gateways.
-        Per-user agent rebuilds in shared threads trade prompt-cache
-        warmth for correct memory attribution.
+        AIAgent across distinct users, attributing the second user's
+        messages to the first user's memory identity.  Per-user agent
+        rebuilds in shared threads trade prompt-cache warmth for correct
+        memory attribution.
         """
         import hashlib, json as _j
 
@@ -370,16 +360,10 @@ class GatewayAgentCacheMixin:
         self._evict_cached_agent(session_key)
 
     def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
-        """True when *agent* running a model other than *config_model* is deliberate: a /model session
-        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
-        alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
+        """True when a /model session override deliberately selects the running model."""
         _ims_state = self._peek_session_state(session_key)
         override = _ims_state.conversation.model_override if _ims_state else None
-        if override is not None and override.get("model") == agent.model:
-            return True
-        # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
-        # ordinary drift and still evicts.
-        return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
+        return override is not None and override.get("model") == agent.model
 
     def _release_running_agent_state(
         self,
@@ -399,7 +383,7 @@ class GatewayAgentCacheMixin:
         Use this at every site that ends a running turn, regardless of
         cause (normal completion, /stop, /reset, /resume, sentinel
         cleanup, stale-eviction). Per-session state that PERSISTS across turns
-        (``_session_model_overrides``, ``_voice_mode``, ``_update_prompt_pending``)
+        (``_session_model_overrides``, ``_update_prompt_pending``)
         is NOT touched here — those have their own lifecycles.
 
         When ``run_generation`` is provided, only clear the slot if that
@@ -429,14 +413,6 @@ class GatewayAgentCacheMixin:
             # (agent / started_ts / lease / busy_ack_ts).  Turn-lease tokens
             # are deliberately NOT cleared here — _release_turn_lease owns
             # them (#64934).
-            # Drop any unfired one-shot steer-delivery listener while
-            # ``state.turn.agent`` is still reachable, so it can never fire
-            # on a later turn that reuses the same agent object.
-            self._drop_steer_delivered_listener(session_key)
-            # A steer-on-live event still parked here means the run died before
-            # the agent ever promoted (/stop, cancel, error) — recover it into
-            # the pending FIFO so nothing is lost. Idempotent no-op once empty.
-            self._flush_parked_steer(session_key)
             state.turn.clear()
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
@@ -893,13 +869,16 @@ class GatewayAgentCacheMixin:
                             cached[0], cached[1], _live, _snapshot_sid,
                         )
 
-    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
-        """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
+    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[Any]) -> None:
+        """Stage per-turn must-deliver notes for the next agent run (one-shot).
+
+        Entries are plain strings or ``(kind, text)`` pairs tagged by their
+        producer for the injection card (``tag_turn_note``)."""
         if not session_key or not notes:
             return
         self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
-    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
+    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[Any]:
         if not session_key:
             return []
         state = self._peek_session_state(session_key)
@@ -908,36 +887,6 @@ class GatewayAgentCacheMixin:
         staged = state.conversation.sidecar_notes
         state.conversation.sidecar_notes = []
         return list(staged) if isinstance(staged, list) else []
-
-    def _voice_channel_sidecar_note(self, event, source: SessionSource, session_key: str) -> Optional[str]:
-        """Return a ``[Voice channel now: ...]`` note when VC state changed.
-
-        Compares the live Discord voice-channel context against the last
-        value delivered for this session and returns a note only on change
-        (including leaving the channel).  Unchanged state returns ``None`` so
-        the per-turn member/speaking serialization cannot churn the prompt.
-        """
-        if source.platform != Platform.DISCORD:
-            return None
-        adapter = self.adapters.get(Platform.DISCORD)
-        guild_id = self._get_guild_id(event)
-        if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
-            return None
-        try:
-            vc_now = adapter.get_voice_channel_context(guild_id) or ""
-        except Exception:
-            logger.debug("voice-channel context read failed", exc_info=True)
-            return None
-        vc_prev = None
-        if session_key:
-            _vc_state = self._session_state(session_key)
-            vc_prev = _vc_state.conversation.vc_last
-            _vc_state.conversation.vc_last = vc_now
-        if vc_now == (vc_prev if vc_prev is not None else ""):
-            return None
-        if not vc_now:
-            return "[Voice channel now: not connected to a voice channel]"
-        return f"[Voice channel now: {vc_now}]"
 
     def _hub_restart_sidecar_note(self, event) -> Optional[str]:
         """Return the restart-resume note on the first turn after a hub restart.
@@ -1119,12 +1068,10 @@ class GatewayAgentCacheMixin:
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Prompt-stability state rides the agent-cache lifecycle: a fresh
-        # agent must re-render its session-context bytes (the pin) and re-see
-        # the current voice-channel state once.
+        # agent must re-render its session-context bytes (the pin) once.
         _evict_state = self._peek_session_state(session_key)
         if _evict_state is not None:
             _evict_state.conversation.ephemeral_pin = None
-            _evict_state.conversation.vc_last = None
 
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None

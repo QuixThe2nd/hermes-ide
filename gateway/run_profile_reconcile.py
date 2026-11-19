@@ -200,7 +200,7 @@ class GatewayProfileReconcileMixin:
         if isinstance(gate_warnings, list):
             drop_prefix = f"{name}:"
             gate_warnings[:] = [w for w in gate_warnings if not w.startswith(drop_prefix)]
-        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
+        for attr in ("pairing_stores",):
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(name, None)
@@ -217,9 +217,6 @@ class GatewayProfileReconcileMixin:
         with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
             from hermes_state_registry import close_all_under
             close_all_under(home)
-        with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
-            from plugins.memory.holographic.store import MemoryStore
-            MemoryStore.release_all_under(home)
         logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 

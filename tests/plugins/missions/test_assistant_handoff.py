@@ -180,7 +180,7 @@ class TestPerTurnExposure:
         "session_key",
         [
             "agent:main:whatsapp:dm:61400000000",  # wrong profile
-            "agent:assistant:telegram:dm:61400000000",  # wrong platform
+            "agent:assistant:discord:dm:61400000000",  # wrong platform
             "agent:assistant:whatsapp:dm",  # malformed
             "agent:assistant:whatsapp:dm:61400000000:extra",  # unexpected shape
             "agent:assistant:whatsapp::dm:61400000000",  # empty prefix segment

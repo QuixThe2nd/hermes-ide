@@ -74,8 +74,8 @@ DEFAULT_CONFIG = {
         # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,
         # Max seconds an alias routing key waits for the active turn holding the same session lease;
-        # on expiry the message is rejected with a resend notice. Keep short: Telegram dispatches
-        # sequentially, so a waiter delays unrelated topics. Non-positive -> 5s.
+        # on expiry the message is rejected with a resend notice. Keep short: sequentially
+        # dispatching platforms let a waiter delay unrelated topics. Non-positive -> 5s.
         "gateway_turn_lease_timeout": 5,
         # Per-session AIAgent cache in the gateway. Each entry keeps a warm prompt prefix AND the
         # full transcript: too small re-pays uncached prompts, too large fills the heap.
@@ -317,8 +317,7 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
-        "modal_mode": "auto",
-        # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
+        # Remote-backend connection-class failures (SSH host unreachable):
         # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +
         # traceback.
         "degraded_mode": "warn",
@@ -366,43 +365,6 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "docker_forward_env": [],
-        # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
-        # reads host values) — useful under systemd without the user's shell env. Example:
-        # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
-        "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
-        # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
-        "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
-        # Docker volume mounts, "host_path:container_path" (docker -v syntax), e.g.
-        # ["/home/user/.hermes/cache/documents:/output"]. For gateway MEDIA delivery, write to
-        # /output/... inside Docker and emit the host-visible path in MEDIA:, not the container one.
-        "docker_volumes": [],
-        "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
-        "docker_network": True,  # false = --network=none, no network access from commands
-        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
-        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
-        # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
-        # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
-        "docker_shm_size": "1g",
-        # Run the container as the host uid:gid (`--user`) so files written to bind mounts
-        # (docker_volumes, persistent workspace, mounted cwd) are owned by you, not root. Off by
-        # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,
-        # which drops to `hermes` via s6-setuidgid). When on, SETUID/SETGID caps are omitted.
-        "docker_run_as_host_user": False,
-        # Snap-packaged Docker under AppArmor (Ubuntu cloud images; LP#1908448) refuses to exec
-        # anything under `--init` or `--security-opt no-new-privileges` ("operation not
-        # permitted"). True drops those two flags; every other hardening stays. See #9730.
-        "docker_snap_compat": False,
-        # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
-        "docker_shared_container_key": "",
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
@@ -445,6 +407,8 @@ DEFAULT_CONFIG = {
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # seconds per Camofox command (screenshot, navigate, etc.)
+        # Default-on mid-task screenshot delivery; set false to opt out.
+        "progress_images": True,
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
         "allow_private_urls": False,  # cloud metadata endpoints remain blocked even when enabled
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
@@ -488,8 +452,8 @@ DEFAULT_CONFIG = {
         "retention_days": 7,
         "min_interval_hours": 24,
     },
-    # Hard cap (chars) for one auto-loaded context file (SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md,
-    # .cursorrules) before head/tail truncation. null = scale with the model's context window (floor
+    # Hard cap (chars) for one auto-loaded context file (SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md)
+    # before head/tail truncation. null = scale with the model's context window (floor
     # 20K, ceiling 500K); a positive int pins a fixed cap. Separate from read_file limits.
     "context_file_max_chars": None,
     # Seconds to wait for a single context file read before skipping it with a warning. Guards startup
@@ -588,7 +552,7 @@ DEFAULT_CONFIG = {
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized
-        # stall beats the cached-prefix discount. See website/docs/developer-guide/micro-compaction.md.
+        # stall beats the cached-prefix discount. See the micro-compaction developer guide.
         "micro_compact": False,
         # Cadence: run a pass every Nth completed turn (1 = one cache break per turn, 5 = a fifth of
         # the breaks). Clamped >= 1; ignored unless micro_compact is true.
@@ -605,7 +569,7 @@ DEFAULT_CONFIG = {
         "hygiene_total_ceiling_seconds": 600,
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts
         # Max seconds an ARRIVING user turn is held while a streaming hygiene summary finishes;
-        # bounds user-visible latency (keep under chat idle timeouts, Telegram ~30s). On expiry the
+        # bounds user-visible latency (keep under chat idle timeouts, ~30s). On expiry the
         # turn proceeds uncompressed; the detached worker keeps its watermark-fenced commit, so the
         # summary is adopted at the next safe boundary.
         "hygiene_max_turn_hold_seconds": 10,
@@ -652,7 +616,7 @@ DEFAULT_CONFIG = {
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
-        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
+        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter at the
         # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
@@ -665,22 +629,6 @@ DEFAULT_CONFIG = {
     # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
     # caching.
     "prompt_caching": {"cache_ttl": "5m"},
-    "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
-        "region": "",  # empty = AWS_REGION env var → us-east-1
-        "discovery": {
-            "enabled": True,           # auto-discover models via ListFoundationModels
-            "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
-            "refresh_interval": 3600,  # cache discovery results (seconds)
-        },
-        # Bedrock Guardrails: create one in the console, then set ID and version.
-        # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
-        "guardrail": {
-            "guardrail_identifier": "",  # e.g. "abc123def456"
-            "guardrail_version": "",     # e.g. "1" or "DRAFT"
-            "stream_processing_mode": "async",  # "sync" | "async"
-            "trace": "disabled",         # "enabled" | "disabled" | "enabled_full"
-        },
-    },
     # Auxiliary model config — provider/model per side task. provider "auto" = auto-detect;
     # empty model = provider's default aux model; all tasks fall back to
     # openrouter:google/gemini-3-flash-preview when the configured provider is unavailable.
@@ -745,7 +693,6 @@ DEFAULT_CONFIG = {
             "language": "",
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
-        "tts_audio_tags": _aux(30),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
@@ -781,15 +728,6 @@ DEFAULT_CONFIG = {
         # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
-        "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
-        "busy_steer_ack_enabled": True,
-        # Follow-up "✅ Steer delivered" bubble sent the moment the steered
-        # text is actually injected into the model's context (the initial
-        # ack only promises that it will arrive). Set false to keep only
-        # the initial acknowledgment.
-        "busy_steer_delivered_ack_enabled": True,
         # Classic CLI multiline fallbacks beyond Alt+Enter.
         # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
         # a newline, a trailing backslash followed by Enter continues the draft,
@@ -855,9 +793,6 @@ DEFAULT_CONFIG = {
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
         "file_mutation_verifier": True,
-        # Nous credits status-bar notices (usage bands, grant-spent, depleted/restored). False mutes
-        # them; balance data and /usage keep working.
-        "credits_notices": True,
         # Append a one-line explanation when a turn ends with no usable reply (empty after retries,
         # truncated stream, pending tool result, iteration/budget limit) instead of the bare
         # "(empty)" sentinel.
@@ -893,6 +828,9 @@ DEFAULT_CONFIG = {
         # Engine warning/failure notifications stay visible unless an operator opts in.
         # Does not suppress task results, manual commands, or existing logs.
         "suppress_warning_notifications": False,
+        # Gateway: post a "🔎 jev ..." line per real Jev classification into the originating chat.
+        # Read from the profile that owns the message; false posts nothing, decisions unchanged.
+        "jev_notices": True,
         # Gateway: show the "🧠 gateway context injected" progress card for gateway-only
         # envelope context (interruption system notes, voice prefixes added around the user
         # message). Memory/plugin/mixed context cards and ordinary tool progress are
@@ -918,36 +856,21 @@ DEFAULT_CONFIG = {
         # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
-        # Gateway tool-progress rows render inside fenced code boxes when true (default); set
-        # false for plain text. Per platform: display.platforms.<platform>.tool_progress_codebox.
-        "tool_progress_codebox": True,
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".
         # Per-platform: display.platforms.<platform>.status_phrases.
         "status_phrases": {},
         # Auto-delete EphemeralReply system notices ("✨ New session started!", …) after N seconds
-        # where deletion is supported (Telegram; others ignore). Agent responses are never touched.
+        # where deletion is supported; others ignore. Agent responses are never touched.
         # 0 = disabled.
         "ephemeral_system_ttl": 0,
-        # Per-platform display/streaming overrides; unset keys fall through to the global. Telegram
-        # has smooth native draft streaming (on); Discord/Slack only edit-based streaming, which
-        # flickers (off). Gap-fillers only: explicit user values win, and the global
+        # Per-platform display/streaming overrides; unset keys fall through to the global.
+        # Relay/fronted platforms have smooth native draft streaming (on); Discord/Slack only
+        # edit-based streaming, which flickers (off). Gap-fillers only: explicit user values win, and the global
         # streaming.enabled master switch still gates everything.
         "platforms": {
             "discord": {"streaming": False},
-        },
-        # Gateway runtime footer on the FINAL message, e.g. `model · 68% · 12s · api 8s · 9 tools`.
-        # Per-platform: display.platforms.<platform>.runtime_footer.
-        "runtime_footer": {
-            "enabled": True,
-            # Order shown; drop any to hide. Opt-in extras: cwd, latency, served_model (alias → the
-            # deployment a routing proxy reported / Hermes' fallback route).
-            "fields": [
-                "model", "context_pct",
-                "turn_time", "api_time", "tool_time", "overhead_time", "api_calls", "tool_calls",
-                "reasoning",
-            ],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
         # config controls visibility not ordering); empty = default set. Available: model,
@@ -961,180 +884,6 @@ DEFAULT_CONFIG = {
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
     },
 
-    # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
-    # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
-    # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
-    # NeuTTS/KittenTTS 2000).
-    "tts": {
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
-        "provider": "edge",
-        "edge": {
-            # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
-            "voice": "en-US-AriaNeural",
-        },
-        "elevenlabs": {
-            "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
-            "model_id": "eleven_multilingual_v2",
-        },
-        "openai": {
-            "model": "gpt-4o-mini-tts",
-            # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
-            # onyx, sage, shimmer, verse
-            "voice": "alloy",
-            # Forwarded verbatim in the request body for OpenAI-compatible servers whose cloned
-            # voices demand it (400 consent_required otherwise); "" sends nothing.
-            "consent_attestation": "",
-            # Raw PCM rate for streaming playback. OpenAI emits 24 kHz; a compatible endpoint that
-            # reports its rate (X-Audio-Sample-Rate header) overrides this automatically.
-            "pcm_sample_rate": 24000,
-        },
-        "gemini": {
-            "model": "gemini-2.5-flash-preview-tts",
-            "voice": "Kore",
-            # Gemini 3.1: aux-model rewrite inserts [audio tags] into the TTS script only.
-            "audio_tags": False,
-            # Optional local text file with performance direction; may include a `{transcript}`
-            # placeholder, else the live transcript is appended.
-            "persona_prompt_file": "",
-        },
-        "xai": {
-            "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)
-            "language": "en",  # BCP-47 code ("en", "pt-BR") or "auto"
-            "speed": 1.0,  # 0.7–1.5
-            "auto_speech_tags": False,  # insert expressive audio tags via LLM rewrite
-            "optimize_streaming_latency": 0,  # 0–2, trades quality for lower latency
-            "sample_rate": 24000,  # 22050 / 24000 / 44100 / 48000
-            "bit_rate": 128000,  # MP3 bitrate; only applies when codec=mp3
-            # Route POST {base}/tts through a named `providers:` entry (base_url + key_env)
-            # that fronts xAI — e.g. a LiteLLM passthrough — instead of direct api.x.ai. The
-            # proxy's own key is sent (never your xAI OAuth bearer). The WebSocket streaming
-            # lane cannot cross an HTTP passthrough, so a non-empty value makes streaming
-            # fail closed to this (proxied, same-voice) sync path. "" = direct.
-            "proxy_provider": "",
-        },
-        "mistral": {
-            "model": "voxtral-mini-tts-2603",
-            "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
-        },
-        "minimax": {"model": "speech-02-hd", "voice_id": "English_expressive_narrator"},
-        "kittentts": {
-            "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
-            "voice": "Jasper",
-        },
-        "neutts": {
-            "ref_audio": "",  # path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # path to reference voice transcript (empty = bundled default)
-            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
-            "device": "cpu",  # cpu, cuda, or mps
-        },
-        "piper": {
-            # Voice name (downloaded on first use) or absolute path to a .onnx file; list:
-            # github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md. Optional keys: voices_dir
-            # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),
-            # noise_scale, noise_w_scale, volume, normalize_audio.
-            "voice": "en_US-lessac-medium",
-        },
-        "deepinfra": {
-            "model": "",  # empty = first tts-tagged model from the live catalog
-            "voice": "default",
-            # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
-        },
-    },
-
-    "stt": {
-        "enabled": True,
-        # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
-        "echo_transcripts": True,
-        # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
-        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
-        # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
-        "language": "en",
-        # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
-        # inflates upload time, billing and hallucinations. Failure = raw upload.
-        "cloud_trim_silence": True,
-        "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
-        "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
-        "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
-            "language": "",  # auto-detect; set "en", "es", ... to force
-            "initial_prompt": "",
-            # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
-            # (false = raw audio, for music/ambient). A segment is dropped only if no_speech_prob
-            # ABOVE no_speech_prob_threshold AND avg_logprob BELOW logprob_threshold.
-            "vad": True,
-            "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks
-            "no_speech_prob_threshold": 0.6,
-            "logprob_threshold": -1.0,
-            "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
-        },
-        "groq": {
-            # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
-            "model": "whisper-large-v3-turbo",
-            "language": "",  # auto-detect; set "en", "es", ... to force
-        },
-        "openai": {
-            # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
-            "model": "whisper-1",
-            "language": "",  # auto-detect; set "en", "es", ... to force
-            "timeout": 60,  # seconds; allow self-hosted backends time to cold-start
-            "max_retries": 1,  # OpenAI SDK transport retries
-        },
-        "mistral": {
-            "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
-            "language": "",  # auto-detect; set "en", "es", ... to force
-        },
-        "xai": {
-            "language": "",  # auto-detect; set "en", "es", ... to force
-        },
-        "elevenlabs": {
-            "model_id": "scribe_v2",  # scribe_v2, scribe_v1
-            "language_code": "",  # auto-detect; set "eng", "spa", ... to force
-            "tag_audio_events": False,
-            "diarize": False,
-        },
-        "deepinfra": {
-            "model": "",  # empty = first stt-tagged model from the live catalog
-            # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
-        },
-    },
-
-    "voice": {
-        # How the Desktop voice conversation is wired:
-        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
-        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
-        #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
-        "voice_chat_mode": "chained",
-        "gpt_live": {
-            "model": "gpt-live-1",
-            "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
-            # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
-            "instructions": "",
-            # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
-        },
-        "record_key": "ctrl+b",
-        "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
-        "max_recording_seconds": 120,
-        "auto_tts": False,
-        # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
-        # authenticated REST at session start) instead of relaying via the gateway.
-        "client_direct": True,
-        "beep_enabled": True,  # record start/stop beeps in CLI voice mode
-        "beep_volume": 0.3,  # beep amplitude multiplier, 0.0-1.0
-        "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)
-        "silence_threshold": 200,  # RMS below this = silence (0-32767)
-        "silence_duration": 3.0,  # seconds of silence before auto-stop
-        "barge_in": True,  # interrupt the agent / stop TTS when the user starts talking
-        # Trip suppression after TTS onset (mic stays live the whole turn).
-        "barge_in_grace_seconds": 0.5,
-        # Speech trigger = quiet-room floor x this (floor calibrated BEFORE playback).
-        "barge_in_threshold_multiplier": 3.0,
-        # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
-        # instead of going to the agent. [] disables.
-        "stop_phrases": ["stop"],
-    },
     # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
     # conversation history and are re-sent on every later API call.
     "vision": {
@@ -1146,44 +895,6 @@ DEFAULT_CONFIG = {
         # an explicit number applies everywhere; 0 = unlimited.
         "max_calls_per_image": None,
     },
-    # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
-    # voice session. Off by default; toggle with /wake.
-    "wake_word": {
-        "enabled": False,
-        "surface": "auto",  # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
-        "input_device": None,  # PortAudio input device index/name; null = process default
-        "capture": "auto",  # auto | local | client (desktop streams mic via wake.feed)
-        # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine"
-        # (premium; needs PORCUPINE_ACCESS_KEY)
-        "provider": "openwakeword",
-        # sherpa: this IS the detected phrase; other engines: cosmetic label (detection is keyed by
-        # the model/keyword below)
-        "phrase": "hey hermes",
-        "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
-        # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
-        # triggers, more latency; 1 = single-frame)
-        "confirmation_frames": 3,
-        "start_new_session": True,  # fresh session on wake vs. continue the current one
-        # sherpa only: listen for every wake-enabled profile's phrase and route to it
-        "profile_routing": True,
-        "openwakeword": {
-            # "hey_hermes" | built-in openWakeWord name ("hey_jarvis", "alexa", ...) | path to a
-            # custom .onnx/.tflite model
-            "model": "hey_hermes",
-            # "" (auto: tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite" — onnx scores
-            # near-zero on macOS ARM64 (arms but never fires)
-            "inference_framework": "",
-        },
-        "sherpa": {
-            # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer
-            "model_dir": "",
-        },
-        "porcupine": {
-            # built-in keyword ("jarvis", "computer", ...) or path to a custom .ppn
-            "keyword": "jarvis",
-        },
-    },
-
     # Context engine — how the context window is managed near the token limit. "compressor" =
     # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
     # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
@@ -1209,15 +920,15 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "mem0", "hindsight", "holographic", "retaindb", "byterover".
+        # External memory provider plugin (empty = built-in only). The only
+        # built-in external provider is "hindsight". Unknown names fail closed.
         "provider": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_agent
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # configured providers (OpenRouter, Z.ai, Kimi, etc.) are supported.
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
@@ -1335,17 +1046,18 @@ DEFAULT_CONFIG = {
     "prefill_messages_file": "",
     # Goals — persistent cross-turn goal loop: after each turn an aux-model judge checks
     # if the goal is satisfied, else a continuation prompt re-enters the session until
-    # done, budget exhausted, or paused. With goals.auto.mode=on goals are created
-    # automatically from task-like messages (see `hermes goals`). Judge failures fail
-    # OPEN; the budget is the backstop.
+    # done, budget exhausted, or paused. Goals are always automatic: every eligible
+    # message is classified by Jev Decisions and task-like messages start/extend a
+    # goal at the end of the turn (see `hermes goals`). Judge failures fail OPEN; the
+    # budget is the backstop. A leftover `goals.auto.mode` key from older installs is
+    # ignored — there is no mode setting.
     "goals": {
         # Max continuation turns before auto-pause — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,
-        # off = no work; shadow = background classification + local JSONL only;
-        # on = Jev Decisions classify eligible messages and auto goals are
-        # created/appended/resumed at the end of the turn.
-        "auto": {"mode": "shadow"},
+        # Read from the profile that owns the session: false skips the automatic layer entirely
+        # (no Jev intent call, no parked decision, no "stop" auto-pause); /goal keeps working.
+        "auto": {"enabled": True},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
@@ -1456,9 +1168,6 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho AI-native memory — ~/.honcho/config.json is the source of truth (apiKey, workspace,
-    # peerName, sessions, enabled); hermes-specific overrides only here.
-    "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
@@ -1519,29 +1228,6 @@ DEFAULT_CONFIG = {
         # Max bytes per cached attachment (held in memory while written); 0 = no cap. Env:
         # DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
-        # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
-        "voice_channel_inactivity_timeout_seconds": 300,
-        # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
-        # extends this floor so long TTS isn't cut off.
-        "voice_playback_timeout_seconds": 120,
-        # Voice-channel software mixer (plugins/platforms/discord/voice_mixer.py): ambient
-        # "thinking" bed, verbal acks and TTS OVERLAP (ambient ducked) vs stop-and-swap.
-        "voice_fx": {
-            "enabled": False,  # master switch for the mixer subsystem
-            "ambient_enabled": True,  # play the idle "thinking" bed while tools run
-            "ambient_path": "",  # custom loop audio file; "" = synthesised pad
-            "ambient_gain": 0.18,  # idle bed loudness, 0.0–1.0
-            "duck_gain": 0.06,  # ambient loudness while speech plays
-            "speech_gain": 1.0,  # TTS / ack loudness, 0.0–1.0
-            "ack_enabled": True,  # speak a short phrase before the first tool call
-            "ack_phrases": [  # picked at random; [] disables phrases
-                "Let me look into that.",
-                "One moment.",
-                "Checking on that now.",
-                "Give me a sec.",
-                "On it.",
-            ],
-        },
     },
 
     "whatsapp": {
@@ -1559,7 +1245,7 @@ DEFAULT_CONFIG = {
     },
     # User-defined quick commands that bypass the agent loop (type: exec only).
     "quick_commands": {},
-    # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,
+    # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack,
     # ...). Value: {"append": text} keeps the built-in hint and appends; {"replace": text}
     # substitutes it; a bare string is shorthand for append. `replace` wins over `append` if both
     # are given.
@@ -1589,7 +1275,7 @@ DEFAULT_CONFIG = {
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
-    # website/docs/user-guide/features/hooks.md.
+    # the hosted hooks user guide.
     "hooks": {},
     # Auto-accept shell-hook registrations without a TTY prompt (also --accept-hooks or
     # HERMES_ACCEPT_HOOKS=1). Gateway/cron/non-interactive runs need one of these to pick up
@@ -1666,14 +1352,14 @@ DEFAULT_CONFIG = {
         # message" footer. False = clean output.
         "wrap_response": True,
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
-            # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
-            # otherwise sends with disable_notification=True and briefs look undelivered). False =
+            # Mark cron deliveries FINAL so the platform pushes them (a silent
+            # disable_notification send makes briefs look undelivered). False =
             # silent, no-push deliveries.
             "notify": True,
         },
         # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
         # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.
-        # Thread-capable platforms (Telegram topics, Discord/Slack threads) get a seeded thread per
+        # Thread-capable platforms (Discord/Slack threads) get a seeded thread per
         # job via create_handoff_thread; DM-only platforms mirror the brief into the target DM
         # session. Appended at a turn boundary via mirror_to_session, cached system prompt
         # untouched. User-written bare platforms address home conversations, unlike `all`
@@ -1744,9 +1430,8 @@ DEFAULT_CONFIG = {
         "max_session_kernels": 4,
     },
     "tools": {
-        # Remote connector discovery/lifecycle through the Nous tool gateway.
-        # The flag is the user's off switch; availability additionally requires
-        # the portal sign-in every managed tool gates on.
+        # Remote connector discovery/lifecycle through an explicitly configured tool gateway.
+        # The flag is the user's off switch; availability additionally requires a gateway token.
         "connectors": {"enabled": True},
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
@@ -1799,7 +1484,7 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
 
-    # Gateway settings — control how messaging platforms (Telegram, Discord,
+    # Gateway settings — control how messaging platforms (Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
         # After an unexpected SIGTERM interrupts a running gateway agent,
@@ -1817,11 +1502,9 @@ DEFAULT_CONFIG = {
         # agent.cron_drain_timeout, agent.restart_after_turn_timeout (all
         # still read; env-var mirrors are deprecated).
         "drain_timeout": 86400,
-        # tool — one pipeline) also bounces platform gateway connections: the overlap
-        # successor takes over the platform transports and adapters reconnect on it.
-        # false = agent-core sessions restart without bouncing platform connections;
-        # `hermes gateway restart --no-platforms` overrides per call.
-        "restart_platforms": True,
+        # gateway.restart_platforms was removed: every restart hands over to the
+        # overlap successor through the platform-adapter hubs. Existing values
+        # in user config.yaml files are harmless leftovers and ignored.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
@@ -1914,7 +1597,7 @@ DEFAULT_CONFIG = {
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must
         # not use (e.g. a scheduled task picking up a Clash/V2Ray HTTP_PROXY -> "Cannot connect to
-        # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, TELEGRAM_PROXY, ...) are still
+        # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, ...) are still
         # honored.
         "trust_env": True,
         # Media delivery. False: any emitted file path is delivered natively unless under the
@@ -1953,16 +1636,16 @@ DEFAULT_CONFIG = {
     # default: costs extra edit/draft API calls per response.
     "streaming": {
         "enabled": False,  # When false, each response is delivered as one final message.
-        # auto = native drafts where supported (Telegram DMs, Bot API 9.5+), edits elsewhere
-        # (Discord, Slack, Matrix, Telegram groups); draft = drafts with edit fallback; edit =
+        # auto = native drafts where supported (relay connectors), edits elsewhere
+        # (Discord, Slack, Matrix); draft = drafts with edit fallback; edit =
         # progressive editMessageText only; off = disabled.
         "transport": "auto",
-        # Minimum seconds between progressive edits (Telegram's ~1 edit/s flood envelope).
+        # Minimum seconds between progressive edits (platform flood-control envelopes).
         "edit_interval": 0.8,
         # Flush the buffer once this many chars accumulate, so short replies feel instant.
         "buffer_threshold": 24,
         "cursor": " \u2589",  # Cursor glyph appended to the in-progress message.
-        # Telegram only: when >0, if the preview was visible at least this many seconds the final
+        # When >0, if the preview was visible at least this many seconds the final
         # edit is sent as a fresh message so the timestamp reflects completion.
         "fresh_final_after_seconds": 0.0,
     },
@@ -2033,7 +1716,7 @@ DEFAULT_CONFIG = {
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and transmission to Nous (`send`) are SEPARATE opt-ins; see
-    # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
+    # the relay shared-metrics developer guide, Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
@@ -2266,33 +1949,6 @@ DEFAULT_CONFIG = {
         # development from source.
         "allow_unsigned_driver": False,
     },
-    # Egress credential-injection proxy (iron-proxy) for remote terminal sandboxes (Docker today):
-    # the sandbox sees opaque tokens and iron-proxy swaps in real credentials at egress, so a
-    # compromised sandbox leaks only tokens that work behind the trusted proxy. Configure with
-    # `hermes egress setup`.
-    "proxy": {
-        "enabled": False,  # When false, nothing starts, no docker mounts, no binary installs.
-        # Tunnel listener port; sandboxes get HTTPS_PROXY=http://<host>:<port>.
-        "tunnel_port": 9090,
-        # Auto-download the pinned binary into ~/.hermes/bin/; False = iron-proxy on PATH.
-        "auto_install": True,
-        # Upstream secret source: env = process env; bitwarden = refetch via `bws secret list` on
-        # each proxy restart (requires secrets.bitwarden.enabled).
-        "credential_source": "env",
-        # True: the Docker backend refuses to start a sandbox if the proxy is enabled but not
-        # running. False: fall back to direct outbound with real credentials.
-        "enforce_on_docker": True,
-        # With credential_source bitwarden, a missing BWS token/project_id or an empty fetch makes
-        # the daemon raise. True silently falls back to host env (useful mid-migration). A leftover
-        # fail_on_uncovered_providers key is ignored.
-        "allow_env_fallback": False,
-        # SSRF deny list. None/empty = loopback, link-local (incl. 169.254.169.254 metadata),
-        # RFC1918. Explicit [] opts out (only for hermetic loopback tests).
-        "upstream_deny_cidrs": None,
-        # Extra allowed upstream hosts beyond the bundled major-provider defaults; wildcards
-        # (`*.foo.com`) supported.
-        "extra_allowed_hosts": [],
-    },
     "desktop": {  # Session-GUI settings shared by TUI and JSON-RPC clients.
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
@@ -2308,26 +1964,6 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "nous": {
-        # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
-        # server-issued credential lifetime (raising above it has no effect). 0 disables the
-        # keepalive thread.
-        "keepalive_interval_seconds": 900,
-        # anthropic_wire: which Portal route carries anthropic/* models. "chat" =
-        # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
-        # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
-        # start on chat and, per session, switch to native from the first response when the
-        # Portal upstream serving the model is one where native is known clean. Native is the
-        # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
-        # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
-        # NousResearch/api#227), so chat is the default until that is fixed.
-        "anthropic_wire": "chat",
-        # Nous free tier: with no other provider configured, Hermes sets up a free Nous identity on
-        # first use (inference on nous/welcome + connectors) and offers `/login` (terminal:
-        # `hermes auth upgrade`) to sign in. false turns the free tier off entirely: nothing is set
-        # up and nothing is used.
-        "guest": True,
-    },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
     # Bridged to VERTEX_PROJECT_ID / VERTEX_REGION.
@@ -2403,12 +2039,6 @@ def _base_url(name, prompt_name=None):
 # tools=[...] lists the model tools the key unlocks.
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
-    "NOUS_BASE_URL": _base_url("Nous Portal"),
-    "HERMES_ANON_API_SECRET": _env(
-        "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated "
-        "integration phase (not needed once the gate is removed)",
-        "Nous free-tier shared secret (leave empty unless given one)", password=True,
-        category="provider", advanced=True),
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),
@@ -2502,11 +2132,6 @@ OPTIONAL_ENV_VARS = {
         "https://console.upstage.ai/api-keys", advanced=False),
     "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",
         "Upstage base URL (leave empty for default)", None, password=False),
-    "AWS_REGION": _prov("AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "AWS Region", "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        password=False),
-    "AWS_PROFILE": _prov("AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "AWS Profile", None, password=False),
     "AZURE_FOUNDRY_API_KEY": _prov("Azure Foundry API key for custom Azure endpoints",
         "Azure Foundry API Key", "https://ai.azure.com/", advanced=False),
     "AZURE_FOUNDRY_BASE_URL": _prov(
@@ -2522,7 +2147,7 @@ OPTIONAL_ENV_VARS = {
     "FIRECRAWL_API_URL": _tool("Firecrawl API URL for self-hosted instances (optional)",
         "Firecrawl API URL (leave empty for cloud)", None, password=False, advanced=True),
     "FIRECRAWL_GATEWAY_URL": _tool(
-        "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "Exact Firecrawl tool-gateway origin override (optional)",
         "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
         advanced=True),
     "TOOL_GATEWAY_URL": _tool(
@@ -2534,16 +2159,15 @@ OPTIONAL_ENV_VARS = {
         "Connector-gateway URL (leave empty to derive from domain)", None,
         password=False, advanced=True),
     "TOOL_GATEWAY_DOMAIN": _tool(
-        "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor "
-        "hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "Shared tool-gateway domain suffix used to derive vendor hosts",
         "Tool-gateway domain suffix", None, password=False, advanced=True),
     "TOOL_GATEWAY_SCHEME": _tool(
-        "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts "
+        "Shared tool-gateway URL scheme used to derive vendor hosts "
         "(`https` by default, set `http` for local gateway testing)", "Tool-gateway URL scheme",
         None, password=False, advanced=True),
     "TOOL_GATEWAY_USER_TOKEN": _tool(
-        "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise "
-        "read from the Hermes auth store)", "Tool-gateway user token", None, advanced=True),
+        "Explicit access token for tool-gateway requests (optional)",
+        "Tool-gateway user token", None, advanced=True),
     "TAVILY_API_KEY": _tool(
         "Tavily API key for AI-native web search and extract (optional — keyless works when "
         "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",
@@ -2574,20 +2198,6 @@ OPTIONAL_ENV_VARS = {
         tools=["image_generate", "video_generate"]),
     "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",
         "Krea API key", "https://www.krea.ai/settings/api-tokens", tools=["image_generate"]),
-    "VOICE_TOOLS_OPENAI_KEY": _tool(
-        "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
-        "OpenAI API Key (for Whisper STT + TTS)", "https://platform.openai.com/api-keys",
-        tools=["voice_transcription", "openai_tts"]),
-    "ELEVENLABS_API_KEY": _tool(
-        "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
-        "ElevenLabs API key", "https://elevenlabs.io/",
-        tools=["elevenlabs_tts", "voice_transcription"]),
-    "MISTRAL_API_KEY": _tool("Mistral API key for Voxtral TTS and transcription (STT)",
-        "Mistral API key", "https://console.mistral.ai/"),
-    "PORCUPINE_ACCESS_KEY": _tool(
-        "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; "
-        "openWakeWord is the free default)", "Picovoice access key",
-        "https://console.picovoice.ai/"),
     "GITHUB_TOKEN": _tool("GitHub token for Skills Hub (higher API rate limits, skill publish)",
         "GitHub Token", "https://github.com/settings/tokens"),
     # ── Bundled skills (opt-in) ── category="skill" (not "tool") so the sandbox env blocklist in
@@ -2601,37 +2211,12 @@ OPTIONAL_ENV_VARS = {
         "Airtable API key", "https://airtable.com/create/tokens"),
     "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
         "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
-    # ── Honcho ──
-    "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
-        "https://app.honcho.dev", tools=["honcho_context"]),
-    "HONCHO_BASE_URL": _tool("Base URL for self-hosted Honcho instances (no API key needed)",
-        "Honcho base URL (e.g. http://localhost:8000)", password=None),
     # ── Hindsight ──
     "HINDSIGHT_API_KEY": _tool("Hindsight API key for graph-aware persistent memory",
         "Hindsight API key", "https://hindsight.vectorize.io", tools=["hindsight_recall"]),
     "HINDSIGHT_API_URL": _tool(
         "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
         "Hindsight API URL", password=None, advanced=True),
-    # ── Supermemory ──
-    "SUPERMEMORY_API_KEY": _tool("Supermemory API key for conversation-scoped persistent memory",
-        "Supermemory API key", "https://supermemory.ai", tools=["supermemory_search"]),
-    # ── Mem0 ──
-    "MEM0_API_KEY": _tool("Mem0 Platform API key for semantic persistent memory", "Mem0 API key",
-        "https://app.mem0.ai", tools=["mem0_search"]),
-    # ── RetainDB ──
-    "RETAINDB_API_KEY": _tool("RetainDB API key for persistent memory", "RetainDB API key",
-        "https://retaindb.com", tools=["retaindb_search"]),
-    "RETAINDB_BASE_URL": _tool(
-        "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
-        "RetainDB base URL", password=None, advanced=True),
-    # ── ByteRover ──
-    "BRV_API_KEY": _tool("ByteRover API key (optional, for cloud sync — local-first by default)",
-        "ByteRover API key", "https://app.byterover.dev", tools=["brv_query"]),
-    # ── OpenViking ──
-    "OPENVIKING_API_KEY": _tool("OpenViking API key (leave blank for local dev mode)",
-        "OpenViking API key", tools=["viking_search"]),
-    "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
-        "OpenViking endpoint", password=None, advanced=True),
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
         "Langfuse public key", "https://cloud.langfuse.com", password=False),
@@ -2641,16 +2226,6 @@ OPTIONAL_ENV_VARS = {
         "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
         advanced=True),
     # ── Messaging platforms ──
-    "TELEGRAM_BOT_TOKEN": _msg(
-        "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "
-        "and secret)", "Telegram bot token", "https://t.me/BotFather", password=True),
-    "TELEGRAM_ALLOWED_USERS": _msg(
-        "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to "
-        "approve new users through DM pairing", "Allowed Telegram user IDs (comma-separated)",
-        "https://t.me/userinfobot"),
-    "TELEGRAM_PROXY": _msg(
-        "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, "
-        "https://, socks5://", "Telegram proxy URL (optional)"),
     "DISCORD_BOT_TOKEN": _msg("Discord bot token from Developer Portal", "Discord bot token",
         "https://discord.com/developers/applications", password=True),
     "DISCORD_ALLOWED_USERS": _msg("Comma-separated Discord user IDs allowed to use the bot",

@@ -918,7 +918,7 @@ class TestWorktreeLockPredicate:
 
 class TestWidenedPruner:
     """Behavior contracts for the widened pruner (#all-.worktrees coverage,
-    squash-merge escape hatch, kanban exclusion, preserved-work warning).
+    squash-merge escape hatch, preserved-work warning).
 
     Previously only ``hermes-*`` directories were considered, so salvage/
     review/port lanes created with raw ``git worktree add`` accumulated
@@ -989,6 +989,15 @@ class TestWidenedPruner:
         wt, _ = self._mk(git_repo, "salvage-fresh", age_h=48)
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "named tree under 72h must be kept (3x scratch timeline)"
+
+    def test_t_hex_tree_is_reaped_like_other_named_trees(self, git_repo):
+        """``t_<hex>`` trees were exempt as legacy Kanban task trees; the Kanban
+        lifecycle is gone, so they age on the named-tree (3x) tier and a clean
+        stale one is reaped like any other lane."""
+        import cli
+        wt, _ = self._mk(git_repo, "t_deadbeef", age_h=80)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "stale clean t_<hex> tree should be reaped, not exempted"
 
 
 

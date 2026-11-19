@@ -37,8 +37,8 @@ def _seed_record(delegation_id, session_key="", parent_session_id="", status="ru
 
 class TestInterruptForSessionByParentId:
     def test_parent_session_id_selector(self):
-        mine = _seed_record("d1", session_key="agent:main:telegram:dm:1", parent_session_id="sess_old")
-        other = _seed_record("d2", session_key="agent:main:telegram:dm:2", parent_session_id="sess_other")
+        mine = _seed_record("d1", session_key="agent:main:discord:dm:1", parent_session_id="sess_old")
+        other = _seed_record("d2", session_key="agent:main:discord:dm:2", parent_session_id="sess_other")
         n = ad.interrupt_for_session(parent_session_id="sess_old")
         assert n == 1
         mine.assert_called_once()
@@ -56,11 +56,11 @@ class TestGatewayPinningFailsClosed:
         from gateway.session import SessionEntry
 
         return SessionEntry(
-            session_key="agent:main:telegram:group:-100:4",
+            session_key="agent:main:discord:group:-100:4",
             session_id=session_id,
             created_at=datetime.now(),
             updated_at=datetime.now(),
-            platform=Platform.TELEGRAM,
+            platform=Platform.DISCORD,
             chat_type="group",
         )
 
@@ -181,11 +181,11 @@ class TestGatewayPinningFailsClosed:
         from hermes_state import AsyncSessionDB, SessionDB
 
         session_db = SessionDB(db_path=tmp_path / "state.db")
-        session_db.create_session("sess_parent", source="telegram")
+        session_db.create_session("sess_parent", source="discord")
         session_db.end_session("sess_parent", end_reason="compression")
         session_db.create_session(
             "sess_tip",
-            source="telegram",
+            source="discord",
             parent_session_id="sess_parent",
         )
 
@@ -234,7 +234,7 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="test-chat", chat_type="dm", user_id="test-user")
+    source = SessionSource(platform=Platform.DISCORD, chat_id="test-chat", chat_type="dm", user_id="test-user")
     entry = store.get_or_create_session(source)
     runner = object.__new__(GatewayRunner)
     runner.session_store = store

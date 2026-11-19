@@ -47,11 +47,7 @@ class TestEstimateTokensRough:
         assert estimate_tokens_rough("a" * 400) == 100
 
 
-
-
-
 class TestEstimateMessagesTokensRough:
-
 
 
     def test_tool_call_message(self):
@@ -161,7 +157,6 @@ class TestEstimateMessagesTokensRough:
 
         # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
         assert estimate_messages_tokens_rough([msg]) < 5_000
-
 
 
 class TestEstimateRequestTokensRough:
@@ -433,10 +428,6 @@ class TestDefaultContextLengths:
                 )
 
 
-
-
-
-
 # =========================================================================
 # Codex OAuth context-window resolution (provider="openai-codex")
 # =========================================================================
@@ -451,7 +442,6 @@ class TestCodexOAuthContextLength:
     def setup_method(self):
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
-
 
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
@@ -831,8 +821,6 @@ class TestCodexOAuthContextLength:
         assert ctx == expected_ctx
 
 
-
-
 # =========================================================================
 # Custom endpoint model metadata
 # =========================================================================
@@ -962,7 +950,6 @@ class TestNousPortalContextResolution:
         mm._endpoint_model_metadata_cache_time.clear()
 
 
-
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_empty_model_never_fuzzy_matches_endpoint_catalog(self, mock_fetch):
         """An empty model name must not substring-match arbitrary catalog
@@ -1068,8 +1055,6 @@ class TestNousPortalContextResolution:
         )
 
 
-
-
 # =========================================================================
 # get_model_context_length — resolution order
 # =========================================================================
@@ -1081,12 +1066,6 @@ class TestGetModelContextLength:
             "test/model": {"context_length": 32000}
         }
         assert get_model_context_length("test/model") == 32000
-
-
-
-
-
-
 
 
     @patch("agent.model_metadata.fetch_model_metadata")
@@ -1189,10 +1168,6 @@ class TestGetModelContextLength:
         assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
-
-
-
-
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_custom_endpoint_falls_back_to_hardcoded_catalog(self, mock_fetch):
         """Custom/proxied endpoint that fails all probes should still resolve
@@ -1287,123 +1262,6 @@ class TestGetModelContextLength:
         mock_local_ctx.assert_called_once()
 
 
-
-
-# =========================================================================
-# Bedrock context resolution — must run BEFORE custom-endpoint probe
-# =========================================================================
-
-class TestBedrockContextResolution:
-    """Regression tests for Bedrock context-length resolution order.
-
-    Bug: because ``bedrock-runtime.<region>.amazonaws.com`` is not listed in
-    ``_URL_TO_PROVIDER``, ``_is_known_provider_base_url`` returned False and
-    the custom-endpoint probe at step 2 ran first — fetching ``/models`` from
-    Bedrock (which it doesn't serve), returning the 128K default-fallback
-    before execution ever reached the Bedrock branch.
-
-    Fix: promote the Bedrock branch ahead of the custom-endpoint probe.
-    """
-
-
-
-
-    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_bedrock_claude_4_6_ignores_stale_200k_cache(self, mock_fetch, tmp_path):
-        """Old 200K Bedrock cache entries must not mask the 1M table entry."""
-        cache_file = tmp_path / "context_length_cache.yaml"
-        base_url = "https://bedrock-runtime.us-east-2.amazonaws.com"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
-            save_context_length("us.anthropic.claude-sonnet-4-6", base_url, 200_000)
-            ctx = get_model_context_length(
-                "us.anthropic.claude-sonnet-4-6",
-                provider="bedrock",
-                base_url=base_url,
-            )
-        assert ctx == 1_000_000
-        mock_fetch.assert_not_called()
-
-
-    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_non_bedrock_url_still_probes(self, mock_fetch):
-        """Non-Bedrock hosts still reach the custom-endpoint probe."""
-        mock_fetch.return_value = {"some-model": {"context_length": 50000}}
-        ctx = get_model_context_length(
-            "some-model",
-            base_url="https://api.example.com/v1",
-        )
-        assert ctx == 50000
-        assert mock_fetch.called
-
-
-# =========================================================================
-# Bedrock context cache persistence — only a probe result may be persisted
-# =========================================================================
-
-class TestBedrockContextCachePersistence:
-    """``_resolve_bedrock_context_length`` persisted whatever
-    ``get_bedrock_context_length`` returned whenever a region was resolvable —
-    and ``resolve_bedrock_region()`` always resolves one (it ends in
-    ``or "us-east-1"``). A probe that returned None (expired SSO session,
-    offline, opaque server error) therefore froze the static table value — the
-    128K default for a model with no table row — under ``model@<base_url>`` or
-    ``model@bedrock://`` (written as ``model@bedrock:``), and the probe, which
-    the resolver treats as the only authoritative source, never ran for that
-    model again.
-
-    Invariants: only a probe-derived window may be persisted, and a failed
-    probe is memoised in memory for ``_BEDROCK_PROBE_FAILURE_TTL_SECONDS`` so
-    it is not re-sent on every resolution, yet runs again once the memo lapses.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _clear_bedrock_probe_memo(self):
-        """The failure memo is module-level state; it must not leak between tests."""
-        from agent import model_metadata as mm
-        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
-        yield
-        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
-
-    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
-    @patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None)
-    def test_failed_probe_does_not_persist_static_fallback(self, mock_probe, mock_region, tmp_path):
-        """A failed probe answers from the table (the 128K default here) but writes nothing
-        to disk. On main this persists ``amazon.future-model-v1:0@bedrock:: 128000``."""
-        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
-        model = "amazon.future-model-v1:0"  # no BEDROCK_CONTEXT_LENGTHS row
-        cache_file = tmp_path / "context_length_cache.yaml"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
-            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
-            assert get_cached_context_length(model, "bedrock://") is None
-        assert not cache_file.exists()
-        mock_probe.assert_called_once_with(model, "us-east-1")
-
-    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
-    @patch("agent.bedrock_adapter.probe_bedrock_context_length", side_effect=[None, 1_000_000])
-    def test_failed_probe_is_memoised_until_the_ttl_lapses(self, mock_probe, mock_region, tmp_path):
-        """Not persisting must not turn the probe into a per-resolution cost: inside the TTL a
-        second resolution answers from the table without re-probing and still writes nothing;
-        once the memo lapses the probe runs again and its window is what gets persisted. On
-        main the first call persists 128K and every later call serves it."""
-        from agent import model_metadata as mm
-        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
-        model = "amazon.future-model-v1:0"
-        cache_file = tmp_path / "context_length_cache.yaml"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
-            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
-            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
-            assert mock_probe.call_count == 1
-            assert not cache_file.exists()  # memoised in memory only
-            # Age the entry past the failure TTL (as tests/agent/test_probe_cache_followups.py does).
-            for key in mm._BEDROCK_PROBE_FAILURE_CACHE:
-                mm._BEDROCK_PROBE_FAILURE_CACHE[key] = (
-                    time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
-                )
-            assert get_model_context_length(model, provider="bedrock") == 1_000_000
-            assert get_cached_context_length(model, "bedrock://") == 1_000_000
-        assert mock_probe.call_count == 2
-
-
 # =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
 # =========================================================================
@@ -1483,7 +1341,6 @@ class TestFetchModelMetadata:
         return cache_path
 
 
-
     def test_network_success_writes_disk_cache(self, tmp_path, monkeypatch):
         self._reset_cache()
         cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
@@ -1534,7 +1391,6 @@ class TestFetchModelMetadata:
         assert mock_get.call_count == 1  # cached
 
 
-
     @patch("agent.model_metadata.requests.get")
     def test_canonical_slug_aliasing(self, mock_get):
         """Models with canonical_slug get indexed under both IDs."""
@@ -1558,9 +1414,6 @@ class TestFetchModelMetadata:
         assert result["anthropic/claude-3.5-sonnet"]["context_length"] == 200000
 
 
-
-
-
 # =========================================================================
 # Context probe tiers
 # =========================================================================
@@ -1576,14 +1429,8 @@ class TestGetNextProbeTier:
         assert get_next_probe_tier(256_000) == 128_000
 
 
-
-
     def test_from_8k_returns_none(self):
         assert get_next_probe_tier(8_000) is None
-
-
-
-
 
 
 # =========================================================================
@@ -1591,14 +1438,6 @@ class TestGetNextProbeTier:
 # =========================================================================
 
 class TestParseContextLimitFromError:
-
-
-
-
-
-
-
-
 
 
     @pytest.mark.parametrize("msg,expected", [
@@ -1669,10 +1508,6 @@ class TestParseContextLimitFromError:
         ) == 32768
 
 
-
-
-
-
 # =========================================================================
 # Persistent context length cache
 # =========================================================================
@@ -1719,7 +1554,6 @@ class TestContextLengthCache:
             assert get_cached_context_length("test/model", "http://x") == 32768
 
 
-
     def test_idempotent_save(self, tmp_path):
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
@@ -1728,8 +1562,6 @@ class TestContextLengthCache:
             with open(cache_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             assert len(data["context_lengths"]) == 1
-
-
 
 
     @patch("agent.model_metadata.fetch_model_metadata")
@@ -1963,8 +1795,6 @@ class TestMoAContextLength:
         )
         moa_ctx = get_model_context_length("p", base_url="http://127.0.0.1/v1", provider="moa")
         assert moa_ctx == agg_ctx
-
-
 
 
     def test_moa_custom_context_configures_compressor_threshold(

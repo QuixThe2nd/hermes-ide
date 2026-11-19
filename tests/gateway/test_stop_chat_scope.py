@@ -197,18 +197,18 @@ async def test_stop_matches_a_canonicalised_whatsapp_dm_chat_id():
 
 @pytest.mark.asyncio
 async def test_stop_in_a_dm_does_not_reach_a_group_run_that_ends_in_the_same_user_id():
-    # Non-Slack DMs key chat_id as the USER id (Telegram), and a per-sender group key ends with
+    # Non-Slack DMs can key chat_id as the USER id, and a per-sender group key ends with
     # that same user id — the group run is a different chat and must stay untouched, while the
     # DM's own threaded run in the same chat is still reached.
     same_chat = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_type="dm", chat_id="777",
+        SessionSource(platform=Platform.DISCORD, chat_type="dm", chat_id="777",
                       thread_id="42", user_id="777")
     )
     group_run = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_type="group", chat_id="-100123",
+        SessionSource(platform=Platform.DISCORD, chat_type="group", chat_id="-100123",
                       user_id="777")
     )
-    dm_stop = SessionSource(platform=Platform.TELEGRAM, chat_type="dm", chat_id="777",
+    dm_stop = SessionSource(platform=Platform.DISCORD, chat_type="dm", chat_id="777",
                             user_id="777")
 
     interrupted, result = await _stop(dm_stop, [same_chat, group_run])

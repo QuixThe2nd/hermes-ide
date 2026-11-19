@@ -116,7 +116,7 @@ async def test_real_control_socket_progress_never_signals_an_acknowledged_restar
         }), encoding="utf-8")
 
     def restart(params):
-        assert params == {"restart_platforms": True, "via_service": True}
+        assert params == {"via_service": True}
         state_path.write_text(json.dumps({
             "pid": 100, "gateway_state": "draining", "restart_requested": True,
             "active_agents": 2,
@@ -260,7 +260,7 @@ def test_observer_excludes_platforms_preserved_from_the_predecessor(tmp_path, mo
         "gateway_state": "running",
         "platforms": {
             "discord": {"state": "connected", "writer_pid": 200},
-            "telegram": {"state": "connected", "writer_pid": 100},
+            "matrix": {"state": "connected", "writer_pid": 100},
             "slack": {"state": "connecting", "writer_pid": 200},
         },
     })
@@ -294,7 +294,7 @@ def test_restart_request_uses_control_socket_before_signal(tmp_path, monkeypatch
     assert outcome.accepted is True and outcome.attached is False
     query.assert_called_once_with(
         tmp_path, "restart",
-        params={"restart_platforms": True, "via_service": True},
+        params={"via_service": True},
     )
     kill.assert_not_called()
 

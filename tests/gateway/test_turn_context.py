@@ -34,8 +34,8 @@ def _make_runner(ctx, adapter=None):
 
 
 # ---------------------------------------------------------------------------
-# Branded agent-viewer status ordering (delegate_claude_agent /
-# delegate_cursor_agent live-viewer notices).
+# Branded agent-viewer status ordering (delegate_claude_agent
+# live-viewer notices).
 #
 # The notice is emitted from inside the tool call, i.e. from the same worker
 # thread that already enqueued the ``tool.started`` row. Routing it through the
@@ -45,7 +45,6 @@ def _make_runner(ctx, adapter=None):
 # ---------------------------------------------------------------------------
 
 _CLAUDE_NOTICE = "Claude Code Agent: http://192.168.30.20:8787/#20260829-024525-1532951"
-_CURSOR_NOTICE = "Cursor Cloud Agent: https://cursor.com/agents/bc-abc123"
 
 
 class _CaptureCore:
@@ -163,7 +162,7 @@ async def _run_consumer_until_sends(runner, adapter, count):
             pass
 
 
-@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
+@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE])
 def test_agent_viewer_notice_rides_queue_behind_tool_row(notice, monkeypatch):
     """The branded notice is queued after the tool row, not scheduled directly."""
     import gateway.run as gateway_run
@@ -198,7 +197,7 @@ def test_agent_viewer_notice_rides_queue_behind_tool_row(notice, monkeypatch):
     assert scheduled == [], "branded notice must not take the direct status rail"
 
 
-@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE, _CURSOR_NOTICE])
+@pytest.mark.parametrize("notice", [_CLAUDE_NOTICE])
 def test_agent_viewer_notice_falls_back_to_direct_rail(notice, monkeypatch):
     """Without a usable ordered queue the notice keeps the direct status path.
 
@@ -263,7 +262,6 @@ def test_ordinary_lifecycle_status_keeps_direct_rail(monkeypatch):
     "notice,recognizer_name",
     [
         (_CLAUDE_NOTICE, "_claude_agent_status_url"),
-        (_CURSOR_NOTICE, "_cursor_cloud_agent_status_url"),
     ],
 )
 def test_progress_consumer_delivers_tool_row_before_agent_notice(
@@ -790,7 +788,7 @@ class TestTurnRunner:
         assert len(messages) > 1  # 5k-ish context is split for Discord
         assert all(len(message) <= 1936 for message in messages)  # 2000 - safety margin
         rendered = "\n".join(messages)
-        assert rendered.startswith("🧠 Injecting Memory")
+        assert rendered.startswith("🧠 Injecting memory")
         assert "<memory-context>" in rendered
         assert "</memory-context>" in rendered
         assert secret not in rendered
@@ -939,9 +937,9 @@ class TestTurnRunner:
         [
             (1, "🧠 Injecting 1 memory"),
             (5, "🧠 Injecting 5 memories"),
-            (0, "🧠 Injecting Memory"),
-            (None, "🧠 Injecting Memory"),
-            (True, "🧠 Injecting Memory"),
+            (0, "🧠 Injecting memory"),
+            (None, "🧠 Injecting memory"),
+            (True, "🧠 Injecting memory"),
         ],
     )
     def test_context_injection_counted_memory_heading(self, recalled_count, expected_heading):
@@ -961,6 +959,23 @@ class TestTurnRunner:
         assert messages == [expected_heading]
         assert "Remembering" not in "\n".join(messages)
 
+    def test_context_injection_non_memory_source_heading_is_sentence_case(self):
+        from gateway.run import _format_context_injection_progress
+
+        content = "<plugin-context>injected plugin context</plugin-context>"
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=len(content),
+            sources=["plugin"],
+            message_limit=2000,
+            supports_code_blocks=True,
+            include_content=False,
+        )
+
+        assert messages
+        assert messages[0].startswith("🧠 Injecting context")
+        assert "🧠 Context Injection" not in "\n".join(messages)
+
     def test_context_injection_mixed_timestamp_and_memory_splits_standalone_time_line(self):
         from gateway.run import _format_context_injection_progress
 
@@ -975,7 +990,7 @@ class TestTurnRunner:
         )
         assert messages[0].find("Injecting time") != -1
         memory_heading_idx = next(
-            i for i, message in enumerate(messages) if "🧠 Injecting Memory" in message
+            i for i, message in enumerate(messages) if "🧠 Injecting memory" in message
         )
         assert memory_heading_idx > 0
         fenced_with_memory = next(
@@ -999,7 +1014,7 @@ class TestTurnRunner:
             supports_code_blocks=True,
         )
         assert "Injecting time" in messages[0]
-        assert any("🧠 Injecting Memory" in message for message in messages)
+        assert any("🧠 Injecting memory" in message for message in messages)
         fenced_with_memory = next(
             message for message in messages if "```" in message and "<memory-context>" in message
         )
@@ -1022,7 +1037,7 @@ class TestTurnRunner:
         )
         assert len(messages) == 2
         assert "Injecting time" in messages[0]
-        assert messages[1] == "🧠 Injecting Memory"
+        assert messages[1] == "🧠 Injecting memory"
 
     def test_context_injection_pure_timestamp_with_memory_source_returns_time_line_only(self):
         from gateway.run import _format_context_injection_progress
@@ -1101,7 +1116,6 @@ class TestTurnRunner:
         gateway_runner._refresh_fallback_model.return_value = None
         gateway_runner._consume_pending_native_image_paths.return_value = []
         gateway_runner._consume_pending_turn_sidecar_notes.return_value = []
-        gateway_runner._is_telegram_topic_lane.return_value = False
         gateway_runner._is_discord_auto_thread_lane.return_value = False
         gateway_runner._is_relay_discord_channel_lane.return_value = False
 
