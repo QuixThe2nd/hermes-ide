@@ -4022,6 +4022,7 @@ from gateway.restart import (
     resolve_cron_drain_budget,
     resolve_planned_restart_exit_code,
 )
+from gateway.restart_eager import preload_late_life_imports
 
 
 from gateway.whatsapp_identity import (
@@ -11552,6 +11553,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
+
+    # Pin the late-life restart/overlap/drain/shutdown modules in sys.modules
+    # NOW, while disk matches the running code: with the generation array an
+    # old-code generation lives for hours beside an updated checkout, and any
+    # lazy import those paths execute later would hit whatever the update left
+    # on disk (the 2026-11-19 restart_chain crash). See gateway/restart_eager.py.
+    preload_late_life_imports()
 
     # Duplicate-instance guard scoped to HERMES_HOME; distinct-home multi-profile setups coexist.
     from gateway.overlap_restart import overlap_predecessor_pid

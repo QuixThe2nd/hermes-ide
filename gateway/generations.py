@@ -16,7 +16,6 @@ transport hub, and exit independently in any order.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -173,18 +172,18 @@ def takeover_allowed(recorded_pid: int, recorded_live: bool,
 
 def _pid_alive(pid: int) -> bool:
     """Conservative liveness for a PID with no start fingerprint: alive
-    blocks, because a reused PID must not read as a free slot."""
+    blocks, because a reused PID must not read as a free slot.
+
+    Delegates to ``gateway.status._pid_exists`` — ``os.kill(pid, 0)`` sends
+    ``CTRL_C_EVENT`` to the target's console group on Windows (bpo-14484).
+    PermissionError still reads alive there; a zombie reads dead (a defunct
+    predecessor can never serve, and waiting for it blocks handover forever).
+    """
     if pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return True
-    return True
+    from gateway.status import _pid_exists
+
+    return _pid_exists(pid)
 
 
 def array_from_registry(rows: Iterable[dict], *, me_pid: int,
