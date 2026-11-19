@@ -3,15 +3,17 @@
 Every injected segment is tagged with a kind by its producer; the
 ``context.injected`` payload carries them as ``kinds`` and the gateway renders
 one sentence-cased heading line per kind instead of the generic
-"Context injected" for every unclassifiable byte. ``kinds`` is additive
+"Injecting context" for every unclassifiable byte. ``kinds`` is additive
 metadata next to the legacy ``sources``: a payload without it renders exactly
 as before, and the model-facing bytes never change (labels are display-only).
 """
 
 from __future__ import annotations
 
+import json
 import queue
 import types
+from pathlib import Path
 
 import pytest
 
@@ -62,8 +64,8 @@ def test_known_kind_renders_its_own_heading(kind, label):
 
 
 def test_unknown_kind_renders_generic_heading():
-    assert _header(_fmt(kinds=["mystery"])).startswith("🧠 Context injected")
-    assert _header(_fmt(kinds=[None])).startswith("🧠 Context injected")
+    assert _header(_fmt(kinds=["mystery"])).startswith("🧠 Injecting context")
+    assert _header(_fmt(kinds=[None])).startswith("🧠 Injecting context")
 
 
 def test_mixed_kinds_render_one_heading_line_each_in_payload_order():
@@ -97,7 +99,7 @@ def test_legacy_payload_without_kinds_renders_unchanged():
     # sources-only payload (older producers): generic stays the heading for
     # every unclassified byte, and memory-sourced legacy payloads keep the
     # memory heading.
-    assert _header(_fmt(kinds=None)).startswith("🧠 Context injected")
+    assert _header(_fmt(kinds=None)).startswith("🧠 Injecting context")
     assert _header(_fmt(kinds=None, sources=["memory"])).startswith("🧠 Injecting memory")
     assert _fmt(kinds=["plugin"], sources=["plugin"], include_content=False) == [
         "🧩 Injecting plugin context"
@@ -214,7 +216,7 @@ def test_runner_keeps_generic_heading_for_legacy_payload():
         "context.injected", "context", None,
         {"content": "some note", "injected_chars": 9, "sources": ["gateway"]},
     )
-    assert _drain(progress_queue) == ["🧠 Context injected"]
+    assert _drain(progress_queue) == ["🧠 Injecting context"]
 
 
 # ---------------------------------------------------------------------------
@@ -303,3 +305,41 @@ def test_turn_wiring_assigns_empty_kinds_when_no_notes_staged():
     agent = _wire(consumed_notes=[])
     assert agent._gateway_turn_context_notes == ""
     assert agent._gateway_turn_note_kinds == []
+
+
+# ---------------------------------------------------------------------------
+# Shared contract table (internal/injectionlabels/testdata/labels.json)
+# ---------------------------------------------------------------------------
+
+_REPO = Path(__file__).resolve().parents[2]
+_LABELS_TABLE = _REPO / "internal" / "injectionlabels" / "testdata" / "labels.json"
+
+
+def test_headings_match_the_shared_contract_table():
+    """The Python formatter and the Go twin (internal/injectionlabels) read
+    the SAME table: every case's heading lines must match it byte-for-byte,
+    and the table's generic/kind labels must be the module's own."""
+    from gateway.context_injection_labels import (
+        CONTEXT_INJECTION_GENERIC_LABEL,
+        CONTEXT_INJECTION_KIND_LABELS,
+        context_injection_heading_lines,
+    )
+
+    table = json.loads(_LABELS_TABLE.read_text(encoding="utf-8"))
+    assert CONTEXT_INJECTION_GENERIC_LABEL == table["generic_label"]
+    assert CONTEXT_INJECTION_KIND_LABELS == table["kind_labels"]
+    memory = table["memory"]
+    assert context_injection_heading_lines(None, memory_sourced=True) == [memory["plain"]]
+    assert context_injection_heading_lines(
+        ["memory"], memory_sourced=True, recalled_count=1
+    ) == [memory["one"]]
+    assert context_injection_heading_lines(
+        ["memory"], memory_sourced=True, recalled_count=3
+    ) == [memory["many"]]
+    for case in table["cases"]:
+        lines = context_injection_heading_lines(
+            case.get("kinds"),
+            memory_sourced=case["memory_sourced"],
+            recalled_count=case.get("recalled_count"),
+        )
+        assert lines == case["expect_lines"], case["name"]

@@ -29,7 +29,7 @@ CONTEXT_INJECTION_KIND_LABELS = {
     "plugin": "🧩 Injecting plugin context",
 }
 
-CONTEXT_INJECTION_GENERIC_LABEL = "🧠 Context injected"
+CONTEXT_INJECTION_GENERIC_LABEL = "🧠 Injecting context"
 
 # Memory is special-cased: it keeps its dedicated heading (with an optional
 # discrete recall count) rather than a table label.
