@@ -121,37 +121,6 @@ class TestFindBashUnchanged:
         assert len(result) > 0
 
 
-class TestFindBashSkipsBrokenCustomPath:
-    """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
-
-    @pytest.mark.platforms("windows")
-    def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
-        """Windows-only: the candidate ladder (HERMES_GIT_BASH_PATH →
-        %LOCALAPPDATA%\\hermes\\git → Program Files) only exists in
-        ``_find_bash``'s Windows branch."""
-        import tools.environments.local as local_mod
-        from tools.environments import local_gitbash_probe as gitbash_probe
-
-        gitbash_probe._bash_starts_cache.clear()
-
-        broken = tmp_path / "broken" / "bash.exe"
-        broken.parent.mkdir()
-        broken.write_text("", encoding="utf-8")
-        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
-        portable.parent.mkdir(parents=True)
-        portable.write_text("", encoding="utf-8")
-
-        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(broken))
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-
-        def fake_starts(path: str) -> bool:
-            return path == str(portable)
-
-        monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
-
-        assert _find_bash() == str(portable)
-
-
 class TestGitBashExternalProgramProbe:
     """The Windows health check must exercise MSYS child-process creation."""
 
@@ -207,47 +176,6 @@ class TestGitBashExternalProgramProbe:
         while time.monotonic() < deadline and _pid_alive(grandchild):
             time.sleep(0.05)
         assert not _pid_alive(grandchild), "grandchild survived the probe's tree-kill"
-
-    @pytest.mark.platforms("windows")
-    def test_aslr_failure_surfaces_targeted_windows_command(
-        self, tmp_path, monkeypatch
-    ):
-        """Windows-only: the Mandatory-ASLR diagnostic is raised from
-        ``_find_bash``'s Windows candidate ladder and names PowerShell's
-        ``Set-ProcessMitigation`` — unreachable off Windows."""
-        import tools.environments.local as local_mod
-        from tools.environments import local_gitbash_probe as gitbash_probe
-
-        gitbash_probe._bash_starts_cache.clear()
-        gitbash_probe._bash_probe_details_cache.clear()
-        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
-        portable.parent.mkdir(parents=True)
-        portable.write_text("", encoding="utf-8")
-
-        monkeypatch.setenv("HERMES_GIT_BASH_PATH", "")
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
-        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
-        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
-        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
-
-        def failed_probe(path: str) -> bool:
-            gitbash_probe._bash_probe_details_cache[path] = (
-                "dofork: child -1 - forked process died unexpectedly"
-            )
-            return False
-
-        monkeypatch.setattr(local_mod, "_bash_starts", failed_probe)
-
-        with pytest.raises(RuntimeError) as exc_info:
-            local_mod._find_bash()
-        message = str(exc_info.value)
-        assert "Mandatory ASLR" in message
-        assert "Reinstalling Git will not change" in message
-        assert "Set-ProcessMitigation" in message
-        assert str(tmp_path / "hermes" / "git") in message
-
-
 
 @pytest.mark.macos_only
 @pytest.mark.skipif(

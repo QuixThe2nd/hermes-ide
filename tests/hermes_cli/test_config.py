@@ -1462,7 +1462,8 @@ class TestEnvWriteDenylist:
     @pytest.mark.parametrize(
         "protected_key",
         [
-            "Hermes_Yolo_Mode",
+            # Hermes_Yolo_Mode went with the approval subsystem (#663); the
+            # denylist entry no longer exists to reject.
             "Hermes_Optional_Mcps",
             "Hermes_Copilot_Acp_Command",
             "Hermes_Copilot_Acp_Args",

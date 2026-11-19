@@ -305,6 +305,10 @@ function uv {
 }
 function Invoke-WebRequest { throw 'network access outside test boundary' }
 & $Installer -Stage dependencies -Json -InstallDir $InstallDir -HermesHome $HomeDir
+# `&` runs the installer in-process: its `exit N` ends only the invoked
+# script ($LASTEXITCODE carries N) and control returns here, so the wrapper
+# must re-emit it or powershell.exe exits 0 no matter how the stage ended.
+exit $LASTEXITCODE
 ''',
         encoding="utf-8-sig",
     )

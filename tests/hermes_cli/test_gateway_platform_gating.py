@@ -50,9 +50,13 @@ class TestMatrixHiddenOnWindows:
 
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
-        # A representative sample of platforms that have no Windows
-        # blockers — picker should still surface them.
-        for must_have in ("matrix", "discord", "slack", "whatsapp"):
+        # A representative sample of the platforms that still ship and have
+        # no Windows blockers — picker should still surface them. The full
+        # shipping set is discord, matrix, whatsapp, browser_sidebar; matrix
+        # is the one this gate hides on Windows (proven absent above), and
+        # #571 removed the telegram/slack adapters, so none of those are
+        # expected to appear.
+        for must_have in ("discord", "whatsapp", "browser_sidebar"):
             assert must_have in keys, (
                 f"{must_have} disappeared from Windows picker — gate is "
                 "over-filtering"

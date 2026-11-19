@@ -67,10 +67,27 @@ def _make_fake_popen(spawns, *, stdout="ok\n", returncode=0):
     return _FakePopen
 
 
+def _make_fake_spawn_server(spawns, **popen_kwargs):
+    """``spawn_server`` stand-in: records git spawns, returns the fast-path
+    fake proc and no job handle (``_close_job(None)`` is a no-op)."""
+    FakePopen = _make_fake_popen(spawns, **popen_kwargs)
+
+    def _fake_spawn_server(cmd, **kwargs):
+        return FakePopen(cmd, **kwargs), None
+
+    return _fake_spawn_server
+
+
 @pytest.mark.platforms("windows")
 def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
-    """The normal-path spawn contract survives the run()->Popen rewrite:
-    PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on Windows.
+    """The normal-path spawn contract survives the run()->spawn_server
+    rewrite: PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on
+    Windows.
+
+    ``bounded_probe_run`` spawns through
+    ``hermes_cli.local_runtime.processes.spawn_server`` (the Windows Job
+    Object containment layer), so that is the seam this test patches — the
+    call is imported inside the function and resolves at call time.
 
     ``platforms("windows")``: the ``creationflags`` assertion is the point, and
     ``bounded_git_probe`` only sets that key when ``IS_WINDOWS`` — which the
@@ -79,10 +96,13 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     whatever bundle the helper currently returns.
     """
     from hermes_cli import _subprocess_compat
+    from hermes_cli.local_runtime import processes as local_processes
 
     spawns = []
     monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
+    monkeypatch.setattr(
+        local_processes, "spawn_server", _make_fake_spawn_server(spawns, stdout="main\n")
+    )
 
     out = _subprocess_compat.bounded_git_probe(
         ["git", "-C", "C:/repo", "branch", "--show-current"], timeout=1.5

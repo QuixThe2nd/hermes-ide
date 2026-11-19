@@ -3129,7 +3129,12 @@ except Exception:
         # regardless of what was written to stderr).
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+        # Assignment (not a pipeline): under Windows PowerShell 5.1 an
+        # `& exe ... 2>&1 | Out-Null` shape can fail the whole invocation
+        # with "Cannot run a document in the middle of a pipeline" before
+        # the probe even starts; assigning to $null discards the merged
+        # output just as well and keeps $LASTEXITCODE as the signal.
+        $null = & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1
         $importExitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         if ($importExitCode -ne 0) {
@@ -4172,6 +4177,13 @@ function Invoke-Stage {
         duration_ms  = 0
     }
 
+    # Windows PowerShell 5.1 swallows an in-flight exception when a `finally`
+    # block writes to the output pipeline while unwinding: the frame below
+    # printed, the throw vanished, and the stage driver exited 0 on a failed
+    # stage (the boundary harness caught it as exit-code drift). So the frame
+    # is emitted only AFTER unwinding completes, in normal flow, and the
+    # rethrow happens last, outside any finally.
+    $rethrow = $null
     try {
         if ($NonInteractive -and $StageDef.NeedsUserInput) {
             $result.ok = $true
@@ -4188,22 +4200,26 @@ function Invoke-Stage {
     } catch {
         $result.ok = $false
         $result.reason = "$_"
-        throw
+        $rethrow = $_
     } finally {
+        # Assignments only -- never pipeline output here (see the comment above).
         $result.duration_ms = [int]([DateTime]::UtcNow - $start).TotalMilliseconds
-        if ($Json -or $Stage) {
-            # In stage-driver mode every stage emits a JSON line so the
-            # caller can stream progress.  In default interactive mode we
-            # stay silent here (the worker already wrote human output).
-            $result | ConvertTo-Json -Compress | Write-Output
-            # Tell the entry-point catch that we've already emitted a
-            # frame for this failure (when $result.ok = $false), so it
-            # doesn't double-emit a second JSON object and break the
-            # one-line-per-stage contract the driver protocol promises.
-            if (-not $result.ok) {
-                $script:_StageEmittedErrorFrame = $true
-            }
+    }
+    if ($Json -or $Stage) {
+        # In stage-driver mode every stage emits a JSON line so the
+        # caller can stream progress.  In default interactive mode we
+        # stay silent here (the worker already wrote human output).
+        $result | ConvertTo-Json -Compress | Write-Output
+        # Tell the entry-point catch that we've already emitted a
+        # frame for this failure (when $result.ok = $false), so it
+        # doesn't double-emit a second JSON object and break the
+        # one-line-per-stage contract the driver protocol promises.
+        if (-not $result.ok) {
+            $script:_StageEmittedErrorFrame = $true
         }
+    }
+    if ($null -ne $rethrow) {
+        throw $rethrow
     }
 }
 
