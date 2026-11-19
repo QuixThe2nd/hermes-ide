@@ -78,6 +78,8 @@ Multiplexed profiles use their own `display.show_reasoning`. When enabled, a sin
 
 Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out.
 
+Website logins can be entered from Discord without putting passwords in chat. When Hermes needs a new login, only the requesting user can open a private, single-use link to a masked form. The form shows the exact website before accepting input; the existing encrypted vault saves the login and fills it only on its bound origin. Enable this with `gateway.secure_entry.public_base_url` set to an exact HTTPS origin and route `/hermes-secure-entry/` to the gateway API listener. Links expire after five minutes, and cancelling or stopping the owning turn retires pending entries. The feature stays disabled without HTTPS ingress; Desktop and CLI login entry keep their existing behavior.
+
 The typing indicator stays on while a background delegated task is still running. MoA consult and debate progress uses one self-editing embed per call that names every configured advisor model and shows each one waiting, responded, failed, or skipped as results arrive — round by round for debates — with live N/T advisor counts on `moa_ask`. Claude runs post a Claude-branded progress embed that links into the local viewer after the delegation tool-progress message.
 
 ## Coding delegated from chat
