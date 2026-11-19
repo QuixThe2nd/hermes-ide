@@ -109,7 +109,8 @@ func TestRecordAndOwnerOpsMatchSharedTable(t *testing.T) {
 			}
 		case "owner_guard":
 			if got := OwnerAction(tableInt(input["serving_pid"]),
-				tableIdentify(input["identify"])); got != c.expectString() {
+				tableIdentify(input["identify"]),
+				tableRegistryRows(input["registry_rows"])); got != c.expectString() {
 				t.Errorf("%s: got %q want %q", c.Name, got, c.expectString())
 			}
 		case "owner_refusal":
@@ -121,16 +122,17 @@ func TestRecordAndOwnerOpsMatchSharedTable(t *testing.T) {
 	}
 }
 
-// TestChainRewriteAndTurnNotesMatchSharedTable pins the two JSON-valued
-// ops: the chained-across-overlap ack rewrite and the per-turn note pair.
-func TestChainRewriteAndTurnNotesMatchSharedTable(t *testing.T) {
+// TestAckRewriteAndTurnNotesMatchSharedTable pins the two JSON-valued
+// ops: the control-socket ack rewrite and the per-turn note pair.
+func TestAckRewriteAndTurnNotesMatchSharedTable(t *testing.T) {
 	for _, c := range loadSharedCases(t) {
 		input, _ := c.Input.(map[string]any)
 		switch c.Op {
-		case "chain_rewrite":
+		case "ack_rewrite":
 			ack, _ := input["ack"].(map[string]any)
-			got := ChainRewrite(map[string]any(ack), tableInt(input["serving_pid"]),
-				tableIdentify(input["identify"]))
+			got := AckRewrite(map[string]any(ack), tableInt(input["serving_pid"]),
+				tableIdentify(input["identify"]),
+				tableRegistryRows(input["registry_rows"]))
 			want, _ := c.Expect.(map[string]any)
 			// JSON round-trip both sides: table numbers decode as float64
 			// while the rewrite writes ints — marshaled bytes are the
@@ -164,6 +166,27 @@ func tableIdentify(raw any) *Identify {
 		SuccessorPID:   tableInt(overlap["successor_pid"]),
 		SuccessorReady: tableBool(overlap["successor_ready"]),
 	}
+}
+
+// tableRegistryRows maps the table's registry_rows array onto
+// []RegistryRow (nil when absent — no registry evidence).
+func tableRegistryRows(raw any) []RegistryRow {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	rows := make([]RegistryRow, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		rows = append(rows, RegistryRow{
+			PID:            tableInt(record["pid"]),
+			PredecessorPID: tableInt(record["predecessor_pid"]),
+		})
+	}
+	return rows
 }
 
 // snapshotFromRecord maps a persisted served-by record {pid,start_time}
@@ -485,31 +508,60 @@ func TestRecordRoundtripAndWriteDiscipline(t *testing.T) {
 }
 
 // TestOwnerActionMatrix pins the restart-tool gate: the socket's answerer
-// must be the serving process, or attest it as a hub-ready successor — a
-// draining predecessor that cannot attest is a refusal, not a queue.
+// must be the serving process, attest it as a hub-ready successor, or —
+// for a serving-role answerer — be proven the NEWEST generation of an
+// array that positively lists the requester (the registry-proven
+// forward). Anything else is a refusal, not a queue.
 func TestOwnerActionMatrix(t *testing.T) {
+	array := []RegistryRow{
+		{PID: 424242, PredecessorPID: 134659},
+		{PID: 557728, PredecessorPID: 424242},
+	}
 	cases := []struct {
 		name       string
 		servingPID int
 		id         *Identify
+		rows       []RegistryRow
 		want       string
 	}{
-		{"no stamp keeps old behavior", 0, &Identify{PID: 709505}, "proceed"},
-		{"no identify answer", 1531038, nil, "proceed"},
-		{"owner is the serving process", 1531038, &Identify{PID: 1531038}, "proceed"},
-		{"legacy predecessor answering", 1531038, &Identify{PID: 709505}, "refuse"},
+		{"no stamp keeps old behavior", 0, &Identify{PID: 709505}, nil, "proceed"},
+		{"no identify answer", 1531038, nil, array, "proceed"},
+		{"owner is the serving process", 1531038, &Identify{PID: 1531038}, array, "proceed"},
+		{"legacy predecessor answering", 1531038, &Identify{PID: 709505}, array, "refuse"},
 		{"draining predecessor no successor", 1531038,
-			&Identify{PID: 709505, Role: RoleDrainingPredecessor}, "refuse"},
+			&Identify{PID: 709505, Role: RoleDrainingPredecessor}, array, "refuse"},
 		{"attests a different successor", 1531038,
-			&Identify{PID: 709505, Role: RoleDrainingPredecessor, SuccessorPID: 42}, "refuse"},
+			&Identify{PID: 709505, Role: RoleDrainingPredecessor, SuccessorPID: 42}, array, "refuse"},
 		{"attests successor not ready", 1531038,
-			&Identify{PID: 709505, Role: RoleDrainingPredecessor, SuccessorPID: 1531038}, "refuse"},
+			&Identify{PID: 709505, Role: RoleDrainingPredecessor, SuccessorPID: 1531038}, array, "refuse"},
 		{"attests this server ready", 1531038,
 			&Identify{PID: 709505, Role: RoleDrainingPredecessor, SuccessorPID: 1531038,
-				SuccessorReady: true}, "attested-chain"},
+				SuccessorReady: true}, array, "attested-chain"},
+		{"serving answerer without registry rows", 134659,
+			&Identify{PID: 557728, Role: RoleServing}, nil, "refuse"},
+		{"serving answerer unlisted requester", 134659,
+			&Identify{PID: 557728, Role: RoleServing}, []RegistryRow{
+				{PID: 424242, PredecessorPID: 999001},
+				{PID: 557728, PredecessorPID: 424242},
+			}, "refuse"},
+		{"serving answerer not the newest row", 134659,
+			&Identify{PID: 557728, Role: RoleServing}, []RegistryRow{
+				{PID: 557728, PredecessorPID: 134659},
+				{PID: 888999, PredecessorPID: 557728},
+			}, "refuse"},
+		{"registry proves the array forward", 134659,
+			&Identify{PID: 557728, Role: RoleServing}, array, "attested-forward"},
+		{"requester listed only as predecessor", 134659,
+			&Identify{PID: 424242, Role: RoleServing}, []RegistryRow{
+				{PID: 424242, PredecessorPID: 134659},
+			}, "attested-forward"},
+		{"junk rows prove nothing", 134659,
+			&Identify{PID: 557728, Role: RoleServing}, []RegistryRow{
+				{PID: 0, PredecessorPID: 134659}, {PID: 557728},
+			}, "refuse"},
 	}
 	for _, c := range cases {
-		if got := OwnerAction(c.servingPID, c.id); got != c.want {
+		if got := OwnerAction(c.servingPID, c.id, c.rows); got != c.want {
 			t.Errorf("%s: got %q want %q", c.name, got, c.want)
 		}
 	}

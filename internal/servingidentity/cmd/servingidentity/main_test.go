@@ -67,13 +67,28 @@ func TestRequestMappingMatchesSharedTable(t *testing.T) {
 			}
 		case "owner_guard":
 			if got := servingidentity.OwnerAction(intValue(request["serving_pid"]),
-				identifyFromRecord(request["identify"])); got != str(c.Expect) {
+				identifyFromRecord(request["identify"]),
+				registryRowsFromRequest(request["registry_rows"])); got != str(c.Expect) {
 				t.Errorf("%s: got %q want %q", c.Name, got, str(c.Expect))
 			}
 		case "owner_refusal":
 			if got := servingidentity.OwnerRefusal(intValue(request["serving_pid"]),
 				identifyFromRecord(request["identify"])); got != str(c.Expect) {
 				t.Errorf("%s: got %q want %q", c.Name, got, str(c.Expect))
+			}
+		case "ack_rewrite":
+			rewritten := servingidentity.AckRewrite(
+				objectFromRequest(request["ack"]),
+				intValue(request["serving_pid"]),
+				identifyFromRecord(request["identify"]),
+				registryRowsFromRequest(request["registry_rows"]))
+			want, _ := c.Expect.(map[string]any)
+			// JSON round-trip both sides: marshaled bytes are the contract,
+			// not the Go value types (table numbers decode as float64).
+			gotJSON, _ := json.Marshal(rewritten)
+			wantJSON, _ := json.Marshal(want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("%s:\n got: %s\nwant: %s", c.Name, gotJSON, wantJSON)
 			}
 		case "turn_notes":
 			got := servingidentity.TurnNotes(

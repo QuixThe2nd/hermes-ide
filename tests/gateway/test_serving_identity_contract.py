@@ -73,10 +73,13 @@ def _table_runner(snap: dict):
 
 
 # Ops whose table expectation is one value (string or dict) rather than a
-# line list. All of them print a bare value from the Go binary.
-_VALUE_OPS = ("note", "transition", "record", "owner_guard", "owner_refusal")
+# line list. The Go binary prints them differently: the scalar ops print a
+# bare value, the ack-rewrite op prints JSON.
+_VALUE_OPS = ("note", "transition", "record", "owner_guard", "owner_refusal",
+              "ack_rewrite")
 
-_BARE_OUTPUT_OPS = _VALUE_OPS
+# The ack-rewrite op prints JSON (its value is a dict), not a bare scalar.
+_BARE_OUTPUT_OPS = tuple(o for o in _VALUE_OPS if o != "ack_rewrite")
 
 
 def _python_render(case: dict):
@@ -102,11 +105,19 @@ def _python_render(case: dict):
     if case["op"] == "owner_guard":
         from plugins.gateway_restart.tool import socket_owner_action
         request = case["input"]
-        return socket_owner_action(request["serving_pid"], request["identify"])
+        return socket_owner_action(
+            request["serving_pid"], request["identify"],
+            request.get("registry_rows"))
     if case["op"] == "owner_refusal":
         from plugins.gateway_restart.tool import socket_owner_refusal
         request = case["input"]
         return socket_owner_refusal(request["serving_pid"], request["identify"])
+    if case["op"] == "ack_rewrite":
+        from plugins.gateway_restart.tool import _socket_ack_names_restarting_process
+        request = case["input"]
+        return _socket_ack_names_restarting_process(
+            dict(request["ack"]), request["serving_pid"],
+            request.get("identify"), request.get("registry_rows"))
     if case["op"] == "turn_notes":
         request = case["input"]
         identity = request["identity"]
@@ -205,7 +216,20 @@ def test_shared_table_covers_the_honesty_contract():
         "owner_guard_unready_successor_refuse",
         "owner_guard_attested_chain",
         "owner_guard_no_stamp_proceed",
+        # CONTRACT CHANGE (#844): a restart asked from an OLDER draining
+        # generation forwards to the newest owner when the generation
+        # registry proves the array line; an unlisted requester refuses
+        "owner_guard_attested_forward",
+        "owner_guard_forward_requester_unlisted_refuse",
+        "owner_guard_forward_answerer_not_newest_refuse",
         "owner_refusal_legacy_answerer",
+        # refusal wording is truthful per reported overlap role
+        "owner_refusal_serving_answerer",
+        "owner_refusal_unknown_role_answerer",
+        # the ack rewrite names the process that will actually restart
+        "ack_rewrite_forwarded_names_newest",
+        "ack_rewrite_attested_forward_names_newest",
+        "ack_rewrite_chained_names_serving_process",
         "turn_notes_first_turn_after_handoff",
         "turn_notes_same_process",
     ):

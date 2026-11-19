@@ -768,6 +768,312 @@
       "expect_lines": [
         "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \u2014 not any pid reported by systemctl, the pid file, or gateway status files \u2014 is the process running this conversation.]"
       ]
+    },
+    {
+      "name": "owner_guard_attested_forward",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "registry_rows": [
+          {
+            "pid": 424242,
+            "start_time": 910211,
+            "predecessor_pid": 134659,
+            "state": "attached"
+          },
+          {
+            "pid": 557728,
+            "start_time": 910339,
+            "predecessor_pid": 424242,
+            "state": "attached"
+          }
+        ]
+      },
+      "expect": "attested-forward"
+    },
+    {
+      "name": "owner_guard_forward_requester_unlisted_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "registry_rows": [
+          {
+            "pid": 424242,
+            "start_time": 910211,
+            "predecessor_pid": 999001,
+            "state": "attached"
+          },
+          {
+            "pid": 557728,
+            "start_time": 910339,
+            "predecessor_pid": 424242,
+            "state": "attached"
+          }
+        ]
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_forward_answerer_not_newest_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "registry_rows": [
+          {
+            "pid": 557728,
+            "start_time": 910339,
+            "predecessor_pid": 134659,
+            "state": "attached"
+          },
+          {
+            "pid": 888999,
+            "start_time": 910444,
+            "predecessor_pid": 557728,
+            "state": "attached"
+          }
+        ]
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_forward_without_registry_rows_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        }
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_guard_forward_junk_rows_refuse",
+      "op": "owner_guard",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "registry_rows": [
+          "junk",
+          {
+            "pid": 0,
+            "predecessor_pid": 134659
+          },
+          {
+            "pid": 557728
+          }
+        ]
+      },
+      "expect": "refuse"
+    },
+    {
+      "name": "owner_refusal_serving_answerer",
+      "op": "owner_refusal",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        }
+      },
+      "expect": "No restart was queued: the gateway control socket is owned by pid 557728, which is serving, not draining for a restart, and is not proven to share this conversation's generation array, but this conversation is served by pid 134659. A restart queued through pid 557728 would not target the process running this conversation. It is already served by pid 134659; if it still needs a restart, retry after the current handoff completes or run `hermes gateway restart` from an operator shell."
+    },
+    {
+      "name": "owner_refusal_overlap_successor_answerer",
+      "op": "owner_refusal",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "overlap": {
+            "role": "overlap-successor",
+            "predecessor_pid": 424242
+          }
+        }
+      },
+      "expect": "No restart was queued: the gateway control socket is owned by pid 557728, which is an overlap successor that does not attest this conversation's server, but this conversation is served by pid 134659. A restart queued through pid 557728 would not target the process running this conversation. It is already served by pid 134659; if it still needs a restart, retry after the current handoff completes or run `hermes gateway restart` from an operator shell."
+    },
+    {
+      "name": "owner_refusal_unknown_role_answerer",
+      "op": "owner_refusal",
+      "input": {
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "overlap": {
+            "role": "unknown"
+          }
+        }
+      },
+      "expect": "No restart was queued: the gateway control socket is owned by pid 557728, which could not classify its own restart-handoff state, but this conversation is served by pid 134659. A restart queued through pid 557728 would not target the process running this conversation. It is already served by pid 134659; if it still needs a restart, retry after the current handoff completes or run `hermes gateway restart` from an operator shell."
+    },
+    {
+      "name": "ack_rewrite_forwarded_names_newest",
+      "op": "ack_rewrite",
+      "input": {
+        "ack": {
+          "queued": true,
+          "pid": 709505,
+          "status": "forwarded",
+          "forwarded_to": 1531038,
+          "active_agents": 1,
+          "via_service": false
+        },
+        "serving_pid": 0,
+        "identify": null
+      },
+      "expect": {
+        "queued": true,
+        "pid": 1531038,
+        "status": "forwarded",
+        "forwarded_to": 1531038,
+        "active_agents": 1,
+        "via_service": false,
+        "note": "Restart queued, not completed: 'process' names the newest generation (pid 1531038), which took the request and spawns its own successor. The generation that forwarded it (pid 709505) is superseded and will not perform the restart; that successor process rewrites this result with the 'Restarted successfully' completion notice."
+      }
+    },
+    {
+      "name": "ack_rewrite_attested_forward_names_newest",
+      "op": "ack_rewrite",
+      "input": {
+        "ack": {
+          "queued": true,
+          "pid": 557728,
+          "status": "restarting",
+          "active_agents": 2,
+          "via_service": false
+        },
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "registry_rows": [
+          {
+            "pid": 424242,
+            "start_time": 910211,
+            "predecessor_pid": 134659,
+            "state": "attached"
+          },
+          {
+            "pid": 557728,
+            "start_time": 910339,
+            "predecessor_pid": 424242,
+            "state": "attached"
+          }
+        ]
+      },
+      "expect": {
+        "queued": true,
+        "pid": 557728,
+        "status": "restarting",
+        "active_agents": 2,
+        "via_service": false,
+        "note": "Restart queued, not completed: 'process' names the newest generation (pid 557728), which took the request and spawns its own successor. The generation that forwarded it (pid 134659) is superseded and will not perform the restart; that successor process rewrites this result with the 'Restarted successfully' completion notice."
+      }
+    },
+    {
+      "name": "ack_rewrite_unproven_forward_leaves_ack",
+      "op": "ack_rewrite",
+      "input": {
+        "ack": {
+          "queued": true,
+          "pid": 557728,
+          "status": "restarting",
+          "active_agents": 2,
+          "via_service": false
+        },
+        "serving_pid": 134659,
+        "identify": {
+          "pid": 557728,
+          "start_time": 910339,
+          "code_sha": "c638cb7f02b",
+          "overlap": {
+            "role": "serving"
+          }
+        },
+        "registry_rows": []
+      },
+      "expect": {
+        "queued": true,
+        "pid": 557728,
+        "status": "restarting",
+        "active_agents": 2,
+        "via_service": false
+      }
+    },
+    {
+      "name": "ack_rewrite_chained_names_serving_process",
+      "op": "ack_rewrite",
+      "input": {
+        "ack": {
+          "queued": true,
+          "pid": 709505,
+          "status": "chained",
+          "active_agents": 0,
+          "via_service": false
+        },
+        "serving_pid": 1531038,
+        "identify": {
+          "pid": 709505,
+          "overlap": {
+            "role": "draining-predecessor",
+            "successor_pid": 1531038,
+            "successor_ready": true
+          }
+        }
+      },
+      "expect": {
+        "queued": true,
+        "pid": 1531038,
+        "status": "chained",
+        "active_agents": 0,
+        "via_service": false,
+        "note": "Restart chained for the serving process: 'process' names pid 1531038, the process serving this conversation. The control socket is still owned by the draining predecessor (pid 709505); the chained restart runs on pid 1531038 once that handoff completes."
+      }
     }
   ]
 }

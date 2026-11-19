@@ -26,6 +26,18 @@
 //	 "restart_requested": bool} | null,
 //	 "successor_identity": "live" | "dead" | "unknown" | null}
 //	  → prints the status lines as a JSON array.
+//
+//	{"op": "owner_guard" | "owner_refusal", "serving_pid": …,
+//	 "identify": {"pid": …, "overlap": {"role": …, …}} | null,
+//	 "registry_rows": [{pid, predecessor_pid}, …] | null}
+//	  → prints the owner-action verdict / the refusal message; registry_rows
+//	    is the live generation-registry evidence (spawn-ordered, last row =
+//	    the newest generation).
+//
+//	{"op": "ack_rewrite", "ack": {…socket ack…}, "serving_pid": …,
+//	 "identify": {…} | null, "registry_rows": […]}
+//	  → prints the rewritten ack as JSON, with pid naming the process that
+//	    will actually restart.
 package main
 
 import (
@@ -54,11 +66,24 @@ func main() {
 	case "owner_guard":
 		fmt.Println(servingidentity.OwnerAction(
 			intValue(request["serving_pid"]),
-			identifyFromRecord(request["identify"])))
+			identifyFromRecord(request["identify"]),
+			registryRowsFromRequest(request["registry_rows"])))
 	case "owner_refusal":
 		fmt.Println(servingidentity.OwnerRefusal(
 			intValue(request["serving_pid"]),
 			identifyFromRecord(request["identify"])))
+	case "ack_rewrite":
+		rewritten := servingidentity.AckRewrite(
+			objectFromRequest(request["ack"]),
+			intValue(request["serving_pid"]),
+			identifyFromRecord(request["identify"]),
+			registryRowsFromRequest(request["registry_rows"]))
+		encoded, err := json.Marshal(rewritten)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "servingidentity: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Println(string(encoded))
 	case "stamp":
 		snapshot, ok := servingidentity.SessionStamp(
 			stringValue(request["pid"]), stringValue(request["start_time"]))
@@ -138,6 +163,35 @@ func identifyFromRecord(raw any) *servingidentity.Identify {
 		SuccessorPID:   intValue(overlap["successor_pid"]),
 		SuccessorReady: boolValue(overlap["successor_ready"]),
 	}
+}
+
+// registryRowsFromRequest maps the optional registry_rows array (live
+// generation-registry evidence) onto []RegistryRow for the owner ops.
+// Rows are spawn-ordered; the table's last row is the newest generation.
+func registryRowsFromRequest(raw any) []servingidentity.RegistryRow {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	rows := make([]servingidentity.RegistryRow, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		rows = append(rows, servingidentity.RegistryRow{
+			PID:            intValue(record["pid"]),
+			PredecessorPID: intValue(record["predecessor_pid"]),
+		})
+	}
+	return rows
+}
+
+// objectFromRequest maps an optional JSON object (the ack) onto
+// map[string]any; null/absent decodes to a nil map.
+func objectFromRequest(raw any) map[string]any {
+	object, _ := raw.(map[string]any)
+	return object
 }
 
 func snapshotFromRequest(request map[string]any) servingidentity.Snapshot {
