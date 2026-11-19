@@ -3,7 +3,7 @@
   "name": "Big Steve",
   "version": "1.1.1",
   "description": "Side panel chat with Big Steve.",
-  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "alarms", "tabs"],
+  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "alarms", "tabs", "debugger"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

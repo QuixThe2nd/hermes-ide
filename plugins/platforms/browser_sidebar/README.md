@@ -48,7 +48,7 @@ Inbound from the extension:
   A numeric `tab.id` selects that tab's own session (`tab-<id>`); anything else falls back
   to the legacy `brave` conversation.
 - `{"type":"tool_result","request_id":"..","ok":true,"result":".."}` — resolves a pending
-  `run_tab_js` call (`ok:false` carries `"error"`); results truncate at 100 000 chars.
+  tool call (`ok:false` carries `"error"`); results truncate at 100 000 chars.
 - `{"type":"hello","client":"big-steve-extension","version":".."}` — client hello;
   the server replies `{"type":"ready"}`. `{"type":"ready"}` is also accepted as a no-op.
 
@@ -63,7 +63,21 @@ Outbound to the extension:
 - `{"type":"typing","active":true|false,"tab_id":<int>}` — typing indicator per tab.
 - `{"type":"tool","name":"run_tab_js","args":{"code":".."},"request_id":"..","tab_id":<int>}`
   — tool request; the worker scripts THAT tab (a closed tab fails the tool instead of
-  scripting whichever tab is focused). Without `tab_id` the focused tab is used.
+  scripting whichever tab is focused). Without `tab_id` the focused tab is used. An
+  optional `args.tab_id` takes precedence over the frame's `tab_id`.
+- `{"type":"tool","name":"navigate_tab","args":{"url":"https://..","tab_id":<int>?},"request_id":"..","tab_id":<int>?}`
+  — navigates the resolved tab with `chrome.tabs.update` and replies only once that tab
+  reports `tabs.onUpdated` `status:"complete"` (bounded by the tool timeout; the
+  `onUpdated` listener is removed afterwards). No page JS runs. Only http(s) URLs (and
+  `about:blank`) are allowed; anything else, and a closed tab, return `ok:false`. The
+  result is JSON `{"tab_id":..,"url":"..","title":".."}`.
+- `{"type":"tool","name":"activate_tab","args":{"tab_id":<int>},"request_id":".."}`
+  — activates the tab (`chrome.tabs.update` `{active:true}`) and focuses its window
+  (`chrome.windows.update` `{focused:true}`); the result is the same `{tab_id,url,title}`
+  JSON. An unknown tab returns `ok:false`.
+- Unknown tool names return `ok:false` with `unknown tool: <name>`. Every tool resolves
+  its target the same way: `args.tab_id`, then the frame's `tab_id`, then the focused
+  tab; a named-but-closed tab fails the tool.
 - `{"type":"error","text":".."}` — malformed/unknown frames; the socket stays usable.
 
 The side panel keeps one transcript per tab (persisted to `chrome.storage.session`,
@@ -77,5 +91,17 @@ A wrong, missing, or additional offered subprotocol — or a configured token
 with non-token characters — rejects the WebSocket handshake. Authentication
 errors do not include either token.
 
-The `browser_sidebar` toolset (just `run_tab_js`) is default-off and restricted to this
-platform; enable it via `hermes tools` or `platform_toolsets`.
+The `browser_sidebar` toolset (`run_tab_js`, `navigate_tab`, `activate_tab`) is
+default-off and restricted to this platform; enable it via `hermes tools` or
+`platform_toolsets`.
+
+### run_tab_js and page CSP
+
+`run_tab_js` evaluates code in the page's MAIN world via `chrome.scripting`. Sites with a
+strict Content Security Policy (GitHub, for example) refuse `eval`, so the worker detects
+CSP-shaped failures (`EvalError` / `unsafe-eval` / `Content Security Policy`) and reruns
+the same code through the `chrome.debugger` protocol (`Runtime.evaluate` with
+`returnByValue` + `awaitPromise`, protocol `1.3`), detaching afterwards. **While attached,
+Chrome shows a "…is being debugged" infobar on that tab** — expected, and it disappears
+when the call finishes. Non-CSP errors (e.g. `chrome://` pages) never touch the debugger.
+The manifest therefore needs the `debugger` permission.

@@ -1,13 +1,19 @@
 // Big Steve — service worker.
 //
 // Owns the WebSocket to Hermes (token as the sole subprotocol), the side
-// panel toggle paths, and the run_tab_js tool bridge. Chat frames in:
+// panel toggle paths, and the tool bridge. Chat frames in:
 //   {type:"chat", id, text, tab:{id,url,title}} — one conversation per tab id.
 // Frames out: ready / delta{id,text,tab_id?} (suffix-only append) /
 // final{id,text,tab_id?} / error{message} / tool{request_id,name,run_tab_js,
 // args:{code},tab_id?} — tab_id marks which tab's conversation the frame
 // belongs to; legacy frames without it are pre-per-tab server builds.
 // Tool replies: {type:"tool_result", request_id, ok, result|error}.
+// Tool frames dispatch through TOOL_HANDLERS: run_tab_js (eval in the page's
+// MAIN world, falling back to chrome.debugger Runtime.evaluate when the
+// page's CSP blocks eval), navigate_tab (chrome.tabs.update + wait for
+// onUpdated 'complete'), activate_tab (activate the tab, focus its window).
+// Every handler resolves its target tab the same way: args.tab_id, then
+// frame.tab_id, then the focused tab; a named-but-closed tab fails the tool.
 
 'use strict';
 
@@ -261,18 +267,27 @@ function handleWireFrame(data) {
   }
   if (!frame || typeof frame !== 'object') return;
   switch (frame.type) {
-    case 'tool':
-      if (frame.name === 'run_tab_js') {
-        runTabJs(frame).then(sendFrame, (err) =>
-          sendFrame({
-            type: 'tool_result',
-            request_id: frame.request_id,
-            ok: false,
-            error: String((err && err.message) || err),
-          }),
-        );
+    case 'tool': {
+      const handler = TOOL_HANDLERS[frame.name];
+      if (!handler) {
+        sendFrame({
+          type: 'tool_result',
+          request_id: frame.request_id,
+          ok: false,
+          error: 'unknown tool: ' + String(frame.name),
+        });
+        return;
       }
+      handler(frame).then(sendFrame, (err) =>
+        sendFrame({
+          type: 'tool_result',
+          request_id: frame.request_id,
+          ok: false,
+          error: String((err && err.message) || err),
+        }),
+      );
       return; // tool traffic stays in the worker
+    }
     case 'ready':
     case 'delta':
     case 'typing':
@@ -303,7 +318,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// ─── run_tab_js tool ────────────────────────────────────────────────────────
+// ─── Tools (run_tab_js / navigate_tab / activate_tab) ───────────────────────
+
+function toolOk(requestId, result) {
+  return { type: 'tool_result', request_id: requestId, ok: true, result };
+}
+
+function toolErr(requestId, error) {
+  return { type: 'tool_result', request_id: requestId, ok: false, error };
+}
 
 // Runs code in the page's MAIN world and returns [errStringOrNull, jsonString].
 function injectedRunner(source) {
@@ -347,38 +370,147 @@ function withTimeout(promise, ms, label) {
   });
 }
 
+// ONE target-tab resolution shared by every tool: args.tab_id, then
+// frame.tab_id, then (unless fallbackToFocused=false) the focused tab.
+// Returns {tab} on success, {closed:true} when a named tab no longer exists,
+// {missing:true} when no tab was named and the focused fallback is disabled.
+async function resolveToolTab(frame, args, fallbackToFocused = true) {
+  const explicit = args && Number.isInteger(args.tab_id) ? args.tab_id : null;
+  const frameTabId = frame && Number.isInteger(frame.tab_id) ? frame.tab_id : null;
+  const wanted = explicit !== null ? explicit : frameTabId;
+  if (wanted === null) {
+    if (!fallbackToFocused) return { missing: true };
+    return { tab: await activeTabForScripting() };
+  }
+  try {
+    const target = await chrome.tabs.get(wanted);
+    if (target && typeof target.id === 'number') return { tab: target };
+  } catch {
+    // Named tab is gone: fail the tool, never act on another tab.
+  }
+  return { closed: true };
+}
+
+const NAVIGABLE_URL_RE = /^https?:/i;
+
+async function navigateTab(frame) {
+  const requestId = frame && frame.request_id;
+  const url = frame && frame.args && frame.args.url;
+  if (typeof url !== 'string' || !url.trim()) {
+    return toolErr(requestId, 'bad tool args');
+  }
+  const trimmed = url.trim();
+  if (trimmed !== 'about:blank' && !NAVIGABLE_URL_RE.test(trimmed)) {
+    return toolErr(requestId, 'only http(s) URLs (or about:blank) can be navigated');
+  }
+  const { tab, closed } = await resolveToolTab(frame, frame.args);
+  if (closed) return toolErr(requestId, 'conversation tab is closed');
+  if (!tab) return toolErr(requestId, 'no active tab');
+  const tabId = tab.id;
+  // Listener registered BEFORE the update so the completion event of a
+  // fast-loading page can never be missed.
+  let listener;
+  const loaded = new Promise((resolve) => {
+    listener = (updatedId, changeInfo) => {
+      if (updatedId !== tabId || !changeInfo || changeInfo.status !== 'complete') return;
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(true);
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    Promise.resolve(chrome.tabs.update(tabId, { url: trimmed })).catch(() => {});
+  });
+  try {
+    await withTimeout(loaded, TOOL_TIMEOUT_MS, 'navigation timed out');
+  } catch (err) {
+    chrome.tabs.onUpdated.removeListener(listener);
+    return toolErr(requestId, String((err && err.message) || err));
+  }
+  let final = null;
+  try {
+    final = await chrome.tabs.get(tabId);
+  } catch {
+    // Navigated away/closed right after load; report what we know.
+  }
+  const info = final && typeof final.id === 'number'
+    ? final : { id: tabId, url: trimmed, title: null };
+  return toolOk(requestId, JSON.stringify({
+    tab_id: info.id, url: info.url || trimmed, title: info.title || null,
+  }));
+}
+
+async function activateTab(frame) {
+  const requestId = frame && frame.request_id;
+  const { tab, closed, missing } = await resolveToolTab(
+    frame, frame && frame.args, false);
+  if (missing) return toolErr(requestId, 'bad tool args: tab_id is required');
+  if (closed) return toolErr(requestId, 'conversation tab is closed');
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (typeof tab.windowId === 'number') {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch (err) {
+    return toolErr(requestId, String((err && err.message) || err));
+  }
+  let fresh = tab;
+  try {
+    fresh = await chrome.tabs.get(tab.id);
+  } catch {
+    // Closed between activate and read; report the pre-activation info.
+  }
+  return toolOk(requestId, JSON.stringify({
+    tab_id: fresh.id, url: fresh.url || null, title: fresh.title || null,
+  }));
+}
+
+// The page's CSP can block the MAIN-world eval entirely (e.g. GitHub). When
+// the injection fails that way, rerun the code through the chrome.debugger
+// protocol instead. While attached Chrome shows a "being debugged" infobar.
+const CSP_EVAL_ERROR_RE = /EvalError|unsafe-eval|Content Security Policy/i;
+
+async function runTabJsViaDebugger(tab, code) {
+  const target = { tabId: tab.id };
+  let attached = false;
+  try {
+    await chrome.debugger.attach(target, '1.3');
+    attached = true;
+    const out = await chrome.debugger.sendCommand(
+      target, 'Runtime.evaluate',
+      { expression: code, returnByValue: true, awaitPromise: true });
+    if (out && out.exceptionDetails) {
+      const details = out.exceptionDetails;
+      const text = (details.exception && details.exception.description)
+        || details.text || 'evaluation failed';
+      return { ok: false, error: String(text) };
+    }
+    const value = out && out.result ? out.result.value : undefined;
+    const encoded = value === undefined ? 'undefined' : JSON.stringify(value);
+    return { ok: true, result: String(encoded).slice(0, TOOL_RESULT_MAX) };
+  } finally {
+    if (attached) {
+      Promise.resolve(chrome.debugger.detach(target)).catch(() => {});
+    }
+  }
+}
+
 async function runTabJs(frame) {
   const code = frame && frame.args && frame.args.code;
   if (typeof code !== 'string') {
-    return { type: 'tool_result', request_id: frame && frame.request_id, ok: false, error: 'bad tool args' };
+    return toolErr(frame && frame.request_id, 'bad tool args');
   }
-  // Script the tab the conversation belongs to (frame.tab_id), falling back
-  // to the focused tab for legacy frames without one.
-  const frameTabId = frame && Number.isInteger(frame.tab_id) ? frame.tab_id : null;
-  let tab = null;
-  if (frameTabId !== null) {
-    try {
-      const target = await chrome.tabs.get(frameTabId);
-      if (target && typeof target.id === 'number') tab = target;
-    } catch {
-      // Conversation tab is gone: fail the tool, never script another tab.
-    }
-    if (!tab) {
-      return {
-        type: 'tool_result', request_id: frame.request_id, ok: false,
-        error: 'conversation tab is closed',
-      };
-    }
-  } else {
-    tab = await activeTabForScripting();
-  }
-  if (!tab) {
-    return { type: 'tool_result', request_id: frame.request_id, ok: false, error: 'no active tab' };
-  }
+  // Script the tab the conversation belongs to (args.tab_id, then
+  // frame.tab_id), falling back to the focused tab for legacy frames.
+  const { tab, closed } = await resolveToolTab(frame, frame.args);
+  if (closed) return toolErr(frame.request_id, 'conversation tab is closed');
+  if (!tab) return toolErr(frame.request_id, 'no active tab');
 
-  let results;
+  // A rejected injection, an injection.error, or an error string returned by
+  // the runner (it catches the eval error itself) all normalize to a failure;
+  // a CSP-shaped one reruns through the chrome.debugger protocol.
+  let injectionError = null;
+  let encoded = null;
   try {
-    results = await withTimeout(
+    const results = await withTimeout(
       chrome.scripting.executeScript({
         target: { tabId: tab.id },
         world: 'MAIN',
@@ -388,38 +520,44 @@ async function runTabJs(frame) {
       TOOL_TIMEOUT_MS,
       'timeout',
     );
+    const injection = Array.isArray(results) ? results[0] : null;
+    if (!injection || injection.error) {
+      injectionError = String((injection && injection.error) || 'no injection result');
+    } else {
+      const [errText, value] = Array.isArray(injection.result)
+        ? injection.result : [null, null];
+      if (errText !== null && errText !== undefined) injectionError = errText;
+      else encoded = value;
+    }
   } catch (err) {
-    return {
-      type: 'tool_result',
-      request_id: frame.request_id,
-      ok: false,
-      error: String((err && err.message) || err),
-    };
+    injectionError = String((err && err.message) || err);
   }
 
-  const injection = Array.isArray(results) ? results[0] : null;
-  if (!injection || injection.error) {
-    return {
-      type: 'tool_result',
-      request_id: frame.request_id,
-      ok: false,
-      error: String((injection && injection.error) || 'no injection result'),
-    };
-  }
-  const [errText, encoded] = Array.isArray(injection.result) ? injection.result : [null, null];
-  if (errText !== null && errText !== undefined) {
-    return { type: 'tool_result', request_id: frame.request_id, ok: false, error: errText };
+  if (injectionError !== null) {
+    if (CSP_EVAL_ERROR_RE.test(injectionError)) {
+      try {
+        const out = await withTimeout(
+          runTabJsViaDebugger(tab, code), TOOL_TIMEOUT_MS, 'timeout');
+        return out.ok
+          ? toolOk(frame.request_id, out.result)
+          : toolErr(frame.request_id, out.error);
+      } catch (err) {
+        return toolErr(frame.request_id, String((err && err.message) || err));
+      }
+    }
+    return toolErr(frame.request_id, injectionError);
   }
   if (typeof encoded !== 'string') {
-    return { type: 'tool_result', request_id: frame.request_id, ok: false, error: 'no result' };
+    return toolErr(frame.request_id, 'no result');
   }
-  return {
-    type: 'tool_result',
-    request_id: frame.request_id,
-    ok: true,
-    result: encoded.slice(0, TOOL_RESULT_MAX),
-  };
+  return toolOk(frame.request_id, encoded.slice(0, TOOL_RESULT_MAX));
 }
+
+const TOOL_HANDLERS = {
+  run_tab_js: runTabJs,
+  navigate_tab: navigateTab,
+  activate_tab: activateTab,
+};
 
 // ─── Keepalive + init ───────────────────────────────────────────────────────
 
