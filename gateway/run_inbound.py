@@ -3337,25 +3337,6 @@ class GatewayInboundMixin:
             )
             message_text = f"{_redelivery_note}\n\n{message_text}"
 
-        # Discord: surface the triggering message id per-turn on the user
-        # message rather than in the cached system prompt. message_id changes
-        # every turn, so baking it into build_session_context_prompt() would
-        # bust the agent-cache signature and rebuild the AIAgent every message
-        # (destroying prompt caching). The static IDs block points the agent
-        # here; the volatile id rides the per-turn user content.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
-                )
-
         # Incognito sessions drop unbounded history backfill and reply context here, BEFORE
         # either is composed into the turn text (adapters that proved a bounded block flag it).
         self._apply_incognito_inbound_gate(event)
@@ -3372,6 +3353,29 @@ class GatewayInboundMixin:
                 )
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+
+        # Discord: surface the triggering message id per-turn on the user
+        # message rather than in the cached system prompt. message_id changes
+        # every turn, so baking it into build_session_context_prompt() would
+        # bust the agent-cache signature and rebuild the AIAgent every message
+        # (destroying prompt caching). The static IDs block points the agent
+        # here; the volatile id rides the per-turn user content. Prepended
+        # LAST so the note is the message's leading bytes — that prefix is
+        # what strip_discord_triggering_note peels for the persisted copy
+        # (a reply pointer prepended after it would hide the note from the
+        # strip and leak the instruction into the durable transcript).
+        if (
+            source is not None
+            and getattr(source, "platform", None) == Platform.DISCORD
+            and getattr(event, "message_id", None)
+        ):
+            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+            if _disc_tools_loaded():
+                message_text = (
+                    f"[Triggering message id: `{event.message_id}` — use as "
+                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
+                    f"{message_text}"
+                )
 
         # Prepend channel context from history backfill (if any), OUTERMOST so the block reads
         # history → reply pointer → trigger message. Runs after sender-prefix so the prefix

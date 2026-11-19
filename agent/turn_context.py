@@ -790,23 +790,24 @@ def _collect_pre_llm_call_context(
 def _merge_gateway_notes(
     agent: Any, messages: List[Any], current_turn_user_idx: int, plugin_user_context: str,
     *, continue_interrupted_turn: bool = False,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, str]:
     """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
     ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
     surface-switch correction. Multimodal (list) content can't take the string sidecar —
     append a durable text part instead. A transparent continuation has no current user
     row to carry a note; any staged note is left pending for the next real user turn
     instead of being spliced into the interrupted turn's history. Returns
-    ``(merged_context, gateway_notes)`` — the notes ride along so injection
-    observability can attribute them without re-consuming the channel."""
+    ``(merged_context, gateway_notes, surface_note)`` — the note strings ride along so
+    injection observability can classify them without re-consuming the channels."""
     _gateway_notes = (
         "" if continue_interrupted_turn else consume_gateway_turn_context_notes(agent)
     )
+    _surface_note = consume_surface_switch_note(agent)
     _turn_notes = "\n\n".join(
-        part for part in (_gateway_notes, consume_surface_switch_note(agent)) if part
+        part for part in (_gateway_notes, _surface_note) if part
     )
     if not _turn_notes:
-        return plugin_user_context, _gateway_notes
+        return plugin_user_context, _gateway_notes, _surface_note
     _gw_turn_content = (
         messages[current_turn_user_idx].get("content")
         if 0 <= current_turn_user_idx < len(messages)
@@ -815,11 +816,28 @@ def _merge_gateway_notes(
     )
     if isinstance(_gw_turn_content, list):
         append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
-        return plugin_user_context, _gateway_notes
+        return plugin_user_context, _gateway_notes, _surface_note
     return (
         plugin_user_context + "\n\n" + _turn_notes if plugin_user_context else _turn_notes,
         _gateway_notes,
+        _surface_note,
     )
+
+
+def _consume_gateway_turn_note_kinds(agent: Any, gateway_notes: str) -> List[Optional[str]]:
+    """One-shot kinds aligned with the gateway's staged turn notes; display
+    metadata only, never part of the model bytes. An absent channel (legacy
+    producers, direct test staging) classifies the joined notes as one
+    unclassified segment."""
+    kinds = getattr(agent, "_gateway_turn_note_kinds", None)
+    if hasattr(agent, "_gateway_turn_note_kinds"):
+        with suppress(Exception):
+            setattr(agent, "_gateway_turn_note_kinds", [])
+    if not gateway_notes:
+        return []
+    if isinstance(kinds, list) and kinds:
+        return [kind if isinstance(kind, str) and kind else None for kind in kinds]
+    return [None]
 
 
 def _bind_interrupt_scope(agent: Any, ra) -> None:
@@ -1214,9 +1232,13 @@ def build_turn_context(
     # Keep hook provenance before gateway notes join the same API-content
     # channel; display attribution must not call a gateway note a plugin.
     _has_plugin_user_context = bool(plugin_user_context)
-    plugin_user_context, _gateway_notes = _merge_gateway_notes(
+    plugin_user_context, _gateway_notes, _surface_switch_note = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context,
         continue_interrupted_turn=continue_interrupted_turn,
+    )
+    _gateway_note_kinds = (
+        [] if continue_interrupted_turn
+        else _consume_gateway_turn_note_kinds(agent, _gateway_notes)
     )
 
     _bind_interrupt_scope(agent, ra)
@@ -1397,6 +1419,21 @@ def build_turn_context(
                         "injected_chars": len(_api) - len(_clean),
                         "sources": _sources,
                     }
+                    # Kind tags in the composed-byte order (memory fence, plugin
+                    # context, gateway notes, surface-switch correction), so the
+                    # gateway can render one heading line per classified
+                    # segment. Additive display metadata: absent when nothing
+                    # classifiable was injected, never part of the model bytes.
+                    _kinds: List[Optional[str]] = []
+                    if ext_prefetch_cache:
+                        _kinds.append("memory")
+                    if _has_plugin_user_context:
+                        _kinds.append("plugin")
+                    _kinds.extend(_gateway_note_kinds)
+                    if _surface_switch_note:
+                        _kinds.append("surface_switch")
+                    if _kinds:
+                        _payload["kinds"] = _kinds
                     # Counted heading metadata: the discrete memory count behind
                     # the recall the gateway just watched being injected. Key
                     # rides only memory-sourced injections; None when no
