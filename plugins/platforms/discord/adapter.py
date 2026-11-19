@@ -165,9 +165,6 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
-# Replies in a configured channel get this reaction; clicking it runs /new for the
-# clicking user (discord.clear_reaction_channels opts the channels in).
-CLEAR_REACTION_EMOJI = "🧹"
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -1424,10 +1421,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             async def on_thread_update(before, after):
                 await adapter_self._on_platform_thread_update(before, after)
 
-            @self._client.event
-            async def on_raw_reaction_add(payload):
-                await adapter_self._dispatch_raw_reaction(payload)
-
             if self._slash_commands:
                 # Registration walks the skill catalog on disk (#110707); keep the loop free.
                 await asyncio.to_thread(self._register_slash_commands)
@@ -2440,7 +2433,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
-        await self._offer_clear_reaction(message)
         gate_probe = self._response_gate_probe()
         admitted, role_authorized = self._discord_message_admission(
             message, claim=True, gate_probe=gate_probe,
@@ -5291,75 +5283,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
-    async def _offer_clear_reaction(self, message: Any) -> None:
-        """Tag this bot's own replies with the clear reaction in opted-in channels."""
-        bot_user = self._client.user if self._client else None
-        if bot_user is None:
-            return
-        if str(getattr(getattr(message, "channel", None), "id", "")) not in self._clear_reaction_channels():
-            return
-        if getattr(getattr(message, "author", None), "id", None) != bot_user.id:
-            return
-        await self._add_reaction(message, CLEAR_REACTION_EMOJI)
-
-    async def _handle_clear_reaction(self, payload: Any) -> None:
-        """🧹 on one of this bot's own replies → run /new for the clicking user."""
-        bot_user = self._client.user if self._client else None
-        if bot_user is None or payload.user_id == bot_user.id:
-            return
-        channel_id = str(payload.channel_id)
-        if channel_id not in self._clear_reaction_channels():
-            return
-        try:
-            channel = self._client.get_channel(payload.channel_id) or await self._client.fetch_channel(
-                payload.channel_id
-            )
-            message = payload.message or await channel.fetch_message(payload.message_id)
-            if getattr(getattr(message, "author", None), "id", None) != bot_user.id:
-                return
-            is_thread = isinstance(channel, discord.Thread)
-            member = getattr(payload, "member", None)
-            source = self.build_source(
-                chat_id=channel_id,
-                chat_name=getattr(channel, "name", channel_id),
-                chat_type="thread" if is_thread else "group",
-                user_id=str(payload.user_id),
-                user_name=getattr(member, "display_name", str(payload.user_id)),
-                thread_id=channel_id if is_thread else None,
-                chat_topic=self._get_effective_topic(channel, is_thread=is_thread),
-                guild_id=str(getattr(payload, "guild_id", "") or ""),
-                parent_chat_id=str(getattr(channel, "parent_id", "") or "") or None,
-                message_id=str(payload.message_id),
-            )
-            await self.handle_message(MessageEvent(
-                text="/new",
-                message_type=MessageType.COMMAND,
-                source=source,
-                raw_message=message,
-                message_id=str(payload.message_id),
-            ))
-            logger.info("[%s] %s clicked by %s — session reset in %s",
-                        self.name, CLEAR_REACTION_EMOJI, payload.user_id, channel_id)
-        except Exception:
-            logger.exception("[%s] %s clear reaction failed", self.name, CLEAR_REACTION_EMOJI)
-
-    async def _dispatch_raw_reaction(self, payload: Any) -> None:
-        """One raw reaction event, routed by emoji to its owning feature.
-
-        Consumer: clear-reaction session resets (🧹 on the bot's own replies),
-        gated to channels opted in via clear_reaction_channels, so an unrelated
-        reaction costs one cheap emoji check and never reaches the handler.
-        (The resolve-ticket ✅/❌ consumer was removed on main together with
-        tools.discord_resolve_tool; do not re-add it.)
-        """
-        try:
-            emoji_name = getattr(payload.emoji, "name", None)
-        except Exception:
-            emoji_name = None
-
-        if emoji_name == CLEAR_REACTION_EMOJI:
-            await self._handle_clear_reaction(payload)
-
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
@@ -6190,16 +6113,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if raw is None:
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
         return self._gate_csv_set(raw)
-
-    def _clear_reaction_channels(self) -> set:
-        """Channels where replies carry the clear reaction (``discord.clear_reaction_channels``).
-
-        Clicking the reaction runs /new for the clicking user, so a channel is only
-        tagged when the operator listed it here.
-        """
-        return self._gate_csv_set(
-            self._gate_raw("clear_reaction_channels", "DISCORD_CLEAR_REACTION_CHANNELS")
-        )
 
     def _discord_thread_free_response_channels(self) -> set:
         """Free-response channels that still auto-thread (``discord.thread_free_response_channels``).
