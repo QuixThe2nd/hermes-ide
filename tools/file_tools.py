@@ -1152,9 +1152,13 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000},
+            "description": {"type": "string", "description": "One short phrase (max ~80 chars) saying WHY you are reading this file, e.g. 'check the serving note path'. Shown to the user as progress instead of the file path. Never put the path or file contents here."},
+            # "description" is display metadata: advertised as required so models
+            # supply it, but the handler never reads it — dedup keys on
+            # (path, offset, limit) only, so reads behave identically without it.
         },
-        "required": ["path"]
+        "required": ["path", "description"]
     }
 }
 
@@ -1298,9 +1302,11 @@ SEARCH_FILES_SCHEMA = {
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File-search order: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree; ignored for content", "default": "discovery"},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "description": {"type": "string", "description": "One short phrase (max ~80 chars) saying WHY you are searching, e.g. 'find where sidecar notes are appended'. Shown to the user as progress instead of the pattern. Never put the path, pattern, or file contents here."},
+            # Same display-metadata contract as read_file's description above.
         },
-        "required": ["pattern"]
+        "required": ["pattern", "description"]
     }
 }
 

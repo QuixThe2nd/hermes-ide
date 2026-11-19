@@ -580,6 +580,11 @@ def _describe_file_path(args: dict) -> str | None:
 
 
 def _describe_search_files_phrase(args: dict) -> str | None:
+    reason = _describe_safe_str(args.get("description"))
+    if reason:
+        target = args.get("target")
+        subject = "Searching file names" if isinstance(target, str) and target.strip().lower() == "files" else "Searching files"
+        return f"{subject} {_describe_purpose(reason)}"
     pattern = _describe_safe_str(args.get("pattern"))
     if pattern is None:
         return None
@@ -638,7 +643,7 @@ def _describe_purpose(reason: str) -> str:
 def _describe_file_tool_phrase(tool_name: str, args: dict) -> str | None:
     verb = get_tool_verb(tool_name)
     reason = _describe_safe_str(args.get("description"))
-    if tool_name in ("write_file", "patch") and reason and verb:
+    if tool_name in ("read_file", "write_file", "patch") and reason and verb:
         purpose = _describe_purpose(reason)
         path = _describe_safe_str(args.get("path"))
         basename = Path(path).name if path else ""
@@ -1302,6 +1307,7 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
 
 # Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
 _DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({
+    "read_file", "search_files",
     "write_file", "patch", "skill_view", "skill_manage", "delegate_agent", "discord", "discord_admin",
     "session_search", "cronjob_manage", "cronjob", "memory",
     *tuple(_lane_describe_builders()),  # lane phrases carry their own attribution

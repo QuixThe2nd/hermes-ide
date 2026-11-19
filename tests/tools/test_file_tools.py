@@ -149,6 +149,56 @@ class TestWriteFileHandler:
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
 
 
+class TestDescribeProgressDescriptionDisplayOnly:
+    """The describe-mode ``description`` arg is display metadata: advertised in the
+    schema (required, like write_file/patch/terminal) but never read by dispatch —
+    read dedup keys and search results must not vary with it."""
+
+    @pytest.mark.parametrize("schema_name", ["READ_FILE_SCHEMA", "SEARCH_FILES_SCHEMA"])
+    def test_description_advertised_as_required_string(self, schema_name):
+        from tools import file_tools
+
+        schema = getattr(file_tools, schema_name)
+        assert schema["parameters"]["properties"]["description"]["type"] == "string"
+        assert "description" in schema["parameters"]["required"]
+
+    @pytest.mark.parametrize(
+        ("handler", "call_args"),
+        [
+            ("_handle_read_file", {"path": "/tmp/x.py", "offset": 5, "description": "why"}),
+            ("_handle_search_files", {"pattern": "foo", "path": "/tmp", "description": "why"}),
+        ],
+    )
+    def test_handler_never_forwards_description(self, monkeypatch, handler, call_args):
+        """Same underlying call with and without description — the arg is display-only."""
+        import tools.file_tools as ft
+
+        calls = []
+        target = "read_file_tool" if handler == "_handle_read_file" else "search_tool"
+        monkeypatch.setattr(ft, target, lambda **kw: calls.append(kw) or "{}")
+        getattr(ft, handler)(call_args, task_id="t-desc")
+        getattr(ft, handler)({k: v for k, v in call_args.items() if k != "description"}, task_id="t-desc")
+        assert calls[0] == calls[1]
+        assert "description" not in calls[0]
+
+    def test_read_dedup_ignores_description(self, tmp_path):
+        """Identical (path, offset, limit) with different descriptions still dedups."""
+        import tools.file_tools as ft
+        from tools.file_tools_read_tracking import _read_tracker
+
+        target = tmp_path / "notes.md"
+        target.write_text("v1\n", encoding="utf-8")
+        task_id = "t-desc-dedup"
+        try:
+            first = json.loads(ft._handle_read_file({"path": str(target), "description": "why A"}, task_id=task_id))
+            assert "content" in first
+            second = json.loads(ft._handle_read_file({"path": str(target), "description": "why B"}, task_id=task_id))
+            assert second.get("dedup") is True
+            assert second.get("status") == "unchanged"
+        finally:
+            _read_tracker.pop(task_id, None)
+
+
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
     @pytest.mark.platforms("linux")
