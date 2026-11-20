@@ -20,6 +20,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.served_model import result_model_fields
 from agent.turn_control import is_gateway_restart_armed
+from agent.turn_timing import PHASE_KEYS, timed_phase
 
 # Verification continuation scaffolding flags: verify-on-stop / pre_verify /
 # pre_turn_end inject a synthetic user nudge to keep the agent going one more
@@ -448,9 +449,13 @@ def finalize_turn(
 
     _cleanup_errors: List[str] = []
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
+    def _save_trajectory_step():
+        with timed_phase(agent, "save"):
+            agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+
     _guarded_cleanup(
         "save_trajectory",
-        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
+        _save_trajectory_step,
         _cleanup_errors, logger,
     )
     _guarded_cleanup(
@@ -470,8 +475,10 @@ def finalize_turn(
         )
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
-            _micro_compact_after_turn(agent, messages, final_response, logger)
-        agent._persist_session(messages, conversation_history)
+            with timed_phase(agent, "compress"):
+                _micro_compact_after_turn(agent, messages, final_response, logger)
+        with timed_phase(agent, "save"):
+            agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
@@ -531,6 +538,8 @@ def finalize_turn(
         "api_time": float(turn_api_time or 0.0),
         "tool_time": float(turn_tool_time or 0.0),
         "tool_calls": int(turn_tool_calls or 0),
+        # Measured phase buckets (agent/turn_timing.py): mem/setup/compress/save.
+        **{f"{key}_time": float(getattr(agent, f"_turn_{key}_time", 0.0) or 0.0) for key in PHASE_KEYS},
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
@@ -607,10 +616,11 @@ def finalize_turn(
         agent._iters_since_skill = 0
 
     # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message, final_response=final_response,
-        interrupted=interrupted, messages=messages,
-    )
+    with timed_phase(agent, "mem"):
+        agent._sync_external_memory_for_turn(
+            original_user_message=original_user_message, final_response=final_response,
+            interrupted=interrupted, messages=messages,
+        )
 
     # Background memory/skill review runs AFTER delivery so it never competes with the
     # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs

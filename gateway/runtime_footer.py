@@ -22,6 +22,8 @@ _DEFAULT_FIELDS: tuple[str, ...] = (
     "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
     "api_calls", "tool_calls",
 )
+_PHASE_ORDER: tuple[str, ...] = ("mem", "setup", "compress", "save")
+_PHASE_MIN_SECONDS = 0.1
 _SEP = " · "
 _MAKER_PREFIX = "claude-"
 _EFFORT_SHORT = {"medium": "med.", "minimal": "min."}
@@ -106,9 +108,11 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           tool_calls: Optional[int] = None,
                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
                           reasoning_effort: Optional[str] = None,
+                          phase_times: Optional[dict] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
+
     try:
         from agent.served_model import is_displayable_served_model
     except ImportError:
@@ -129,6 +133,27 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
     def _labeled(prefix: str, seconds: Optional[float]) -> str:
         duration = _format_duration(seconds)
         return f"{prefix} {duration}" if duration else ""
+
+    def _phase_tail() -> str:
+        # Each category renders only at/above the threshold but always counts
+        # toward the residual; no mapping keeps the legacy single `other`.
+        if overhead_time is None:
+            return ""
+        if not phase_times:
+            return _labeled("other", overhead_time)
+        segments: list[str] = []
+        attributed = 0.0
+        for key in _PHASE_ORDER:
+            seconds = phase_times.get(key)
+            if not isinstance(seconds, (int, float)):
+                continue
+            attributed += max(0.0, float(seconds))
+            if seconds >= _PHASE_MIN_SECONDS:
+                segments.append(_labeled(key, float(seconds)))
+        residual = max(0.0, overhead_time - attributed)
+        if residual >= _PHASE_MIN_SECONDS:
+            segments.append(_labeled("other", residual))
+        return _SEP.join(segments)
 
     def api_calls_field() -> str:
         if api_calls is not None and api_calls > 0:
@@ -179,7 +204,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         "turn_time": lambda: _format_duration(turn_time),
         "api_time": lambda: _labeled("api", api_time),
         "tool_time": tool_time_field,
-        "overhead_time": lambda: _labeled("other", overhead_time),
+        "overhead_time": _phase_tail,
         "api_calls": api_calls_field,
         "tool_calls": tool_calls_field,
     }
@@ -192,22 +217,40 @@ def build_footer_line(*, model: Optional[str], context_tokens: int, context_leng
                       tool_time: Optional[float] = None, api_calls: Optional[int] = None,
                       tool_calls: Optional[int] = None,
                       requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      phase_times: Optional[dict] = None,
                       reasoning_effort: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when no field has data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
-    ``latency`` field. The optional ``turn_time`` / ``api_time`` / ``tool_time`` breakdown and
-    ``api_calls`` / ``tool_calls`` feed the extended timing fields and are skipped when unset."""
+    ``api_calls`` / ``tool_calls`` feed the extended timing fields and are skipped when unset.
+    ``phase_times`` (see ``phase_times_from_result``) splits the remainder into measured
+    categories; ``None``/empty keeps the single legacy ``other`` segment."""
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  turn_time=turn_time, api_time=api_time, tool_time=tool_time,
                                  api_calls=api_calls, tool_calls=tool_calls,
+                                 phase_times=phase_times,
                                  requested_model=requested_model, served_model=served_model,
                                  reasoning_effort=reasoning_effort)
+
+
+def phase_times_from_result(result: dict[str, Any] | None) -> Optional[dict]:
+    """Measured phase seconds keyed by phase, or ``None`` when no category was
+    timed (the footer then keeps its legacy single-``other`` render)."""
+    result = result or {}
+    measured = {
+        key: float(result[f"{key}_time"])
+        for key in _PHASE_ORDER
+        if isinstance(result.get(f"{key}_time"), (int, float))
+    }
+    return measured or None
 
 
 def turn_metrics(result: dict[str, Any] | None) -> dict[str, Any]:
     """Footer inputs carried from an agent result onto the gateway's agent_result dict; spread
     it (``**turn_metrics(result)``) into every return path so the timing fields never get dropped."""
     result = result or {}
-    return {key: result.get(key) for key in ("api_time", "tool_time", "tool_calls")}
+    return {
+        key: result.get(key)
+        for key in ("api_time", "tool_time", "tool_calls", *(f"{k}_time" for k in _PHASE_ORDER))
+    }
