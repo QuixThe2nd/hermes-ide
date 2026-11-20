@@ -52,10 +52,12 @@ from agent.turn_control import (
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
+    PERSISTED_OUTPUT_TAG,
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
 )
+from agent.context_injection_cards import emit_injection_card
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
@@ -1017,10 +1019,21 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
+    _spilled_stub = None
     if _is_multimodal_tool_result(persisted_result):
         persisted_result = _persist_multimodal_text_parts(
             persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
         )
+        # A replaced text part means oversized output spilled to disk; the
+        # stub the model sees instead deserves its own card.
+        for _part in (persisted_result.get("content") or []):
+            if (
+                isinstance(_part, dict)
+                and isinstance(_part.get("text"), str)
+                and PERSISTED_OUTPUT_TAG in _part["text"]
+            ):
+                _spilled_stub = _part["text"]
+                break
     else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
@@ -1029,6 +1042,8 @@ def _commit_tool_result(
             env=get_active_env(effective_task_id),
             config=budget,
         )
+        if isinstance(persisted_result, str) and PERSISTED_OUTPUT_TAG in persisted_result:
+            _spilled_stub = persisted_result
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -1038,6 +1053,15 @@ def _commit_tool_result(
             _append_subdir_hint_to_multimodal(persisted_result, subdir_hints)
         else:
             persisted_result += subdir_hints
+
+    # Injection cards: an oversized result that spilled to disk (the model
+    # reads a stub, not the bytes) and a directory AGENTS.md hint appended on
+    # first touch are both context the model received beyond the tool's own
+    # output. Display plumbing only — never blocks the tool round.
+    if _spilled_stub:
+        emit_injection_card(agent, ["spillover"], _spilled_stub, sources=["tool_result"])
+    if subdir_hints:
+        emit_injection_card(agent, ["subdirectory"], subdir_hints, sources=["tool_result"])
 
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.

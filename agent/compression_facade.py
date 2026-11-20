@@ -196,6 +196,40 @@ def _rebind_caller_session_context(agent) -> None:
         logger.debug("post-compression session ContextVar rebind failed", exc_info=True)
 
 
+def _emit_compaction_card(agent, before, result) -> None:
+    """Card the conversation summary a committed compression inserted.
+
+    Every compression path crosses ``_compress_context``, so this is the one
+    chokepoint that observes the commit: preflight, mid-loop overflow, manual
+    /compress, gateway session hygiene. A skip path returns the input list
+    unchanged, so no row is new and nothing fires; a byte-identical preserved
+    summary (recompression that kept the old row) stays silent the same way.
+    Display plumbing only — never raises, never blocks the turn.
+    """
+    try:
+        from agent.context_compressor import ContextCompressor
+        from agent.context_injection_cards import emit_injection_card
+
+        new_messages = result[0] if isinstance(result, tuple) else None
+        if not isinstance(new_messages, list):
+            return
+        before_texts = (
+            {_m.get("content") for _m in before if isinstance(_m, dict)}
+            if isinstance(before, list)
+            else set()
+        )
+        for _m in new_messages:
+            if ContextCompressor._is_context_summary_message(_m):
+                if _m.get("content") in before_texts:
+                    continue
+                emit_injection_card(
+                    agent, ["compaction"], str(_m.get("content") or ""), sources=["session"],
+                )
+                return
+    except Exception:
+        logger.debug("compaction card emission failed", exc_info=True)
+
+
 class CompressionFacadeMixin:
     """``_compress_context`` (see module docstring)."""
 
@@ -278,6 +312,7 @@ class CompressionFacadeMixin:
                     idle_timeout=idle_timeout, total_ceiling=total_ceiling, approx_tokens=approx_tokens,
                 )
             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
+            _emit_compaction_card(self, messages, result)
             _rebind_caller_session_context(self)
             return result
         finally:
