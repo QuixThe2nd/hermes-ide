@@ -487,7 +487,7 @@ class TestNoRecursion:
             response={"channels": ["555"], "mode": "enforce"},
         )
         inbound_status = _message(
-            content="```\n🔍 Goal Intent: 0.90 Confidence\n```",
+            content="```\n🔍 Goal Intent: Task (0.90)\n```",
             author=SimpleNamespace(id=BOT_ID, name="hermes", display_name=BOT_NAME, bot=True),
         )
 
