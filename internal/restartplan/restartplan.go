@@ -51,7 +51,10 @@
 //     transport for a door that does not exist.
 package restartplan
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Trigger names the door a restart request arrived through.
 type Trigger string
@@ -138,6 +141,33 @@ func ResolveExitCode(restartRequested, viaService, successorStarted, supervised,
 		return ExitCode{Code: OverlapRestartExitCode, Special: true}
 	}
 	return ExitCode{Code: ServiceRestartExitCode, Special: true}
+}
+
+// ErrProbeUnanswered reports that the newer-live-generation probe failed
+// where its answer would decide the exit code.
+var ErrProbeUnanswered = errors.New("restartplan: newer-generation probe failed where its answer decides the exit")
+
+// ResolveExitCodeProbeFailed decides the planned exit code when the
+// newer-live-generation probe (the hub mirror read) raised instead of
+// answering. The Python twin is resolve_planned_restart_exit_code's
+// probe-error path.
+//
+// The probe's answer matters only when it would flip a service restart
+// (75) into the overlap exit (76). Everywhere else both answers give the
+// same code, and that code stands; the caller logs the failure. The key
+// case is a started successor: it already decides 76, so a broken probe
+// must not abort teardown into the service-restart fallback. That
+// fallback exits 75, and systemd (KillMode=mixed) then kills the live
+// successor and its in-flight turns along with the unit. Where the answer
+// does decide the code, guessing either way risks a duplicate or a dead
+// fleet, so the failure is returned to the caller.
+func ResolveExitCodeProbeFailed(restartRequested, viaService, successorStarted, supervised bool) (ExitCode, error) {
+	absent := ResolveExitCode(restartRequested, viaService, successorStarted, supervised, false)
+	present := ResolveExitCode(restartRequested, viaService, successorStarted, supervised, true)
+	if absent != present {
+		return ExitCode{}, ErrProbeUnanswered
+	}
+	return absent, nil
 }
 
 // Decide derives the transport plan for one restart request.

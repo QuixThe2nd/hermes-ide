@@ -380,3 +380,49 @@ async def test_modular_detached_watcher_skips_existing_overlap_successor():
     )
 
     runner._launch_detached_restart_command.assert_not_awaited()
+
+
+def _supervised_runner_with_started_successor(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._restart_via_service = True
+    runner._overlap_restart_successor_started = True
+    runner._overlap_restart_successor_pid = 5150
+    runner._overlap_restart_successor_start_time = 4242
+    monkeypatch.setenv("INVOCATION_ID", "systemd-overlap-restart")
+    return runner
+
+
+def test_planned_exit_hands_over_to_successor_listed_in_hub_mirror(tmp_path, monkeypatch):
+    """The hub mirror naming the live successor must yield 76, never the 75 that kills it."""
+    from gateway.restart import resolve_planned_restart_exit_code
+
+    monkeypatch.setattr(
+        "plugins.platforms.discord.hub.default_socket_path", lambda: tmp_path / "discord-hub.sock"
+    )
+    monkeypatch.setattr("gateway.overlap_registry.get_process_start_time", lambda _pid: 4242)
+    (tmp_path / "hub-overlap-successors.json").write_text(json.dumps([{
+        "pid": 5150, "start_time": 4242, "predecessor_pid": os.getpid(), "attached": True,
+    }]))
+    runner = _supervised_runner_with_started_successor(monkeypatch)
+
+    assert resolve_planned_restart_exit_code(runner) == GATEWAY_OVERLAP_RESTART_EXIT_CODE
+
+
+def test_failed_generation_probe_is_logged_and_keeps_started_successor(monkeypatch, caplog):
+    from gateway.restart import resolve_planned_restart_exit_code
+
+    def broken_reader(*_args, **_kwargs):
+        raise NameError("generation registry probe is broken")
+
+    monkeypatch.setattr("gateway.overlap_registry.read_live_rows", broken_reader)
+    runner = _supervised_runner_with_started_successor(monkeypatch)
+
+    with caplog.at_level("ERROR", logger="gateway.restart"):
+        assert resolve_planned_restart_exit_code(runner) == GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    assert "generation registry probe is broken" in caplog.text
+
+    # Without a successor the probe alone separates 75 from 76: never guess.
+    runner._overlap_restart_successor_started = False
+    with pytest.raises(NameError):
+        resolve_planned_restart_exit_code(runner)
