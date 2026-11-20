@@ -6,6 +6,8 @@ marker, compare-and-swap cleanup, and promotion into the existing
 ``resume_pending`` recovery path after an unclean exit.
 """
 
+import json
+import os
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -513,3 +515,57 @@ async def test_unclean_recovery_promotes_exact_markers_before_legacy_fallback(
 
     assert await runner._recover_unclean_sessions() == (1, 2)
     assert calls == ["exact", "fallback"]
+
+
+def _interrupted_turn_after_overlap(tmp_path, monkeypatch, sentinel: dict):
+    """A successor's turn marker beside its predecessor's clean-shutdown receipt."""
+    from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = get_lifecycle_sentinel_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sentinel), encoding="utf-8")
+    marker = tmp_path / ".clean_shutdown"
+    marker.touch()
+    store = _make_store(tmp_path)
+    source = _make_source()
+    store.mark_turn_active(store.get_or_create_session(source).session_key)
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    return runner, store, source, marker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sentinel", [
+    # This boot already claimed the ledger and stamped the prior life unclean.
+    {"phase": "running", "pid": os.getpid(), "prior_unclean_exit": True},
+    # Overlap successor still pending its claim: the last owner died mid-life.
+    {"phase": "running", "pid": 2 ** 22 + 12345},
+], ids=["claimed", "pre_claim"])
+async def test_unclean_ledger_recovers_turns_despite_predecessor_clean_marker(
+    tmp_path, monkeypatch, sentinel,
+):
+    runner, store, source, marker = _interrupted_turn_after_overlap(tmp_path, monkeypatch, sentinel)
+
+    await runner._recover_previous_run_sessions(marker)
+
+    recovered = _entry_for(store, source)
+    assert recovered.resume_pending is True
+    assert recovered.resume_reason in GatewayRunner._AUTO_RESUME_REASONS
+    assert recovered.active_turn_token is None
+    # The stale receipt is consumed so it cannot vouch for the next life either.
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_clean_ledger_keeps_clean_marker_discard(tmp_path, monkeypatch):
+    runner, store, source, marker = _interrupted_turn_after_overlap(
+        tmp_path, monkeypatch, {"phase": "running", "pid": os.getpid()},
+    )
+
+    await runner._recover_previous_run_sessions(marker)
+
+    recovered = _entry_for(store, source)
+    assert recovered.resume_pending is False
+    assert recovered.active_turn_token is None
+    assert not marker.exists()

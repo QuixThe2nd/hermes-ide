@@ -1039,8 +1039,20 @@ class GatewayStartupMixin:
 
     async def _recover_previous_run_sessions(self, clean_marker: Path) -> None:
         """Recover sessions active at last exit (exact turn markers + 120s recency fallback for
-        marker-less older turns). SKIP after a clean exit — the previous process already drained."""
-        if clean_marker.exists():
+        marker-less older turns). SKIP after a clean exit — the previous process already drained.
+
+        An overlap predecessor writes the marker after its successor claimed the ledger, so the
+        marker cannot vouch for the successor's life; the ledger's unclean verdict wins."""
+        from gateway.lifecycle_ledger import previous_life_unclean
+
+        ledger_unclean = False
+        with _log_suppressed(logging.WARNING, "Lifecycle ledger read failed: %s"):
+            ledger_unclean = previous_life_unclean()
+        if ledger_unclean and clean_marker.exists():
+            logger.warning("Lifecycle ledger reports the previous life unclean; ignoring .clean_shutdown")
+            with _log_suppressed(logging.WARNING, "Stale .clean_shutdown removal failed: %s"):
+                clean_marker.unlink()
+        elif clean_marker.exists():
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
                 discarded = await self._consume_clean_shutdown_marker(clean_marker)

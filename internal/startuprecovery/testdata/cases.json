@@ -1,0 +1,95 @@
+{
+  "cases": [
+    {
+      "name": "overlap_successor_killed_after_predecessor_marker_recovers",
+      "clean_marker": true,
+      "sentinel": {
+        "phase": "running",
+        "owner": "me",
+        "prior_unclean_exit": true
+      },
+      "expect_ledger_unclean": true,
+      "expect_mode": "recover"
+    },
+    {
+      "name": "clean_handover_with_marker_discards",
+      "clean_marker": true,
+      "sentinel": {
+        "phase": "running",
+        "owner": "me",
+        "prior_unclean_exit": false
+      },
+      "expect_ledger_unclean": false,
+      "expect_mode": "discard"
+    },
+    {
+      "name": "crash_without_marker_recovers",
+      "clean_marker": false,
+      "sentinel": {
+        "phase": "running",
+        "owner": "me",
+        "prior_unclean_exit": true
+      },
+      "expect_ledger_unclean": true,
+      "expect_mode": "recover"
+    },
+    {
+      "name": "pending_successor_sees_dead_running_owner_recovers",
+      "clean_marker": true,
+      "sentinel": {
+        "phase": "running",
+        "owner": "dead",
+        "prior_unclean_exit": false
+      },
+      "expect_ledger_unclean": true,
+      "expect_mode": "recover"
+    },
+    {
+      "name": "pending_successor_beside_live_predecessor_keeps_marker",
+      "clean_marker": true,
+      "sentinel": {
+        "phase": "running",
+        "owner": "live_other",
+        "prior_unclean_exit": false
+      },
+      "expect_ledger_unclean": false,
+      "expect_mode": "discard"
+    },
+    {
+      "name": "exited_ledger_with_marker_discards",
+      "clean_marker": true,
+      "sentinel": {
+        "phase": "exited",
+        "owner": "dead",
+        "prior_unclean_exit": false
+      },
+      "expect_ledger_unclean": false,
+      "expect_mode": "discard"
+    },
+    {
+      "name": "drain_timeout_skipped_marker_recovers",
+      "clean_marker": false,
+      "sentinel": {
+        "phase": "exited",
+        "owner": "dead",
+        "prior_unclean_exit": false
+      },
+      "expect_ledger_unclean": false,
+      "expect_mode": "recover"
+    },
+    {
+      "name": "absent_ledger_with_marker_discards",
+      "clean_marker": true,
+      "sentinel": null,
+      "expect_ledger_unclean": false,
+      "expect_mode": "discard"
+    },
+    {
+      "name": "absent_ledger_without_marker_recovers",
+      "clean_marker": false,
+      "sentinel": null,
+      "expect_ledger_unclean": false,
+      "expect_mode": "recover"
+    }
+  ]
+}

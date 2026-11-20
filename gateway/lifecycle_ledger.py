@@ -181,6 +181,15 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     return evidence
 
 
+def previous_life_unclean(home: Optional[Path] = None) -> bool:
+    """Ledger verdict on the previous life: this boot's stamped claim, else read-only detection
+    (an overlap successor reads before it claims). Go twin: ``internal/startuprecovery``."""
+    sentinel = _read_json(get_lifecycle_sentinel_path(home))
+    if sentinel is not None and sentinel.get("pid") == os.getpid():
+        return bool(sentinel.get("prior_unclean_exit"))
+    return detect_unclean_exit(home) is not None
+
+
 def check_state_db_integrity(home: Optional[Path] = None) -> str:
     """``"ok"``, ``"absent"``, or the first ``quick_check`` complaint.  Never raises.
 
