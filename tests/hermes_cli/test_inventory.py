@@ -98,7 +98,7 @@ def _list_auth_returning(rows: list[dict]):
     )
 
 
-def _aggregator_row(model: str = "openai/gpt-5.5") -> dict:
+def _openrouter_row(model: str = "openai/gpt-5.5") -> dict:
     return {
         "slug": "openrouter",
         "name": "OpenRouter",
@@ -504,7 +504,7 @@ def test_user_defined_rows_carry_alias_set_for_gui_current_match():
             "source": "user-config",
             "api_url": "http://localhost:8000/v1",
         },
-        _aggregator_row() | {"is_current": False},
+        _openrouter_row() | {"is_current": False},
     ]
     ctx = _empty_ctx(provider="custom:myep", model="my-model")
 
