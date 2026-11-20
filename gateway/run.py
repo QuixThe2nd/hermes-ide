@@ -5684,6 +5684,7 @@ def _format_context_injection_progress(
     include_content: bool = True,
     recalled_count: Any = None,
     kinds: Optional[Sequence[Optional[str]]] = None,
+    meta: Optional[dict] = None,
     triggering_message_id: Any = None,
 ) -> list[str]:
     """Render API-bound ephemeral context as tool-style progress cards.
@@ -5757,6 +5758,7 @@ def _format_context_injection_progress(
             _heading_kinds,
             memory_sourced="memory" in (sources or []),
             recalled_count=recalled_count,
+            meta=meta,
         )
     )
 

@@ -266,6 +266,7 @@ class TurnRunner(_TurnRunnerCore):
             include_content=include_content,
             recalled_count=args.get("recalled_count"),
             kinds=args.get("kinds"),
+            meta=args.get("meta") if isinstance(args.get("meta"), dict) else None,
             triggering_message_id=getattr(ctx, "inbound_message_id", None),
         )
         for message in messages:

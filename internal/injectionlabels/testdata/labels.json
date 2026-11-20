@@ -7,7 +7,14 @@
     "intro": "👋 Injecting intro",
     "surface_switch": "🔀 Injecting surface switch",
     "plugin": "🧩 Injecting plugin context",
-    "process": "🖥️ Injecting process info"
+    "process": "🖥️ Injecting process info",
+    "session": "🗺️ Injecting session context",
+    "goal": "🎯 Injecting standing goal",
+    "skill": "📚 Injecting skill",
+    "compaction": "🗜️ Injecting conversation summary",
+    "steer": "🧭 Injecting steering update",
+    "subdirectory": "🗂️ Injecting directory context",
+    "spillover": "📦 Injecting persisted output"
   },
   "memory": {
     "plain": "🧠 Injecting memory",
@@ -134,6 +141,197 @@
       "expect_lines": [
         "🧠 Injecting 3 memories"
       ]
+    },
+    {
+      "name": "skill_with_name_meta",
+      "kinds": [
+        "skill"
+      ],
+      "meta": {
+        "skill": "research"
+      },
+      "expect_lines": [
+        "📚 Injecting skill (research)"
+      ]
+    },
+    {
+      "name": "skill_without_meta_renders_bare_label",
+      "kinds": [
+        "skill"
+      ],
+      "expect_lines": [
+        "📚 Injecting skill"
+      ]
+    },
+    {
+      "name": "blank_meta_renders_bare_label",
+      "kinds": [
+        "skill"
+      ],
+      "meta": {
+        "skill": ""
+      },
+      "expect_lines": [
+        "📚 Injecting skill"
+      ]
+    },
+    {
+      "name": "meta_on_unknown_kind_is_dropped_with_label",
+      "kinds": [
+        "mystery"
+      ],
+      "meta": {
+        "mystery": "x"
+      },
+      "expect_lines": [
+        "🧠 Injecting context"
+      ]
+    },
+    {
+      "name": "meta_never_applies_to_memory_heading",
+      "kinds": [
+        "memory"
+      ],
+      "memory_sourced": true,
+      "meta": {
+        "memory": "hindsight"
+      },
+      "expect_lines": [
+        "🧠 Injecting memory"
+      ]
+    },
+    {
+      "name": "meta_and_count_render_together",
+      "kinds": [
+        "memory",
+        "skill"
+      ],
+      "memory_sourced": true,
+      "recalled_count": 3,
+      "meta": {
+        "skill": "dev-lanes"
+      },
+      "expect_lines": [
+        "🧠 Injecting 3 memories",
+        "📚 Injecting skill (dev-lanes)"
+      ]
+    },
+    {
+      "name": "duplicate_rendered_meta_line_renders_once",
+      "kinds": [
+        "skill",
+        "skill"
+      ],
+      "meta": {
+        "skill": "research"
+      },
+      "expect_lines": [
+        "📚 Injecting skill (research)"
+      ]
+    },
+    {
+      "name": "session_kind_renders_label",
+      "kinds": [
+        "session"
+      ],
+      "expect_lines": [
+        "🗺️ Injecting session context"
+      ]
+    },
+    {
+      "name": "goal_kind_renders_label",
+      "kinds": [
+        "goal"
+      ],
+      "expect_lines": [
+        "🎯 Injecting standing goal"
+      ]
+    },
+    {
+      "name": "compaction_kind_renders_label",
+      "kinds": [
+        "compaction"
+      ],
+      "expect_lines": [
+        "🗜️ Injecting conversation summary"
+      ]
+    },
+    {
+      "name": "steer_kind_renders_label",
+      "kinds": [
+        "steer"
+      ],
+      "expect_lines": [
+        "🧭 Injecting steering update"
+      ]
+    },
+    {
+      "name": "subdirectory_kind_renders_label",
+      "kinds": [
+        "subdirectory"
+      ],
+      "expect_lines": [
+        "🗂️ Injecting directory context"
+      ]
+    },
+    {
+      "name": "spillover_kind_renders_label",
+      "kinds": [
+        "spillover"
+      ],
+      "expect_lines": [
+        "📦 Injecting persisted output"
+      ]
+    }
+  ],
+  "classifier_cases": [
+    {
+      "name": "goal_continuation_prefix",
+      "text": "[Continuing toward your standing goal]\nGoal: ship it",
+      "expect_kind": "goal",
+      "expect_detail": ""
+    },
+    {
+      "name": "goal_continuation_with_contract",
+      "text": "[Continuing toward your standing goal]\nGoal: x\n\nCompletion contract:",
+      "expect_kind": "goal",
+      "expect_detail": ""
+    },
+    {
+      "name": "goal_gate_failed_template",
+      "text": "[Continuing toward your standing goal — a quality gate failed]\nGoal: x",
+      "expect_kind": "goal",
+      "expect_detail": ""
+    },
+    {
+      "name": "skill_invocation_names_the_skill",
+      "text": "prefix\n[IMPORTANT: The user has invoked the \"research\" skill, indicating",
+      "expect_kind": "skill",
+      "expect_detail": "research"
+    },
+    {
+      "name": "plain_typed_message_classifies_nothing",
+      "text": "what changed since yesterday?",
+      "expect_kind": "",
+      "expect_detail": ""
+    },
+    {
+      "name": "mention_of_goal_word_is_not_a_continuation",
+      "text": "[Continuing toward your standing-goals list]",
+      "expect_kind": "",
+      "expect_detail": ""
+    },
+    {
+      "name": "malformed_skill_note_without_closing_quote_classifies_nothing",
+      "text": "[IMPORTANT: The user has invoked the \"research skill",
+      "expect_kind": "",
+      "expect_detail": ""
+    },
+    {
+      "name": "empty_text_classifies_nothing",
+      "text": "",
+      "expect_kind": "",
+      "expect_detail": ""
     }
   ]
 }

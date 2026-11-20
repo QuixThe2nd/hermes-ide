@@ -21,18 +21,31 @@ type sharedTable struct {
 		One   string `json:"one"`
 		Many  string `json:"many"`
 	} `json:"memory"`
-	Cases []sharedCase `json:"cases"`
+	Cases           []sharedCase     `json:"cases"`
+	ClassifierCases []classifierCase `json:"classifier_cases"`
 }
 
 // sharedCase is one kinds→heading-lines expectation. An absent kinds array
 // is the legacy payload shape; an absent recalled_count means no usable
-// count (plain memory heading).
+// count (plain memory heading); an absent meta map means no kind carried a
+// detail.
 type sharedCase struct {
-	Name          string   `json:"name"`
-	Kinds         []string `json:"kinds"`
-	MemorySourced bool     `json:"memory_sourced"`
-	RecalledCount int      `json:"recalled_count"`
-	ExpectLines   []string `json:"expect_lines"`
+	Name          string            `json:"name"`
+	Kinds         []string          `json:"kinds"`
+	MemorySourced bool              `json:"memory_sourced"`
+	RecalledCount int               `json:"recalled_count"`
+	Meta          map[string]string `json:"meta"`
+	ExpectLines   []string          `json:"expect_lines"`
+}
+
+// classifierCase is one clean-user-message→(kind, detail) expectation for
+// ClassifyUserMessage: goal continuations, skill invocations, and the
+// negative shapes that must stay unclassified.
+type classifierCase struct {
+	Name         string `json:"name"`
+	Text         string `json:"text"`
+	ExpectKind   string `json:"expect_kind"`
+	ExpectDetail string `json:"expect_detail"`
 }
 
 func loadTable(t *testing.T) sharedTable {
@@ -72,14 +85,26 @@ func TestLabelsMatchSharedTable(t *testing.T) {
 
 // TestHeadingLinesMatchSharedTable drives HeadingLines through every case in
 // the shared table: legacy payloads, unknown/blank kinds, the memory
-// special case with and without counts, payload ordering, and output-line
-// deduplication.
+// special case with and without counts, meta-suffixed headings, payload
+// ordering, and output-line deduplication.
 func TestHeadingLinesMatchSharedTable(t *testing.T) {
 	for _, tc := range loadTable(t).Cases {
-		got := HeadingLines(tc.Kinds, tc.MemorySourced, tc.RecalledCount)
+		got := HeadingLines(tc.Kinds, tc.MemorySourced, tc.RecalledCount, tc.Meta)
 		if !reflect.DeepEqual(got, tc.ExpectLines) {
-			t.Errorf("%s: HeadingLines(%q, memorySourced=%v, recalledCount=%d) = %q, want %q",
-				tc.Name, tc.Kinds, tc.MemorySourced, tc.RecalledCount, got, tc.ExpectLines)
+			t.Errorf("%s: HeadingLines(%q, memorySourced=%v, recalledCount=%d, meta=%q) = %q, want %q",
+				tc.Name, tc.Kinds, tc.MemorySourced, tc.RecalledCount, tc.Meta, got, tc.ExpectLines)
+		}
+	}
+}
+
+// TestClassifierMatchSharedTable drives ClassifyUserMessage through every
+// anchored expectation in the shared table, both positive and negative.
+func TestClassifierMatchSharedTable(t *testing.T) {
+	for _, tc := range loadTable(t).ClassifierCases {
+		kind, detail := ClassifyUserMessage(tc.Text)
+		if kind != tc.ExpectKind || detail != tc.ExpectDetail {
+			t.Errorf("%s: ClassifyUserMessage(%q) = (%q, %q), want (%q, %q)",
+				tc.Name, tc.Text, kind, detail, tc.ExpectKind, tc.ExpectDetail)
 		}
 	}
 }
@@ -104,5 +129,24 @@ func TestEveryKnownKindAppearsInSharedTable(t *testing.T) {
 func TestNegativeCountRendersPlain(t *testing.T) {
 	if got := MemoryHeading(-2); got != "🧠 Injecting memory" {
 		t.Errorf("MemoryHeading(-2) = %q, want the plain heading", got)
+	}
+}
+
+// TestClassifierAnchorsMatchProducerBytes pins the anchors against the exact
+// template bytes the producers emit, so a template edit upstream fails HERE
+// (and in the Python twin) rather than silently un-classifying every goal
+// or skill turn.
+func TestClassifierAnchorsMatchProducerBytes(t *testing.T) {
+	// hermes_cli/goals.py CONTINUATION_PROMPT_TEMPLATE renders the prefix
+	// followed by "]" before the goal line.
+	if kind, _ := ClassifyUserMessage("[Continuing toward your standing goal]\nGoal: ship"); kind != "goal" {
+		t.Errorf("plain continuation template did not classify as goal: %q", kind)
+	}
+	// agent/skill_commands.py build_skill_invocation_message embeds the
+	// note mid-message; the first quoted name is the skill.
+	if kind, detail := ClassifyUserMessage(
+		`[IMPORTANT: The user has invoked the "dev-lanes" skill, indicating they want you to follow its instructions.]`,
+	); kind != "skill" || detail != "dev-lanes" {
+		t.Errorf("skill note classified as (%q, %q), want (skill, dev-lanes)", kind, detail)
 	}
 }

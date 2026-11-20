@@ -345,7 +345,21 @@ def test_headings_match_the_shared_contract_table():
     for case in table["cases"]:
         lines = context_injection_heading_lines(
             case.get("kinds"),
-            memory_sourced=case["memory_sourced"],
+            memory_sourced=case.get("memory_sourced", False),
             recalled_count=case.get("recalled_count"),
+            meta=case.get("meta"),
         )
         assert lines == case["expect_lines"], case["name"]
+
+
+def test_user_message_classifier_matches_the_shared_contract_table():
+    """The anchored classifier and the Go twin (internal/injectionlabels)
+    read the SAME table: every classifier case — goal continuations, skill
+    invocations, and the negative shapes — must agree with it."""
+    from gateway.context_injection_labels import classify_user_message_injection
+
+    table = json.loads(_LABELS_TABLE.read_text(encoding="utf-8"))
+    for case in table["classifier_cases"]:
+        kind, detail = classify_user_message_injection(case["text"])
+        assert kind == (case["expect_kind"] or None), case["name"]
+        assert detail == case["expect_detail"], case["name"]
