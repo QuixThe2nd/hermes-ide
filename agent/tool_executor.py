@@ -56,12 +56,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     extract_persisted_path,
 )
-from agent.context_injection_cards import (
-    emit_card,
-    spilled_stub_from_result,
-    spillover_card,
-    subdirectory_card,
-)
+from agent.context_injection_cards import emit_card, event_card, spilled_stub_from_result
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
@@ -1052,9 +1047,9 @@ def _commit_tool_result(
     # first touch are both context the model received beyond the tool's own
     # output. Display plumbing only — never blocks the tool round.
     if _spilled_stub:
-        emit_card(agent, spillover_card(_spilled_stub))
+        emit_card(agent, event_card("spillover", _spilled_stub))
     if subdir_hints:
-        emit_card(agent, subdirectory_card(subdir_hints))
+        emit_card(agent, event_card("subdirectory", subdir_hints))
 
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.

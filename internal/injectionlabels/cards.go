@@ -22,7 +22,7 @@ const (
 // emits through the agent's tool-progress callback: additive display
 // metadata naming WHAT was injected into the model's context — never the
 // API-bound bytes themselves. Mirrors the payload shape assembled by
-// agent/context_injection_cards.py (card_payload / emit_injection_card).
+// agent/context_injection_cards.py (event_card / emit_card).
 //
 // The payload contract (shared with the Python twin and the shared table
 // in testdata/labels.json):

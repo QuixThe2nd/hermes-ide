@@ -207,16 +207,12 @@ def _emit_compaction_card(agent, before, result) -> None:
     Display plumbing only — never raises, never blocks the turn.
     """
     try:
-        from agent.context_injection_cards import (
-            compaction_card,
-            emit_card,
-            new_compaction_summary,
-        )
+        from agent.context_injection_cards import emit_card, event_card, new_compaction_summary
 
         new_messages = result[0] if isinstance(result, tuple) else None
         summary = new_compaction_summary(before, new_messages)
         if summary is not None:
-            emit_card(agent, compaction_card(summary))
+            emit_card(agent, event_card("compaction", summary))
     except Exception:
         logger.debug("compaction card emission failed", exc_info=True)
 

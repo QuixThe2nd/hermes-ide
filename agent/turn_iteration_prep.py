@@ -208,9 +208,9 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
             from agent.prompt_builder import steer_user_row
             messages.insert(_si + 1, steer_user_row(steer_text))
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
-            from agent.context_injection_cards import emit_card, steer_card
+            from agent.context_injection_cards import emit_card, event_card
 
-            emit_card(agent, steer_card(steer_text))
+            emit_card(agent, event_card("steer", steer_text))
             agent._notify_steer_delivery_listeners(steer_text)
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer

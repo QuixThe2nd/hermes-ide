@@ -30,10 +30,9 @@ from agent.turn_author import parse_turn_author
 # Sha-gated injection cards (memory, session context) share the per-session
 # registry and the never-raises emitter in this leaf module.
 from agent.context_injection_cards import (
-    assembled_user_card,
     emit_card,
+    event_card,
     remember_session_card_sha,
-    session_card,
     session_card_sha,
     session_card_unseen,
     session_inventory_card,
@@ -1328,19 +1327,19 @@ def build_turn_context(
     ):
         try:
             _sections = getattr(agent, "_system_prompt_section_manifest", None) or []
-            _session_content, _session_sha = session_inventory_card(
+            _session_card, _session_sha = session_inventory_card(
                 _sections,
                 ephemeral=bool(getattr(agent, "ephemeral_system_prompt", None)),
                 tool_count=len(getattr(agent, "tools", None) or []),
             )
-            if _session_content and (
+            if _session_card["content"] and (
                 getattr(agent, "_session_card_state", None) != _session_sha
                 and session_card_unseen(
                     getattr(agent, "session_id", None), _session_sha
                 )
             ):
                 agent._session_card_state = _session_sha
-                emit_card(agent, session_card(_session_content))
+                emit_card(agent, _session_card)
         except Exception:
             # Display plumbing must never block the model call.
             logger.debug("session context card progress callback failed", exc_info=True)
@@ -1482,7 +1481,7 @@ def build_turn_context(
 
             _cls_kind, _cls_detail = classify_user_message_injection(_clean)
             if _cls_kind:
-                emit_card(agent, assembled_user_card(_cls_kind, _cls_detail, _clean))
+                emit_card(agent, event_card(_cls_kind, _clean, _cls_detail))
         except Exception:
             # Display plumbing must never block the model call.
             logger.debug("context injection progress callback failed", exc_info=True)

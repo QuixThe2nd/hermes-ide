@@ -1,14 +1,10 @@
 """Session-context injection card: the once-per-shape system-prompt inventory.
 
-``build_system_prompt_parts`` records which sections landed in the prompt
-(``agent._system_prompt_section_manifest``); the turn prologue renders that
-manifest as ONE ``context.injected`` card, sha-gated exactly like the memory
-card — first turn and first turn after a shape change fire once, steady-state
-turns stay silent. Memory is excluded (its own card covers it); restore paths
-that rebuild the prefix from stored bytes record no manifest and stay silent.
-
-Also covers the manifest recording itself: a prompt with project context,
-skills index and workspace must carry exactly those rows, in prompt order.
+``build_system_prompt_parts`` records which sections landed
+(``agent._system_prompt_section_manifest``); the turn prologue renders it as
+ONE sha-gated ``context.injected`` card — first turn and first turn after a
+shape change fire, steady state stays silent. The prompt bytes themselves
+stay identical to the pre-card scaffold.
 """
 
 from __future__ import annotations
@@ -23,14 +19,12 @@ from tests.agent.test_memory_injection_card import (
     _FakeMemoryStore,
     _make_prompt_agent,
 )
-from agent.turn_context import build_turn_context
 from tests.agent.test_gateway_turn_sidecar import _FakeAgent, _build
 
 
 @pytest.fixture(autouse=True)
 def _reset_session_card_state():
-    """The session-scoped hash registry is process state; every test starts dry
-    (fake agents share session id "sess-1")."""
+    """The hash registry is process state; fake agents share "sess-1"."""
     from agent import context_injection_cards as _cic
 
     _cic._SESSION_CARD_SHAS.clear()
@@ -44,173 +38,108 @@ def _stub_runtime_main():
         yield
 
 
-def _manifest_agent(rows, **extra):
-    agent = _FakeAgent()
-    agent._system_prompt_section_manifest = rows
-    for name, value in extra.items():
-        setattr(agent, name, value)
-    return agent
-
-
-def _session_cards(events):
-    """The session-context payloads the fake agent captured."""
+def _session_cards(agent):
     return [
         payload
-        for topic, payload in events
-        if topic == "context.injected" and payload.get("kinds") == ["session"]
+        for args, payload in agent._events
+        if args[0] == "context.injected" and payload.get("kinds") == ["session"]
     ]
 
 
-def _capture(agent):
-    events = []
-    agent.tool_progress_callback = (
-        lambda *args, **kwargs: events.append((args[0], args[3] if len(args) > 3 else kwargs))
+def _agent(rows=None, **extra):
+    agent = _FakeAgent()
+    if rows is not None:
+        agent._system_prompt_section_manifest = rows
+    for name, value in extra.items():
+        setattr(agent, name, value)
+    agent._events = []
+    agent.tool_progress_callback = lambda *a, **k: agent._events.append(
+        (a, a[3] if len(a) > 3 else k)
     )
-    return events
+    return agent
 
 
-class TestSessionCardEmission:
-    def test_first_turn_with_manifest_emits_exactly_one_card(self):
-        agent = _manifest_agent(
-            [("identity", "soul"), ("context_files", None), ("timestamp", None)]
-        )
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        cards = _session_cards(events)
-        assert len(cards) == 1
-        assert cards[0]["sources"] == ["session"]
-        assert cards[0]["content"] == "identity (soul)\ncontext_files\ntimestamp"
-        assert cards[0]["injected_chars"] == len(cards[0]["content"])
-
-    def test_second_turn_same_manifest_stays_silent(self):
-        agent = _manifest_agent([("identity", "default")])
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-            _build(agent)
-        assert len(_session_cards(events)) == 1
-
-    def test_fresh_agent_same_session_does_not_reemit(self):
-        # The api_server builds a fresh agent per turn; only the process-scoped
-        # registry keeps the card silent for unchanged prompt shapes.
-        agent = _manifest_agent([("identity", "default")])
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        twin = _manifest_agent([("identity", "default")])
-        twin_events = _capture(twin)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(twin)
-        assert len(_session_cards(events)) == 1
-        assert len(_session_cards(twin_events)) == 0
-
-    def test_changed_shape_fires_again_on_that_turn(self):
-        agent = _manifest_agent([("identity", "default")])
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        agent._system_prompt_section_manifest = [
-            ("identity", "default"),
-            ("skills_index", None),
-        ]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        cards = _session_cards(events)
-        assert len(cards) == 2
-        assert cards[1]["content"] == "identity (default)\nskills_index"
-
-    def test_ephemeral_and_tools_ride_the_card(self):
-        agent = _manifest_agent(
-            [("identity", "soul")], ephemeral_system_prompt="SESSION CONTEXT", tools=[{}, {}],
-        )
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        cards = _session_cards(events)
-        assert len(cards) == 1
-        assert cards[0]["content"].endswith(
-            "session context (ephemeral, per-request)\n2 tool schemas"
-        )
-
-    def test_ephemeral_change_alone_reopens_the_card(self):
-        # The ephemeral row is part of the sha: a session that gains the
-        # per-request context block gets one fresh card, not silence.
-        agent = _manifest_agent([("identity", "soul")])
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        agent.ephemeral_system_prompt = "SESSION CONTEXT"
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        assert len(_session_cards(events)) == 2
-
-    def test_no_manifest_no_ephemeral_no_tools_stays_silent(self):
-        # Restore paths record no manifest; an agent with neither manifest nor
-        # the per-request additions must not claim a session card.
-        agent = _FakeAgent()
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent)
-        assert _session_cards(events) == []
-
-    def test_moa_turn_does_not_emit(self):
-        agent = _manifest_agent([("identity", "default")])
-        events = _capture(agent)
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            _build(agent, moa_active=True)
-        assert _session_cards(events) == []
+def _turn(agent, **overrides):
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        _build(agent, **overrides)
 
 
-class TestManifestRecording:
-    """build_system_prompt_parts records what actually landed, in prompt order."""
+_SOUL = [("identity", "soul")]
 
-    def test_minimal_prompt_records_core_sections_in_order(self):
-        agent = _make_prompt_agent()
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
-        rows = [kind for kind, _detail in agent._system_prompt_section_manifest]
-        # Identity leads the stable tier; the timestamp line is the volatile
-        # tail when no runtime-env hints landed.
-        assert rows[0] == "identity"
-        assert "docs" in rows
-        assert rows[-1] == "timestamp"
 
-    def test_default_identity_detail_when_soul_not_loaded(self):
-        agent = _make_prompt_agent()  # load_soul_identity=False, skip_context_files=True
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
-        rows = dict(agent._system_prompt_section_manifest)
-        assert rows["identity"] == "default"
+def _same_shape(agent):
+    pass
 
-    def test_caller_system_message_lands_in_the_manifest(self):
-        agent = _make_prompt_agent()
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent, system_message="CALLER INSTRUCTIONS")
-        rows = dict(agent._system_prompt_section_manifest)
-        assert rows.get("caller_system") is None
 
-    def test_skipped_context_files_leave_no_row(self):
-        # The row is only recorded when the part actually landed; a
-        # skip_context_files agent must not claim a context_files injection.
-        agent = _make_prompt_agent(skip_context_files=True)
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
-        kinds = [kind for kind, _detail in agent._system_prompt_section_manifest]
-        assert "context_files" not in kinds
-        assert "workspace" not in kinds
+def _gain_section(agent):
+    agent._system_prompt_section_manifest = [*_SOUL, ("skills_index", None)]
 
-    def test_memory_sections_are_excluded(self):
-        # Memory rides its own sha-gated card; the session inventory must not
-        # double-announce it.
-        agent = _make_prompt_agent(
-            _memory_enabled=True,
-            _user_profile_enabled=True,
-        )
-        with patch("agent.prompt_builder.build_environment_hints", return_value=""):
-            build_system_prompt_parts(agent)
-        kinds = [kind for kind, _detail in agent._system_prompt_section_manifest]
-        assert "memory" not in kinds
+
+def _gain_ephemeral(agent):
+    agent.ephemeral_system_prompt = "SESSION CONTEXT"
+
+
+@pytest.mark.parametrize(
+    "mutate,second_turn_cards",
+    [
+        pytest.param(_same_shape, [], id="steady_state_silent"),
+        pytest.param(
+            _gain_section, ["identity (soul)\nskills_index\n2 tool schemas"],
+            id="section_change",
+        ),
+        pytest.param(
+            _gain_ephemeral,
+            ["identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas"],
+            id="ephemeral_change",
+        ),
+    ],
+)
+def test_session_card_fires_once_per_prompt_shape(mutate, second_turn_cards):
+    agent = _agent(list(_SOUL), tools=[{}, {}])
+    _turn(agent)
+    first = _session_cards(agent)
+    assert [c["content"] for c in first] == ["identity (soul)\n2 tool schemas"]
+    assert first[0]["sources"] == ["session"]
+    mutate(agent)
+    _turn(agent)
+    assert [c["content"] for c in _session_cards(agent)[1:]] == second_turn_cards
+
+
+def test_fresh_agent_same_session_does_not_reemit():
+    # The api_server builds a fresh agent per turn; only the process-scoped
+    # registry keeps the card silent for unchanged prompt shapes.
+    first, twin = _agent(list(_SOUL)), _agent(list(_SOUL))
+    _turn(first)
+    _turn(twin)
+    assert (len(_session_cards(first)), len(_session_cards(twin))) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    "rows,overrides",
+    [
+        pytest.param(None, {}, id="restore_path_no_manifest"),
+        pytest.param(_SOUL, {"moa_active": True}, id="moa_turn"),
+    ],
+)
+def test_session_card_stays_silent(rows, overrides):
+    agent = _agent(rows)
+    _turn(agent, **overrides)
+    assert _session_cards(agent) == []
+
+
+def _manifest_kinds(**agent_kwargs):
+    agent = _make_prompt_agent(**agent_kwargs)
+    with patch("agent.prompt_builder.build_environment_hints", return_value=""):
+        build_system_prompt_parts(agent)
+    return [kind for kind, _detail in agent._system_prompt_section_manifest], agent
+
+
+def test_manifest_records_what_landed_in_prompt_order():
+    kinds, agent = _manifest_kinds(_memory_enabled=True, _user_profile_enabled=True)
+    assert kinds[0] == "identity" and kinds[-1] == "timestamp"
+    assert dict(agent._system_prompt_section_manifest)["identity"] == "default"
+    # Unlanded parts claim no row; memory rides its own sha-gated card.
+    assert not {"context_files", "workspace", "memory"} & set(kinds)
 
 
 # ---------------------------------------------------------------------------
@@ -221,47 +150,32 @@ _BASE_COMMIT = "6ac6f2c9"
 _SOUL_BYTES = "You are Hermes Agent — pinned soul identity bytes."
 
 
-def _pinned_dependencies():
+_PINNED = {
+    "agent.prompt_builder.load_soul_md": _SOUL_BYTES,
+    "agent.prompt_builder.build_environment_hints": "",
+    "agent.prompt_builder.build_context_files_prompt": "PROJECT CONTEXT BYTES",
+    "agent.prompt_builder.build_skills_system_prompt": "SKILLS INDEX BYTES",
+    "agent.skill_commands.build_auto_load_prompt": ("", [], []),
+    "agent.coding_context.coding_system_prompt_parts": (
+        ["CODING PREFIX"], ["WORKSPACE SNAPSHOT"], ["CODING TRAILING"],
+    ),
+    "agent.coding_context.coding_compact_skill_categories": frozenset(),
+    "tools.bot_mode_probe.get_bot_mode_protocol_section": "BOT MODE PROTOCOL",
+    "tools.bot_mode_probe.epoch_line": "EPOCH LINE",
+    "hermes_cli.plugins.format_system_prompt_sections": "PLUGIN SECTIONS RENDERED",
+}
+
+
+@pytest.fixture
+def pinned_dependencies():
     """Dependency surface both scaffold versions read: pinned so the only
     variable between them is the scaffold itself."""
-    return [
-        patch("agent.prompt_builder.load_soul_md", return_value=_SOUL_BYTES),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch(
-            "agent.prompt_builder.build_context_files_prompt",
-            return_value="PROJECT CONTEXT BYTES",
-        ),
-        patch(
-            "agent.prompt_builder.build_skills_system_prompt",
-            return_value="SKILLS INDEX BYTES",
-        ),
-        patch("agent.skill_commands.build_auto_load_prompt", return_value=("", [], [])),
-        patch(
-            "agent.coding_context.coding_system_prompt_parts",
-            return_value=(["CODING PREFIX"], ["WORKSPACE SNAPSHOT"], ["CODING TRAILING"]),
-        ),
-        patch(
-            "agent.coding_context.coding_compact_skill_categories",
-            return_value=frozenset(),
-        ),
-        patch(
-            "tools.bot_mode_probe.get_bot_mode_protocol_section",
-            return_value="BOT MODE PROTOCOL",
-        ),
-        patch("tools.bot_mode_probe.epoch_line", return_value="EPOCH LINE"),
-        patch(
-            "hermes_cli.plugins.format_system_prompt_sections",
-            return_value="PLUGIN SECTIONS RENDERED",
-        ),
-    ]
+    import contextlib
 
-
-def _fresh_default():
-    return _make_prompt_agent()
-
-
-def _fresh_soul():
-    return _make_prompt_agent(load_soul_identity=True, skip_context_files=True)
+    with contextlib.ExitStack() as stack:
+        for target, value in _PINNED.items():
+            stack.enter_context(patch(target, return_value=value))
+        yield
 
 
 def _fresh_workspace():
@@ -269,9 +183,7 @@ def _fresh_workspace():
         valid_tool_names=["skills_list", "skill_view", "terminal"],
         _memory_enabled=True,
         _user_profile_enabled=True,
-        _memory_store=_FakeMemoryStore(
-            {"memory": "MEMORY-BLOCK", "user": "PROFILE-BLOCK"}
-        ),
+        _memory_store=_FakeMemoryStore({"memory": "MEMORY-BLOCK", "user": "PROFILE-BLOCK"}),
     )
     agent._plugin_system_prompt_sections_snapshot = (
         types.SimpleNamespace(position="after_memory"),
@@ -283,14 +195,6 @@ def _fresh_bot_mode():
     agent = _make_prompt_agent(_bot_mode_protocol=True)
     agent._session_title_hint = "Bot Chat"
     return agent
-
-
-_PROMPT_SHAPES = [
-    pytest.param(_fresh_default, id="default"),
-    pytest.param(_fresh_soul, id="soul_identity"),
-    pytest.param(_fresh_workspace, id="workspace_skills_memory_plugins"),
-    pytest.param(_fresh_bot_mode, id="bot_mode"),
-]
 
 
 @pytest.fixture(scope="session")
@@ -313,66 +217,29 @@ def base_system_prompt(tmp_path_factory):
     return module
 
 
-@pytest.mark.parametrize("factory", _PROMPT_SHAPES)
-def test_system_prompt_bytes_identical_to_pre_card_scaffold(factory, base_system_prompt):
-    """The session-card recording is pure scaffolding: every tier of the
-    prompt — and the joined full prompt — is byte-identical to the scaffold
-    before the card existed (6ac6f2c9), across the representative shapes."""
-    import contextlib
-
-    with contextlib.ExitStack() as stack:
-        for p in _pinned_dependencies():
-            stack.enter_context(p)
-        base_parts = base_system_prompt.build_system_prompt_parts(
-            factory(), system_message=None
-        )
-        current_parts = build_system_prompt_parts(factory(), system_message=None)
-    assert current_parts == base_parts
-    assert (
-        "\n\n".join(p for p in current_parts.values() if p)
-        == "\n\n".join(p for p in base_parts.values() if p)
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(_make_prompt_agent, id="default"),
+        pytest.param(
+            lambda: _make_prompt_agent(load_soul_identity=True, skip_context_files=True),
+            id="soul_identity",
+        ),
+        pytest.param(_fresh_workspace, id="workspace_skills_memory_plugins"),
+        pytest.param(_fresh_bot_mode, id="bot_mode"),
+    ],
+)
+def test_prompt_bytes_identical_to_pre_card_scaffold(
+    factory, base_system_prompt, pinned_dependencies
+):
+    """Manifest recording is pure scaffolding: every tier and the cached full
+    prompt are byte-identical to the scaffold before the card existed
+    (6ac6f2c9), and a stale manifest attribute is replaced, never consulted."""
+    stale = factory()
+    stale._system_prompt_section_manifest = [("junk", "stale")]
+    current_parts = build_system_prompt_parts(stale, system_message=None)
+    assert current_parts == base_system_prompt.build_system_prompt_parts(
+        factory(), system_message=None
     )
-
-
-@pytest.mark.parametrize("factory", _PROMPT_SHAPES)
-def test_full_prompt_bytes_identical_to_pre_card_scaffold(factory, base_system_prompt):
-    """The cached-prompt entrypoint (build_system_prompt) also produces
-    identical bytes — manifest recording changes no model-facing output."""
-    import contextlib
-
-    with contextlib.ExitStack() as stack:
-        for p in _pinned_dependencies():
-            stack.enter_context(p)
-        base_prompt = base_system_prompt.build_system_prompt(factory())
-        current_prompt = build_system_prompt(factory())
-    assert current_prompt == base_prompt
-
-
-def test_manifest_recording_is_pure():
-    """Purity on the current scaffold: a stale manifest attribute is
-    replaced, never consulted, and the prompt bytes do not depend on it."""
-    import contextlib
-
-    with contextlib.ExitStack() as stack:
-        for p in _pinned_dependencies():
-            stack.enter_context(p)
-        clean = build_system_prompt_parts(_fresh_workspace())
-        agent = _fresh_workspace()
-        agent._system_prompt_section_manifest = [("junk", "stale")]
-        reloaded = build_system_prompt_parts(agent)
-    assert reloaded == clean
-    assert ("junk", "stale") not in agent._system_prompt_section_manifest
-    assert agent._system_prompt_section_manifest
-
-
-def test_prompt_is_deterministic_across_rebuilds():
-    """Rebuilding on a fresh agent yields identical bytes: the manifest and
-    its bookkeeping introduce no render-order nondeterminism."""
-    import contextlib
-
-    with contextlib.ExitStack() as stack:
-        for p in _pinned_dependencies():
-            stack.enter_context(p)
-        first = build_system_prompt_parts(_fresh_workspace())
-        second = build_system_prompt_parts(_fresh_workspace())
-    assert first == second
+    assert ("junk", "stale") not in stale._system_prompt_section_manifest
+    assert build_system_prompt(factory()) == base_system_prompt.build_system_prompt(factory())

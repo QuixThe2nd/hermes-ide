@@ -1,26 +1,14 @@
 """Shared emitter for ``context.injected`` progress cards (agent side).
 
-Every producer that owes the user a "this was injected into your turn" card
-builds the same payload shape and owes the same guarantees: display plumbing
-must never block the model call, the payload is additive display metadata
-(never the API-bound bytes), and sha-gated cards must record their gate
-BEFORE the callback fires so a broken presenter cannot re-fire a card for a
-fact that already happened.
+Display plumbing must never block the model call, and sha-gated cards record
+their gate BEFORE the callback fires so a broken presenter cannot re-fire a
+card for a fact that already happened. A leaf module (no agent imports), so
+every chokepoint can reach it without cycles.
 
-This module is the leaf every emitter shares — it imports nothing from the
-agent package, so turn_context, tool_executor, compression paths and the
-iteration prep can all reach it without import cycles. The sha store moved
-here from turn_context so the session-context card and the memory card gate
-through one mechanism with one bound.
-
-The payload builders below (``steer_card``, ``spillover_card``,
-``subdirectory_card``, ``compaction_card``, ``assembled_user_card``,
-``session_inventory_card``) and the detectors (``spilled_stub_from_result``,
-``new_compaction_summary``) are the Python twins of the canonical Go
-contract in internal/injectionlabels: the composition logic lives there,
-pinned against this module by the shared table
+The builders and detectors are thin twins of the canonical Go contract in
+internal/injectionlabels, pinned by the shared table
 (internal/injectionlabels/testdata/labels.json) and the running
-cmd/injectionlabels binary via tests/gateway/test_context_injection_labels.py.
+cmd/injectionlabels binary in tests/gateway/test_context_injection_labels.py.
 """
 
 from __future__ import annotations
@@ -75,28 +63,33 @@ def session_card_unseen(session_id: Any, sha: str) -> bool:
     return True
 
 
-def card_payload(
-    kinds: list,
-    content: str,
-    *,
-    sources: Optional[list] = None,
-    meta: Optional[dict] = None,
-) -> Dict[str, Any]:
-    """The canonical ``context.injected`` payload shape.
+# Provenance per card kind — mirrors the builders in internal/injectionlabels
+# (cards.go), which the shared table pins against this module.
+_CARD_SOURCES = {
+    "steer": "user",
+    "spillover": "tool_result",
+    "subdirectory": "tool_result",
+    "compaction": "session",
+    "goal": "session",
+    "skill": "session",
+    "session": "session",
+}
 
-    ``sources`` defaults to a single source named after the first kind —
-    the payload's provenance is honest even when a producer has no richer
-    notion of it. Mirrors the Card struct in internal/injectionlabels.
+
+def event_card(kind: str, content: str, detail: str = "") -> Dict[str, Any]:
+    """The ``context.injected`` payload for one injected fact of *kind*.
+
+    *detail* names WHAT the kind carried (the invoked skill's name) and lands
+    in ``meta``.
     """
     payload: Dict[str, Any] = {
         "content": content,
-        "injected_chars": len(content) if isinstance(content, str) else 0,
-        "sources": sources or [kinds[0] if kinds else "context"],
+        "injected_chars": len(content),
+        "sources": [_CARD_SOURCES[kind]],
+        "kinds": [kind],
     }
-    if kinds:
-        payload["kinds"] = list(kinds)
-    if meta:
-        payload["meta"] = dict(meta)
+    if detail:
+        payload["meta"] = {kind: detail}
     return payload
 
 
@@ -113,93 +106,30 @@ def emit_card(agent: Any, payload: dict) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Per-event payload builders — thin twins of the canonical Go contract
-# (internal/injectionlabels); the shared table pins both sides byte-for-byte.
-# ---------------------------------------------------------------------------
-
-
-def steer_card(text: str) -> dict:
-    """A mid-turn steering row the user sent while a tool round was in flight."""
-    return card_payload(["steer"], text, sources=["user"])
-
-
-def spillover_card(stub: str) -> dict:
-    """The persisted-output stub an oversized tool result left behind."""
-    return card_payload(["spillover"], stub, sources=["tool_result"])
-
-
-def subdirectory_card(hints: str) -> dict:
-    """A directory AGENTS.md hint appended to a tool result on first touch."""
-    return card_payload(["subdirectory"], hints, sources=["tool_result"])
-
-
-def compaction_card(summary: str) -> dict:
-    """The conversation summary a committed compression inserted."""
-    return card_payload(["compaction"], summary, sources=["session"])
-
-
-def assembled_user_card(kind: str, detail: str, content: str) -> dict:
-    """A user message assembled by a subsystem rather than typed by the user
-    (standing-goal continuation, skill slash-command body); *detail* names
-    WHAT the kind carried (the invoked skill's name) and lands in meta."""
-    return card_payload(
-        [kind], content, sources=["session"], meta={kind: detail} if detail else None
-    )
-
-
-# Rows of the session-inventory card that are not prompt sections — the
-# per-request ephemeral session context and the tool-schema count ride the
-# same card because they change with the same shape as the manifest.
-_EPHEMERAL_ROW = "session context (ephemeral, per-request)"
-
-
-def session_card(content: str) -> dict:
-    """The once-per-shape session-context inventory card (composed content)."""
-    return card_payload(["session"], content, sources=["session"])
-
-
 def session_inventory_card(
     sections: list,
     *,
     ephemeral: bool = False,
     tool_count: int = 0,
-) -> Tuple[str, str]:
-    """Compose the once-per-shape session-context card from the manifest.
+) -> Tuple[Dict[str, Any], str]:
+    """The once-per-shape session-context card and its sha gating key.
 
-    Returns ``(content, sha)``: one line per section that landed (in prompt
-    order, detail in parentheses when present), then the ephemeral and
-    tool-schema rows when present. The sha — sha256 of the UTF-8 bytes — is
-    the gating key: the first turn and the first turn after the prompt's
-    SHAPE changes each fire once, steady-state turns stay silent. An empty
-    composition (no manifest, no ephemeral, no tools) returns blank content
-    and the caller stays silent. Mirrors SessionInventoryCard in
-    internal/injectionlabels.
+    One line per manifest section (detail in parentheses), then the
+    ephemeral and tool-schema rows. Blank content means nothing to announce.
     """
     rows: List[str] = [
         f"{kind} ({detail})" if detail else str(kind) for kind, detail in sections
     ]
     if ephemeral:
-        rows.append(_EPHEMERAL_ROW)
+        rows.append("session context (ephemeral, per-request)")
     if tool_count > 0:
         rows.append(f"{tool_count} tool schemas")
     content = "\n".join(rows)
-    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# Detectors — thin twins of the Go detection contract
-# ---------------------------------------------------------------------------
+    return event_card("session", content), hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def spilled_stub_from_result(result: Any) -> Optional[str]:
-    """The persisted-output stub inside a (already persisted) tool result.
-
-    A string result that IS a stub returns itself; a multimodal result
-    returns the first content part whose text was replaced by a stub.
-    Anything else (plain output) returns None — no spillover happened.
-    Mirrors IsSpilledStub / SpilledStubFromParts in internal/injectionlabels.
-    """
+    """The persisted-output stub inside a persisted tool result, else None."""
     from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
     if isinstance(result, str):
@@ -216,13 +146,10 @@ def spilled_stub_from_result(result: Any) -> Optional[str]:
 
 
 def new_compaction_summary(before: Any, after: Any) -> Optional[str]:
-    """The conversation summary a COMMITTED compression inserted, if any.
+    """The first summary row in *after* not already present in *before*.
 
-    The first summary row among *after* whose content was not already
-    present byte-for-byte in *before*; None when nothing new landed — a
-    skip path (compression returned its input) and a byte-identical
-    preserved summary both stay silent. Mirrors NewCompactionSummary in
-    internal/injectionlabels.
+    None when nothing new landed: skip paths and byte-identical preserved
+    summaries stay silent.
     """
     from agent.context_compressor import ContextCompressor
 
