@@ -3965,17 +3965,6 @@ class GatewayTurnMixin:
                 )
                 turn_sidecar_notes.append(tag_turn_note("intro", _intro_note))
 
-        # -----------------------------------------------------------------
-        # Voice channel awareness — deliver current voice channel state so
-        # the agent knows who is in the channel and who is speaking, without
-        # needing a separate tool call.  Delivered on the current user
-        # message and ONLY when it changed since the previous turn: the
-        # member/speaking serialization differs essentially every turn, and
-        # appending it to the ephemeral system prompt forced a full agent
-        # rebuild + prompt-cache re-key per message.  The system prompt
-        # carries a static pointer line instead (gateway/session.py).
-        # -----------------------------------------------------------------
-
         # Restart-resume (see _prepare path above): the hub routed this
         # session's first post-restart turn to a new gateway generation.
         _restart_note = self._hub_restart_sidecar_note(event)

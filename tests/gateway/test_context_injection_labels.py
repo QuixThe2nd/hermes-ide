@@ -30,7 +30,6 @@ from gateway.session import SessionSource
 _KIND_LABELS = [
     ("message_id", "📎 Injecting message id"),
     ("restart", "🔁 Injecting restart notice"),
-    ("voice", "🎙️ Injecting voice status"),
     ("session_reset", "🆕 Injecting session reset"),
     ("intro", "👋 Injecting intro"),
     ("surface_switch", "🔀 Injecting surface switch"),
