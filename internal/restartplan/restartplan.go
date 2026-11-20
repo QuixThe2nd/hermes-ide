@@ -266,6 +266,42 @@ func ResolveHardExitAction(
 	}
 }
 
+// ResolveRunnerHardExit is the twin of the Python runner resolver
+// (gateway/overlap_restart.py::resolve_hard_exit_action): the
+// evidence-selection rules that turn a draining runner's synchronous state
+// into the inputs of ResolveHardExitAction. The Python half gathers the
+// evidence (reading /proc, probing the registry mirror, attempting the
+// systemd MAINPID transfer — never the wedged event loop); this states
+// WHICH evidence may decide:
+//
+//   - no started successor (or its PID unknown) → identity none; the
+//     registry mirror decides alone (a newer live generation may carry the
+//     line the never-spawned successor would have).
+//   - dead → the mirror decides alone, for the same reason.
+//   - live or unknown → the runner's own successor state is the only
+//     evidence: the mirror is not even read. No mirror answer can change
+//     the action (live either hands over or parks on the transfer, unknown
+//     parks), so a stale mirror must not be able to flip either.
+//
+// transferSucceeded is the managed-live path's combined outcome: the MAINPID
+// transfer landed AND a second identity read still said live (the re-check
+// that keeps a successor which died during the transfer from authorizing
+// exit 76). It is honored only for a live identity — the resolver attempts
+// the transfer for nothing else, so no other identity can arrive with a
+// handover receipt.
+func ResolveRunnerHardExit(
+	successorStarted bool, identity string, mirrorNewerLive, systemdManaged, transferSucceeded bool,
+) HardExitAction {
+	if !successorStarted {
+		return ResolveHardExitAction(string(IdentityNone), mirrorNewerLive, false, false)
+	}
+	if SuccessorIdentity(identity) == IdentityDead {
+		return ResolveHardExitAction(string(IdentityDead), mirrorNewerLive, false, false)
+	}
+	handover := transferSucceeded && SuccessorIdentity(identity) == IdentityLive
+	return ResolveHardExitAction(identity, false, systemdManaged, handover)
+}
+
 // HardExitCode maps a resolved hard-exit action to the code the backstop
 // must exit with. It is the twin of the Python watchdog helper
 // (_planned_hard_exit_code in gateway/shutdown_watchdog.py): "overlap"

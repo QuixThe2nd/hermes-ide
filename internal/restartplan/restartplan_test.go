@@ -38,6 +38,11 @@ type sharedCase struct {
 	SystemdManaged      bool   `json:"systemd_managed"`
 	MainpidHandoverDone bool   `json:"mainpid_handover_done"`
 	ExpectAction        string `json:"expect_action"`
+	// hard_exit_runner inputs (the resolver's evidence selection):
+	// SuccessorStarted/NewerLiveGeneration/SystemdManaged are shared; the
+	// transfer is the resolver-layer input whose combined outcome feeds
+	// the hard_exit rows' mainpid_handover_done.
+	MainpidTransferSucceeds bool `json:"mainpid_transfer_succeeds"`
 	// hard_exit_code inputs: the resolved action plus the code the backstop
 	// was armed with, and the expected exit (expect_exited=false is PARK).
 	Action        string `json:"action"`
@@ -72,9 +77,10 @@ func loadSharedCases(t *testing.T) []sharedCase {
 	return cases
 }
 
-// TestSharedTable pins all four decisions against the shared table: the
+// TestSharedTable pins all five decisions against the shared table: the
 // transport rows (op "decide"), the planned-exit rows (op "exit_code"), the
-// watchdog hard-exit rows (op "hard_exit"), and the action→exit-code rows
+// watchdog hard-exit rows (op "hard_exit"), the resolver's evidence-selection
+// rows (op "hard_exit_runner"), and the action→exit-code rows
 // (op "hard_exit_code").
 func TestSharedTable(t *testing.T) {
 	for _, tc := range loadSharedCases(t) {
@@ -106,6 +112,15 @@ func TestSharedTable(t *testing.T) {
 				if string(got) != tc.ExpectAction {
 					t.Fatalf("ResolveHardExitAction(%q, newer_live=%t, managed=%t, handover=%t) = %q, want %q",
 						tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged, tc.MainpidHandoverDone, got, tc.ExpectAction)
+				}
+			case "hard_exit_runner":
+				if tc.ExpectAction == "" {
+					t.Fatalf("hard_exit_runner case %q has no action expectation", tc.Name)
+				}
+				got := ResolveRunnerHardExit(tc.SuccessorStarted, tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged, tc.MainpidTransferSucceeds)
+				if string(got) != tc.ExpectAction {
+					t.Fatalf("ResolveRunnerHardExit(started=%t, %q, mirror_newer=%t, managed=%t, transfer=%t) = %q, want %q",
+						tc.SuccessorStarted, tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged, tc.MainpidTransferSucceeds, got, tc.ExpectAction)
 				}
 			case "hard_exit_code":
 				code, exited := HardExitCode(HardExitAction(tc.Action), tc.ArmedExitCode)
@@ -502,7 +517,7 @@ func TestHardExitAgreesWithPlannedExit(t *testing.T) {
 func TestSharedTableNamesEveryOp(t *testing.T) {
 	ops := map[string]bool{
 		"decide": false, "exit_code": false,
-		"hard_exit": false, "hard_exit_code": false,
+		"hard_exit": false, "hard_exit_runner": false, "hard_exit_code": false,
 	}
 	for _, tc := range loadSharedCases(t) {
 		if _, known := ops[tc.Op]; !known {
@@ -533,7 +548,7 @@ func TestSharedTableCoversEveryHardExitInput(t *testing.T) {
 		string(HardExitPark):      false,
 	}
 	for _, tc := range loadSharedCases(t) {
-		if tc.Op == "hard_exit" {
+		if tc.Op == "hard_exit" || tc.Op == "hard_exit_runner" {
 			identities[tc.SuccessorIdentity] = true
 		}
 		if tc.Op == "hard_exit_code" {

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +32,8 @@ from gateway.overlap_restart import (
 from gateway.restart import GATEWAY_OVERLAP_RESTART_EXIT_CODE
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, start_loop_liveness_watchdog
 from tests.gateway.restart_test_helpers import make_restart_runner
+# The shared table's owner: internal/restartplan/testdata/restart_cases.json.
+from tests.gateway.test_restart_plan_contract import _shared_cases
 
 
 def _overlap_runner(
@@ -65,84 +68,74 @@ def _overlap_runner(
     return runner, patches
 
 
-# The pure decision table (hard_exit_action ↔ Go ResolveHardExitAction) is
-# pinned over the shared table by test_restart_plan_contract.py; the tests
-# here drive the runner-resolved and watchdog-executed halves.
-
-
-# ── resolver against runner state (sync, watchdog-thread safe) ─────────────
-
-
-@pytest.mark.parametrize(
-    "kwargs, expected",
-    [
-        (dict(identity="live", managed=False), HARD_EXIT_OVERLAP),
-        (dict(identity="dead", newer_live=True), HARD_EXIT_OVERLAP),
-        (dict(identity="dead"), HARD_EXIT_REQUESTED),
-        (dict(started=False, newer_live=False), HARD_EXIT_REQUESTED),
-        (dict(identity="unknown"), HARD_EXIT_PARK),
-    ],
-    ids=["live-unmanaged", "dead-newer-live", "dead-serial", "no-successor", "unknown"],
-)
-def test_resolver_maps_runner_state_to_actions(kwargs, expected):
-    runner, patches = _overlap_runner(**kwargs)
+@contextmanager
+def _successor_evidence(patches):
+    """Hold the /proc and mirror patches that pin the successor's identity."""
     for p in patches:
         p.start()
     try:
-        assert resolve_hard_exit_action(runner) == expected
+        yield
     finally:
         for p in patches:
             p.stop()
+
+
+# ── resolver against runner state (sync, watchdog-thread safe) ─────────────
+#
+# The runner-resolved half of the contract is driven by the shared table's
+# op "hard_exit_runner" rows — the same rows the Go twin answers through
+# ResolveRunnerHardExit and the built binary answers through its
+# "hard_exit_runner" op. The pure decision table (op "hard_exit") is pinned
+# by test_restart_plan_contract.py; the watchdog-executed half below drives
+# the table's op "hard_exit_code" rows through the real armed thread.
+
+
+@pytest.mark.parametrize(
+    "case",
+    [c for c in _shared_cases() if c["op"] == "hard_exit_runner"],
+    ids=lambda c: c["name"],
+)
+def test_resolver_answers_the_shared_runner_rows(case):
+    identity = case["successor_identity"]
+    runner, patches = _overlap_runner(
+        identity=identity, started=case["successor_started"],
+        newer_live=case.get("newer_live_generation", False),
+        managed=case.get("systemd_managed", False),
+    )
+    handover = MagicMock(return_value=case.get("mainpid_transfer_succeeds", False))
+    with _successor_evidence(patches), \
+            patch("gateway.systemd_notify.handover_main_pid", handover):
+        assert resolve_hard_exit_action(runner) == case["expect_action"]
 
 
 def test_resolver_performs_mainpid_handover_for_managed_live_successor():
     runner, patches = _overlap_runner(identity="live", managed=True)
-    for p in patches:
-        p.start()
     handover = MagicMock(return_value=True)
-    try:
-        with patch("gateway.systemd_notify.handover_main_pid", handover):
-            assert resolve_hard_exit_action(runner) == HARD_EXIT_OVERLAP
-        handover.assert_called_once_with(runner._overlap_restart_successor_pid)
-    finally:
-        for p in patches:
-            p.stop()
+    with _successor_evidence(patches), \
+            patch("gateway.systemd_notify.handover_main_pid", handover):
+        assert resolve_hard_exit_action(runner) == HARD_EXIT_OVERLAP
+    handover.assert_called_once_with(runner._overlap_restart_successor_pid)
 
 
 def test_resolver_probes_newer_generation_through_the_mirror():
     """The successor-less predecessor is protected by the registry mirror read."""
     runner, patches = _overlap_runner(started=False, newer_live=True)
-    probe = None
-    for p in patches:
-        probe = p.start()  # the mirror probe is started last
-    try:
+    mirror = patches.pop()  # the mirror probe is patched last
+    with _successor_evidence(patches), mirror as probe:
         assert resolve_hard_exit_action(runner) == HARD_EXIT_OVERLAP
-        probe.assert_called_once()
-    finally:
-        for p in patches:
-            p.stop()
+    probe.assert_called_once()
 
 
 def test_resolver_treats_failed_newer_probe_as_absent():
     """A raising mirror probe must not guess a successor away or into being."""
-    runner, patches = _overlap_runner(identity="live", managed=False, probe_fails=True)
-    for p in patches:
-        p.start()
-    try:
+    live, live_patches = _overlap_runner(identity="live", probe_fails=True)
+    with _successor_evidence(live_patches):
         # Own-successor evidence still decides; the unreadable mirror adds nothing.
-        assert resolve_hard_exit_action(runner) == HARD_EXIT_OVERLAP
-        dead_runner, dead_patches = _overlap_runner(identity="dead", probe_fails=True)
-        for p in dead_patches:
-            p.start()
-        try:
-            # No provable successor and no provable newer line: the armed code stands.
-            assert resolve_hard_exit_action(dead_runner) == HARD_EXIT_REQUESTED
-        finally:
-            for p in dead_patches:
-                p.stop()
-    finally:
-        for p in patches:
-            p.stop()
+        assert resolve_hard_exit_action(live) == HARD_EXIT_OVERLAP
+    dead, dead_patches = _overlap_runner(identity="dead", probe_fails=True)
+    with _successor_evidence(dead_patches):
+        # No provable successor and no provable newer line: the armed code stands.
+        assert resolve_hard_exit_action(dead) == HARD_EXIT_REQUESTED
 
 
 # ── watchdog honors the plan ────────────────────────────────────────────────
@@ -183,32 +176,36 @@ def _armed_exit_code(overlap_exit_plan, *, exit_code=1, delay=0.05,
     return codes, done
 
 
-def test_watchdog_exits_overlap_when_live_successor_unmanaged():
-    codes, _ = _armed_exit_code(lambda: HARD_EXIT_OVERLAP)
-    assert codes == [GATEWAY_OVERLAP_RESTART_EXIT_CODE]
-
-
-def test_watchdog_exits_overlap_after_managed_handover():
-    codes, _ = _armed_exit_code(lambda: HARD_EXIT_OVERLAP)
-    assert codes == [GATEWAY_OVERLAP_RESTART_EXIT_CODE]
-
-
-def test_watchdog_keeps_armed_code_without_successor():
-    codes, _ = _armed_exit_code(lambda: HARD_EXIT_REQUESTED, exit_code=1)
-    assert codes == [1]
-
-
-def test_watchdog_parks_instead_of_exiting_when_handover_unavailable():
-    """Live successor + failing MAINPID transfer: no os._exit may happen."""
+@pytest.mark.parametrize(
+    "case",
+    [c for c in _shared_cases() if c["op"] == "hard_exit_code"],
+    ids=lambda c: c["name"],
+)
+def test_armed_watchdog_executes_the_shared_exit_rows(case):
+    """The firing watchdog maps the resolved action to the table's exit row:
+    overlap overrides the armed code with the handover exit, requested keeps
+    the armed code, and park refuses to exit while teardown is pending."""
     teardown_done = threading.Event()
-    codes, done = _armed_exit_code(
-        lambda: HARD_EXIT_PARK, done_after_park=teardown_done.set
+    codes, _ = _armed_exit_code(
+        lambda: case["action"], exit_code=case["armed_exit_code"],
+        done_after_park=None if case["expect_exited"] else teardown_done.set,
     )
-    assert codes == []
-    assert teardown_done.is_set()
+    if case["expect_exited"]:
+        assert codes == [case["expect_code"]]
+    else:
+        assert codes == []
+        assert teardown_done.is_set()  # parked through a re-plan until teardown stood it down
 
 
-def test_loop_liveness_watchdog_exits_overlap_with_live_successor():
+@pytest.mark.parametrize(
+    "plan_answer, expected_code",
+    [
+        (HARD_EXIT_OVERLAP, GATEWAY_OVERLAP_RESTART_EXIT_CODE),
+        (HARD_EXIT_REQUESTED, 75),
+    ],
+    ids=["exits_overlap_with_live_successor", "keeps_its_code_without_successor"],
+)
+def test_loop_liveness_watchdog_honors_the_plan(plan_answer, expected_code):
     """The loop-freeze backstop defaults to exit 75 — a cgroup-killing code
     under RestartForceExitStatus — so it must take the overlap handover too."""
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -225,37 +222,13 @@ def test_loop_liveness_watchdog_exits_overlap_with_live_successor():
             patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"):
         handle = start_loop_liveness_watchdog(
             loop, probe_interval=0.02, probe_timeout=0.02,
-            max_strikes=1, overlap_exit_plan=lambda: HARD_EXIT_OVERLAP,
+            max_strikes=1, overlap_exit_plan=lambda: plan_answer,
         )
         assert handle is not None
         assert fired.wait(timeout=10.0), "loop-liveness watchdog did not fire"
         handle.stop()
 
-    assert codes == [GATEWAY_OVERLAP_RESTART_EXIT_CODE]
-
-
-def test_loop_liveness_watchdog_keeps_its_code_without_successor():
-    loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    loop.call_soon_threadsafe.side_effect = lambda callback: None
-    fired = threading.Event()
-    codes: list[int] = []
-
-    def fake_exit(code):
-        codes.append(code)
-        fired.set()
-
-    with patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit), \
-            patch("gateway.shutdown_watchdog._mark_exited_quietly"), \
-            patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"):
-        handle = start_loop_liveness_watchdog(
-            loop, probe_interval=0.02, probe_timeout=0.02,
-            max_strikes=1, overlap_exit_plan=lambda: HARD_EXIT_REQUESTED,
-        )
-        assert handle is not None
-        assert fired.wait(timeout=10.0), "loop-liveness watchdog did not fire"
-        handle.stop()
-
-    assert codes == [75]
+    assert codes == [expected_code]
 
 
 # ── wiring: stop() arms the watchdog with the runner-resolved plan ─────────

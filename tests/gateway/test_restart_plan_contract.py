@@ -41,6 +41,12 @@ def _shared_cases():
     return json.loads(_TABLE.read_text(encoding="utf-8"))["cases"]
 
 
+# The runner-resolved rows (op "hard_exit_runner") need the runner double and
+# live status patches; tests/gateway/test_shutdown_watchdog_overlap_exit.py
+# drives them through the real resolver (resolve_hard_exit_action).
+_PURE_DECISION_ROWS = [c for c in _shared_cases() if c["op"] != "hard_exit_runner"]
+
+
 def _decide(case) -> dict:
     return restart_transport_plan(
         case["trigger"],
@@ -118,14 +124,14 @@ def _expected(case):
         return "probe_error"
     if case["op"] == "decide":
         return case["expect"]
-    if case["op"] == "hard_exit":
+    if case["op"] in ("hard_exit", "hard_exit_runner"):
         return case["expect_action"]
     if case["op"] == "hard_exit_code":
         return case["expect_code"] if case["expect_exited"] else None
     return case["expect_exit_code"]
 
 
-@pytest.mark.parametrize("case", _shared_cases(), ids=lambda c: c["name"])
+@pytest.mark.parametrize("case", _PURE_DECISION_ROWS, ids=lambda c: c["name"])
 def test_python_decides_the_shared_table(case):
     assert _python_answer(case) == _expected(case)
 
@@ -144,7 +150,7 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
         return
     assert run.returncode == 0, run.stderr
     answer = json.loads(run.stdout)
-    if case["op"] == "hard_exit":
+    if case["op"] in ("hard_exit", "hard_exit_runner"):
         # {"action": "..."} ↔ the Python action string.
         assert answer == {"action": _expected(case)}
     elif case["op"] == "hard_exit_code":

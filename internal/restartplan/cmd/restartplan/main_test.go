@@ -181,22 +181,7 @@ func TestBinaryHardExitWireContract(t *testing.T) {
 	}
 	for _, tc := range requests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(bin)
-			cmd.Stdin = strings.NewReader(tc.stdin)
-			out, err := cmd.Output()
-			if err != nil {
-				t.Fatalf("run binary: %v", err)
-			}
-			var got, want any
-			if err := json.Unmarshal(out, &got); err != nil {
-				t.Fatalf("stdout %q is not JSON: %v", out, err)
-			}
-			if err := json.Unmarshal([]byte(tc.wantOut), &want); err != nil {
-				t.Fatalf("expected %q is not JSON: %v", tc.wantOut, err)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("stdout = %v, want %v", got, want)
-			}
+			assertJSONOutput(t, bin, tc.stdin, tc.wantOut)
 		})
 	}
 }
@@ -236,23 +221,97 @@ func TestBinaryHardExitCodeWireContract(t *testing.T) {
 	}
 	for _, tc := range requests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(bin)
-			cmd.Stdin = strings.NewReader(tc.stdin)
-			out, err := cmd.Output()
-			if err != nil {
-				t.Fatalf("run binary: %v", err)
-			}
-			var got, want any
-			if err := json.Unmarshal(out, &got); err != nil {
-				t.Fatalf("stdout %q is not JSON: %v", out, err)
-			}
-			if err := json.Unmarshal([]byte(tc.wantOut), &want); err != nil {
-				t.Fatalf("expected %q is not JSON: %v", tc.wantOut, err)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("stdout = %v, want %v", got, want)
-			}
+			assertJSONOutput(t, bin, tc.stdin, tc.wantOut)
 		})
+	}
+}
+
+// TestBinaryRunnerHardExitWireContract pins the hard_exit_runner op: the
+// evidence-selection rules of the Python runner resolver
+// (gateway/overlap_restart.py::resolve_hard_exit_action) — which successor
+// evidence may decide a backstop's action, and what is deliberately not
+// read. The rows that matter: a successor-less or dead predecessor still
+// consults the registry mirror, while a live or unknown successor's own
+// state decides alone (the transfer outcome only for a managed live one).
+func TestBinaryRunnerHardExitWireContract(t *testing.T) {
+	bin := buildBinary(t)
+	requests := []struct {
+		name    string
+		stdin   string
+		wantOut string
+	}{
+		{
+			name: "no_successor_mirror_newer_overlaps",
+			stdin: `{"op":"hard_exit_runner","successor_started":false,` +
+				`"successor_identity":"none","newer_live_generation":true}`,
+			wantOut: `{"action":"overlap"}`,
+		},
+		{
+			name: "no_successor_mirror_quiet_requested",
+			stdin: `{"op":"hard_exit_runner","successor_started":false,` +
+				`"successor_identity":"none"}`,
+			wantOut: `{"action":"requested"}`,
+		},
+		{
+			name: "dead_successor_mirror_newer_overlaps",
+			stdin: `{"op":"hard_exit_runner","successor_started":true,` +
+				`"successor_identity":"dead","newer_live_generation":true}`,
+			wantOut: `{"action":"overlap"}`,
+		},
+		{
+			name: "live_unmanaged_ignores_the_mirror",
+			stdin: `{"op":"hard_exit_runner","successor_started":true,` +
+				`"successor_identity":"live","newer_live_generation":true}`,
+			wantOut: `{"action":"overlap"}`,
+		},
+		{
+			name: "live_managed_transfer_lands_overlaps",
+			stdin: `{"op":"hard_exit_runner","successor_started":true,` +
+				`"successor_identity":"live","systemd_managed":true,` +
+				`"mainpid_transfer_succeeds":true}`,
+			wantOut: `{"action":"overlap"}`,
+		},
+		{
+			name: "live_managed_transfer_fails_parks",
+			stdin: `{"op":"hard_exit_runner","successor_started":true,` +
+				`"successor_identity":"live","systemd_managed":true}`,
+			wantOut: `{"action":"park"}`,
+		},
+		{
+			name: "unknown_managed_mirror_parks",
+			stdin: `{"op":"hard_exit_runner","successor_started":true,` +
+				`"successor_identity":"unknown","systemd_managed":true,` +
+				`"newer_live_generation":true}`,
+			wantOut: `{"action":"park"}`,
+		},
+	}
+	for _, tc := range requests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertJSONOutput(t, bin, tc.stdin, tc.wantOut)
+		})
+	}
+}
+
+// assertJSONOutput runs the binary with one stdin request and requires a
+// zero exit whose stdout decodes equal to wantOut (key order and whitespace
+// must not matter).
+func assertJSONOutput(t *testing.T, bin, stdin, wantOut string) {
+	t.Helper()
+	cmd := exec.Command(bin)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run binary: %v", err)
+	}
+	var got, want any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("stdout %q is not JSON: %v", out, err)
+	}
+	if err := json.Unmarshal([]byte(wantOut), &want); err != nil {
+		t.Fatalf("expected %q is not JSON: %v", wantOut, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stdout = %v, want %v", got, want)
 	}
 }
 
