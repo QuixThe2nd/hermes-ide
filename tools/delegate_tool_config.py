@@ -87,6 +87,13 @@ def _get_independent_completions() -> bool:
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
 
+def steer_force_background_enabled() -> bool:
+    """delegation.steer_force_background (bool, default True): a user message arriving
+    while the parent is blocked on a synchronous delegation force-backgrounds the
+    still-running children (adopted onto the async-delegation rail, never stopped) and
+    enters the live run as a steer. Kill switch restores the queue-behind-the-run demotion."""
+    return is_truthy_value(_cfg().get("steer_force_background"), default=True)
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one
