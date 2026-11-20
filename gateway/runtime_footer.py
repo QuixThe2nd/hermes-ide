@@ -20,9 +20,11 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = (
     "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
-    "api_calls", "tool_calls", "reasoning",
+    "api_calls", "tool_calls",
 )
 _SEP = " · "
+_MAKER_PREFIX = "claude-"
+_EFFORT_SHORT = {"medium": "med.", "minimal": "min."}
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -40,8 +42,24 @@ def _home_relative_cwd(cwd: str) -> str:
 
 
 def _model_short(model: Optional[str]) -> str:
-    """Drop ``vendor/`` prefix (``openai/gpt-5.4`` → ``gpt-5.4``)."""
-    return model.rsplit("/", 1)[-1] if model else ""
+    """Drop ``vendor/`` prefix (``openai/gpt-5.4`` → ``gpt-5.4``) and the Anthropic
+    maker prefix (``claude-opus-5-5`` → ``opus-5-5``). Names without the prefixes
+    (``gpt-5.4``, ``gemini-3.1-pro``, a bare ``claude``) are unchanged."""
+    if not model:
+        return ""
+    short = model.rsplit("/", 1)[-1]
+    if short.startswith(_MAKER_PREFIX) and len(short) > len(_MAKER_PREFIX):
+        return short[len(_MAKER_PREFIX):]
+    return short
+
+
+def _effort_short(effort: Optional[str]) -> str:
+    """Parenthetical footer shorthand: ``medium`` → ``med.`` and ``minimal`` →
+    ``min.``; every other level (``low``, ``high``, ``xhigh``, ``off``) is
+    rendered verbatim."""
+    if not effort:
+        return ""
+    return _EFFORT_SHORT.get(effort, effort)
 
 
 def _format_duration(seconds: Optional[float]) -> str:
@@ -126,16 +144,30 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
     def served() -> str:
         requested = requested_model or model
         alias = _model_short(requested)
-        if served_model and is_displayable_served_model(served_model) and served_model not in (alias, requested):
+        raw_alias = requested.rsplit("/", 1)[-1] if requested else ""
+        if served_model and is_displayable_served_model(served_model) \
+                and served_model not in (alias, raw_alias, requested):
             return f"{alias} → {served_model}"
         return ""
 
     def model_field() -> str:
+        name = _model_short(model)
         if served_model and is_displayable_served_model(served_model):
             req = requested_model or model
             if _model_short(served_model) != _model_short(req):
-                return _model_short(served_model)
-        return _model_short(model)
+                name = _model_short(served_model)
+        if not name:
+            return ""
+        tag = _effort_short(reasoning_effort)
+        return f"{name} ({tag})" if tag else name
+
+    def tool_time_field() -> str:
+        # Zero tool activity renders without a unit; unmeasured/negative stays skipped.
+        if tool_time is None or tool_time < 0:
+            return ""
+        if tool_time == 0 or tool_calls == 0:
+            return "tools 0"
+        return _labeled("tools", tool_time)
 
     renderers = {
         "model": model_field,
@@ -146,11 +178,10 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
         "turn_time": lambda: _format_duration(turn_time),
         "api_time": lambda: _labeled("api", api_time),
-        "tool_time": lambda: _labeled("tools", tool_time),
+        "tool_time": tool_time_field,
         "overhead_time": lambda: _labeled("other", overhead_time),
         "api_calls": api_calls_field,
         "tool_calls": tool_calls_field,
-        "reasoning": lambda: reasoning_effort or "",
     }
     return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
 

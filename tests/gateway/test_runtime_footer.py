@@ -23,13 +23,16 @@ from gateway.runtime_footer import (
     "model,expected",
     [
         ("openai/gpt-5.4", "gpt-5.4"),
-        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("anthropic/claude-sonnet-4.6", "sonnet-4.6"),
+        ("claude-opus-5-5", "opus-5-5"),
         ("gpt-5.4", "gpt-5.4"),
+        ("gemini-3.1-pro", "gemini-3.1-pro"),
+        ("claude", "claude"),
         ("", ""),
         (None, ""),
     ],
 )
-def test_model_short_drops_vendor_prefix(model, expected):
+def test_model_short_drops_vendor_and_maker_prefix(model, expected):
     assert _model_short(model) == expected
 
 
@@ -182,7 +185,7 @@ def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
 
 _DEFAULT_FOOTER_FIELDS = [
     "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
-    "api_calls", "tool_calls", "reasoning",
+    "api_calls", "tool_calls",
 ]
 # An absolute path that survives _home_relative_cwd unchanged on every host
 # (os.path.abspath("/var/data") -> "C:\\var\\data" on Windows, "/var/data" on POSIX).
@@ -197,41 +200,56 @@ def test_default_fields_include_timing_and_exclude_optins():
         assert optin not in fields
 
 
-def test_default_fields_end_with_reasoning():
-    """Order contract: reasoning is the last default field, not a full-list snapshot."""
+def test_default_fields_have_no_standalone_reasoning_segment():
+    """Order contract: the effort shorthand rides the model field, so there is
+    no trailing reasoning segment; tool_calls stays last."""
     from gateway.runtime_footer import _DEFAULT_FIELDS
 
-    assert _DEFAULT_FIELDS[-1] == "reasoning"
+    assert "reasoning" not in _DEFAULT_FIELDS
+    assert _DEFAULT_FIELDS[-1] == "tool_calls"
 
 
 # ---------------------------------------------------------------------------
-# reasoning — effective reasoning effort (bare level, `off`, or skipped)
+# reasoning effort — parenthesized shorthand riding the model field
 # ---------------------------------------------------------------------------
 
 
-def test_reasoning_field_renders_bare_effort():
+def test_effort_renders_as_shorthand_after_model():
     out = format_runtime_footer(
-        model="m", context_tokens=0, context_length=None, cwd="",
-        reasoning_effort="medium", fields=("reasoning",),
+        model="opus-5-5", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort="medium", fields=("model",),
     )
-    assert out == "medium"
+    assert out == "opus-5-5 (med.)"
 
 
-def test_reasoning_field_renders_off():
+@pytest.mark.parametrize(
+    "effort,tag",
+    [("minimal", "min."), ("low", "low"), ("xhigh", "xhigh"), ("off", "off")],
+)
+def test_effort_levels_other_than_medium_render_verbatim(effort, tag):
     out = format_runtime_footer(
-        model="m", context_tokens=0, context_length=None, cwd="",
-        reasoning_effort="off", fields=("reasoning",),
+        model="opus-5-5", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort=effort, fields=("model",),
     )
-    assert out == "off"
+    assert out == f"opus-5-5 ({tag})"
 
 
-def test_reasoning_field_skipped_when_unset():
-    """None (no reachable agent / no effort) skips the field silently."""
+def test_effort_skipped_when_unset():
+    """None (no reachable agent / no effort) leaves the model alone."""
     out = format_runtime_footer(
         model="m", context_tokens=0, context_length=None, cwd="",
-        reasoning_effort=None, fields=("model", "reasoning"),
+        reasoning_effort=None, fields=("model",),
     )
     assert out == "m"
+
+
+def test_effort_dropped_when_no_model():
+    """With no model to carry it, the effort is not rendered at all."""
+    out = format_runtime_footer(
+        model=None, context_tokens=0, context_length=None, cwd="",
+        reasoning_effort="medium", fields=("model",),
+    )
+    assert out == ""
 
 
 def test_enabled_without_fields_gives_timing():
@@ -241,6 +259,47 @@ def test_enabled_without_fields_gives_timing():
         turn_time=20.0, api_time=12.0, tool_time=5.0, api_calls=3, tool_calls=9,
     )
     assert out == "gpt-5.4 · 5% · 20s · api 12s · tools 5.0s · other 3.0s · 3 calls · 9 tools"
+
+
+def test_footer_compact_reference_case():
+    """Contract case from the compact-format change: a claude model with
+    medium effort and no tool activity drops the maker prefix, rides the
+    effort as a parenthetical, renders `tools 0`, and has no trailing
+    reasoning segment. Vendor-prefixed input gives the same line."""
+    common = dict(
+        context_tokens=23_000, context_length=100_000,
+        turn_time=14.9, api_time=11.0, tool_time=0.0,
+        api_calls=1, tool_calls=0, reasoning_effort="medium",
+    )
+    expected = "opus-5-5 (med.) · 23% · 15s · api 11s · tools 0 · other 3.9s · 1 call"
+    assert build_footer_line(model="claude-opus-5-5", **common) == expected
+    assert build_footer_line(model="anthropic/claude-opus-5-5", **common) == expected
+
+
+def test_served_model_alias_uses_maker_stripped_name():
+    """The opt-in `alias → served` line shortens the alias with the same rules
+    as the model field; a served model equal to the raw (un-shortened) alias
+    is still the same model and is skipped."""
+    line = format_runtime_footer(
+        model="anthropic/claude-opus-5-5", context_tokens=0, context_length=None, cwd="/x",
+        served_model="grok-4.6", fields=["served_model"])
+    assert line == "opus-5-5 → grok-4.6"
+    assert format_runtime_footer(
+        model="anthropic/claude-opus-5-5", context_tokens=0, context_length=None, cwd="/x",
+        served_model="claude-opus-5-5", fields=["served_model"]) == ""
+def test_footer_compact_reference_case():
+    """Contract case from the compact-format change: a claude model with
+    medium effort and no tool activity drops the maker prefix, rides the
+    effort as a parenthetical, renders `tools 0`, and has no trailing
+    reasoning segment. Vendor-prefixed input gives the same line."""
+    common = dict(
+        context_tokens=23_000, context_length=100_000,
+        turn_time=14.9, api_time=11.0, tool_time=0.0,
+        api_calls=1, tool_calls=0, reasoning_effort="medium",
+    )
+    expected = "opus-5-5 (med.) · 23% · 15s · api 11s · tools 0 · other 3.9s · 1 call"
+    assert build_footer_line(model="claude-opus-5-5", **common) == expected
+    assert build_footer_line(model="anthropic/claude-opus-5-5", **common) == expected
 
 
 @pytest.mark.parametrize("count,expected", [(1, "1 tool"), (9, "9 tools"), (0, ""), (None, "")])

@@ -82,6 +82,30 @@ def test_format_footer_overhead_is_clamped_to_zero():
     assert out == "other 0.0s"
 
 
+@pytest.mark.parametrize(
+    "tool_time,tool_calls,expected",
+    [
+        (0.0, 0, "tools 0"),
+        (0.0, 5, "tools 0"),
+        (3.1, 0, "tools 0"),
+        (3.1, 5, "tools 3.1s"),
+        (15.0, 3, "tools 15s"),
+        (None, 0, ""),
+        (None, None, ""),
+    ],
+)
+def test_tool_time_zero_activity_renders_without_unit(tool_time, tool_calls, expected):
+    """A turn with no tool activity (zero calls or an exactly-zero
+    measurement) renders `tools 0`, not `tools 0.0s`; an unmeasured
+    tool_time stays omitted."""
+    out = format_runtime_footer(
+        model="x", context_tokens=0, context_length=100,
+        tool_time=tool_time, tool_calls=tool_calls,
+        fields=("tool_time",),
+    )
+    assert out == expected
+
+
 def test_format_footer_omits_breakdown_when_component_timings_are_unavailable():
     out = format_runtime_footer(
         model="x",
