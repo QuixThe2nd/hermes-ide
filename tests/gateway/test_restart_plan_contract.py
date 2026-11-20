@@ -4,7 +4,11 @@
 ``gateway/restart.py::restart_transport_plan`` (the function the runtime
 executes) must decide identically: the transport flags of a restart derive
 from live host conditions only — never from which door (user vs update
-signal) triggered it. The twin is pinned against the RUNNING Go
+signal) triggered it. The same table carries the planned-exit rows
+(``planned_restart_exit_code``) and the watchdog hard-exit rows
+(``gateway/overlap_restart.py::hard_exit_action``): what a hard-exit
+backstop on a draining predecessor must do so it can never kill a live
+overlap successor's cgroup. The twin is pinned against the RUNNING Go
 implementation, not merely the shared table: when a Go toolchain is
 available the real ``cmd/restartplan`` binary decides every shared-table
 record (testdata/restart_cases.json) and the Python output must match.
@@ -22,6 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
+from gateway.overlap_restart import hard_exit_action
 from gateway.restart import (
     planned_restart_exit_code,
     resolve_planned_restart_exit_code,
@@ -84,15 +89,29 @@ def go_restartplan(tmp_path_factory) -> str | None:
     return str(binary)
 
 
+def _hard_exit_action(case):
+    return hard_exit_action(
+        case["successor_identity"],
+        case.get("newer_live_generation", False),
+        systemd_managed=case.get("systemd_managed", False),
+        mainpid_handover_done=case.get("mainpid_handover_done", False),
+    )
+
 def _python_answer(case):
     if case["op"] == "decide":
         return _decide(case)
+    if case["op"] == "hard_exit":
+        return _hard_exit_action(case)
     return _exit_code(case)
 
 def _expected(case):
     if case.get("expect_probe_error"):
         return "probe_error"
-    return case["expect"] if case["op"] == "decide" else case["expect_exit_code"]
+    if case["op"] == "decide":
+        return case["expect"]
+    if case["op"] == "hard_exit":
+        return case["expect_action"]
+    return case["expect_exit_code"]
 
 
 @pytest.mark.parametrize("case", _shared_cases(), ids=lambda c: c["name"])
@@ -114,7 +133,10 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
         return
     assert run.returncode == 0, run.stderr
     answer = json.loads(run.stdout)
-    if case["op"] == "exit_code":
+    if case["op"] == "hard_exit":
+        # {"action": "..."} ↔ the Python action string.
+        assert answer == {"action": _expected(case)}
+    elif case["op"] == "exit_code":
         # {"code": N, "special": bool} ↔ the Python None-or-int answer.
         want = _expected(case)
         assert answer["special"] == (want is not None)

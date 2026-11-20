@@ -3,6 +3,7 @@ package restartplan
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,6 +31,13 @@ type sharedCase struct {
 	// answering; expect_probe_error marks a row whose decision is an error.
 	ProbeFailed      bool `json:"probe_failed"`
 	ExpectProbeError bool `json:"expect_probe_error"`
+	// hard_exit inputs (the watchdog-exit decision): the successor's
+	// /proc identity, whether the registry mirror shows a newer live
+	// generation, and the systemd MAINPID handover state.
+	SuccessorIdentity   string `json:"successor_identity"`
+	SystemdManaged      bool   `json:"systemd_managed"`
+	MainpidHandoverDone bool   `json:"mainpid_handover_done"`
+	ExpectAction        string `json:"expect_action"`
 }
 
 func loadSharedCases(t *testing.T) []sharedCase {
@@ -58,8 +66,9 @@ func loadSharedCases(t *testing.T) []sharedCase {
 	return cases
 }
 
-// TestSharedTable pins both decisions against the shared table: the
-// transport rows (op "decide") and the planned-exit rows (op "exit_code").
+// TestSharedTable pins all three decisions against the shared table: the
+// transport rows (op "decide"), the planned-exit rows (op "exit_code"), and
+// the watchdog hard-exit rows (op "hard_exit").
 func TestSharedTable(t *testing.T) {
 	for _, tc := range loadSharedCases(t) {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -81,20 +90,34 @@ func TestSharedTable(t *testing.T) {
 						tc.Trigger, tc.Supervised, tc.Container, got, *tc.ExpectPlan)
 				}
 			case "exit_code":
-				if tc.ProbeFailed {
-					checkProbeFailedCase(t, tc)
-					return
+				checkExitCodeCase(t, tc)
+			case "hard_exit":
+				if tc.ExpectAction == "" {
+					t.Fatalf("hard_exit case %q has no action expectation", tc.Name)
 				}
-				got := ResolveExitCode(tc.RestartRequested, tc.ViaService, tc.SuccessorStarted, tc.Supervised, tc.NewerLiveGeneration)
-				special := tc.ExpectExitCode != nil
-				if got.Special != special || (special && got.Code != *tc.ExpectExitCode) {
-					t.Fatalf("ResolveExitCode(restart=%t, via_service=%t, successor=%t, supervised=%t, newer_live=%t) = %+v, want exit %d special=%t",
-						tc.RestartRequested, tc.ViaService, tc.SuccessorStarted, tc.Supervised, tc.NewerLiveGeneration, got, deref(tc.ExpectExitCode), special)
+				got := ResolveHardExitAction(tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged, tc.MainpidHandoverDone)
+				if string(got) != tc.ExpectAction {
+					t.Fatalf("ResolveHardExitAction(%q, newer_live=%t, managed=%t, handover=%t) = %q, want %q",
+						tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged, tc.MainpidHandoverDone, got, tc.ExpectAction)
 				}
 			default:
 				t.Fatalf("unknown op %q", tc.Op)
 			}
 		})
+	}
+}
+
+func checkExitCodeCase(t *testing.T, tc sharedCase) {
+	t.Helper()
+	if tc.ProbeFailed {
+		checkProbeFailedCase(t, tc)
+		return
+	}
+	got := ResolveExitCode(tc.RestartRequested, tc.ViaService, tc.SuccessorStarted, tc.Supervised, tc.NewerLiveGeneration)
+	special := tc.ExpectExitCode != nil
+	if got.Special != special || (special && got.Code != *tc.ExpectExitCode) {
+		t.Fatalf("ResolveExitCode(restart=%t, via_service=%t, successor=%t, supervised=%t, newer_live=%t) = %+v, want exit %d special=%t",
+			tc.RestartRequested, tc.ViaService, tc.SuccessorStarted, tc.Supervised, tc.NewerLiveGeneration, got, deref(tc.ExpectExitCode), special)
 	}
 }
 
@@ -258,6 +281,145 @@ func TestUnknownTriggerFails(t *testing.T) {
 		}
 		if _, err := Decide(Trigger(raw), false, false); err == nil {
 			t.Fatalf("Decide(%q) unexpectedly succeeded", raw)
+		}
+	}
+}
+
+// hardExitRow is one named cell of the exhaustive hard-exit decision space.
+// The shared table (testdata/restart_cases.json) carries the representative
+// rows both twins run; this table walks the FULL space — every identity ×
+// newer-live × managed × handover combination — because the failure this
+// decision guards against (a backstop exit that kills a live successor's
+// cgroup) is one wrong cell away, and cells the shared table happens not to
+// list drift silently.
+type hardExitRow struct {
+	identity     string
+	newerLive    bool
+	managed      bool
+	handoverDone bool
+	want         HardExitAction
+	why          string
+}
+
+var hardExitSpace = []hardExitRow{
+	// LIVE successor: the line is carried; the only question is whether the
+	// supervisor can be told about it safely.
+	{identity: "live", newerLive: false, managed: false, handoverDone: false, want: HardExitOverlap,
+		why: "unmanaged (hub-spawn) successor needs no MAINPID transfer: 76 is safe at once"},
+	{identity: "live", newerLive: false, managed: false, handoverDone: true, want: HardExitOverlap,
+		why: "handover flag is irrelevant for an unmanaged successor"},
+	{identity: "live", newerLive: true, managed: false, handoverDone: false, want: HardExitOverlap,
+		why: "own live successor decides; a newer generation changes nothing"},
+	{identity: "live", newerLive: true, managed: false, handoverDone: true, want: HardExitOverlap,
+		why: "own live successor decides; a newer generation changes nothing"},
+	{identity: "live", newerLive: false, managed: true, handoverDone: false, want: HardExitPark,
+		why: "the incident cell: armed codes kill the cgroup, 76 without transfer strands an untracked successor — park and retry"},
+	{identity: "live", newerLive: true, managed: true, handoverDone: false, want: HardExitPark,
+		why: "a newer generation does not make an un-transferred unit successor safe to abandon"},
+	{identity: "live", newerLive: false, managed: true, handoverDone: true, want: HardExitOverlap,
+		why: "transfer landed and identity re-verified: the supervisor stands down for the successor"},
+	{identity: "live", newerLive: true, managed: true, handoverDone: true, want: HardExitOverlap,
+		why: "transfer landed and identity re-verified: the supervisor stands down for the successor"},
+	// UNKNOWN successor: never guessed about in either direction.
+	{identity: "unknown", newerLive: false, managed: false, handoverDone: false, want: HardExitPark,
+		why: "unfingerprintable PID: exiting risks killing (or duplicating) a successor we cannot name"},
+	{identity: "unknown", newerLive: false, managed: false, handoverDone: true, want: HardExitPark,
+		why: "a handover receipt for a PID we cannot fingerprint proves nothing"},
+	{identity: "unknown", newerLive: false, managed: true, handoverDone: false, want: HardExitPark,
+		why: "management status of an unverifiable successor is not evidence"},
+	{identity: "unknown", newerLive: false, managed: true, handoverDone: true, want: HardExitPark,
+		why: "management status of an unverifiable successor is not evidence"},
+	{identity: "unknown", newerLive: true, managed: false, handoverDone: false, want: HardExitPark,
+		why: "park is the only action that cannot kill the possibly-live successor"},
+	{identity: "unknown", newerLive: true, managed: false, handoverDone: true, want: HardExitPark,
+		why: "park is the only action that cannot kill the possibly-live successor"},
+	{identity: "unknown", newerLive: true, managed: true, handoverDone: false, want: HardExitPark,
+		why: "park is the only action that cannot kill the possibly-live successor"},
+	{identity: "unknown", newerLive: true, managed: true, handoverDone: true, want: HardExitPark,
+		why: "park is the only action that cannot kill the possibly-live successor"},
+	// DEAD or NONE: our line ended; the registry mirror decides whether a
+	// NEWER generation forbids the supervisor-restart exit.
+	{identity: "dead", newerLive: false, managed: false, handoverDone: false, want: HardExitRequested,
+		why: "ordinary serial replacement: the supervisor's restart is wanted"},
+	{identity: "dead", newerLive: false, managed: false, handoverDone: true, want: HardExitRequested,
+		why: "a stale handover receipt cannot revive a dead successor"},
+	{identity: "dead", newerLive: false, managed: true, handoverDone: false, want: HardExitRequested,
+		why: "ordinary serial replacement: the supervisor's restart is wanted"},
+	{identity: "dead", newerLive: false, managed: true, handoverDone: true, want: HardExitRequested,
+		why: "ordinary serial replacement: the supervisor's restart is wanted"},
+	{identity: "dead", newerLive: true, managed: false, handoverDone: false, want: HardExitOverlap,
+		why: "newer generation lives: a unit restart would start a duplicate beside it"},
+	{identity: "dead", newerLive: true, managed: false, handoverDone: true, want: HardExitOverlap,
+		why: "newer generation lives: a unit restart would start a duplicate beside it"},
+	{identity: "dead", newerLive: true, managed: true, handoverDone: false, want: HardExitOverlap,
+		why: "newer generation lives: a unit restart would start a duplicate beside it"},
+	{identity: "dead", newerLive: true, managed: true, handoverDone: true, want: HardExitOverlap,
+		why: "newer generation lives: a unit restart would start a duplicate beside it"},
+	{identity: "none", newerLive: false, managed: false, handoverDone: false, want: HardExitRequested,
+		why: "no successor ever started: the armed code stands"},
+	{identity: "none", newerLive: false, managed: false, handoverDone: true, want: HardExitRequested,
+		why: "no successor ever started: a handover receipt is impossible garbage"},
+	{identity: "none", newerLive: false, managed: true, handoverDone: false, want: HardExitRequested,
+		why: "no successor ever started: the armed code stands"},
+	{identity: "none", newerLive: false, managed: true, handoverDone: true, want: HardExitRequested,
+		why: "no successor ever started: the armed code stands"},
+	{identity: "none", newerLive: true, managed: false, handoverDone: false, want: HardExitOverlap,
+		why: "no own successor but a newer generation lives: refuse the restart exit"},
+	{identity: "none", newerLive: true, managed: false, handoverDone: true, want: HardExitOverlap,
+		why: "no own successor but a newer generation lives: refuse the restart exit"},
+	{identity: "none", newerLive: true, managed: true, handoverDone: false, want: HardExitOverlap,
+		why: "no own successor but a newer generation lives: refuse the restart exit"},
+	{identity: "none", newerLive: true, managed: true, handoverDone: true, want: HardExitOverlap,
+		why: "no own successor but a newer generation lives: refuse the restart exit"},
+}
+
+// TestHardExitFullSpace walks every combination of the decision inputs and
+// pins the action for each, with the failure mode the cell guards against.
+func TestHardExitFullSpace(t *testing.T) {
+	seen := map[string]bool{}
+	for _, row := range hardExitSpace {
+		label := row.identity
+		key := label + "|" + fmt.Sprint(row.newerLive, row.managed, row.handoverDone)
+		if seen[key] {
+			t.Fatalf("duplicate space cell %s", key)
+		}
+		seen[key] = true
+		got := ResolveHardExitAction(row.identity, row.newerLive, row.managed, row.handoverDone)
+		if got != row.want {
+			t.Fatalf("ResolveHardExitAction(%s, newer=%t, managed=%t, handover=%t) = %s, want %s (%s)",
+				row.identity, row.newerLive, row.managed, row.handoverDone, got, row.want, row.why)
+		}
+	}
+	// 4 identities × 2 × 2 × 2 = the complete space, no holes.
+	if len(seen) != 32 {
+		t.Fatalf("space table has %d cells, want 32", len(seen))
+	}
+}
+
+// TestHardExitNeverKillsALiveSuccessor is the incident invariant stated
+// directly: for NO combination of the other inputs may a LIVE successor (or
+// a live newer generation with our successor gone) produce "requested" — the
+// action that lets the armed code order the cgroup-killing restart.
+func TestHardExitNeverKillsALiveSuccessor(t *testing.T) {
+	for _, row := range hardExitSpace {
+		liveLine := row.identity == "live" || (row.newerLive && (row.identity == "dead" || row.identity == "none"))
+		if !liveLine {
+			continue
+		}
+		if row.want == HardExitRequested {
+			t.Fatalf("live line (%s newer=%t) must never answer requested — %s",
+				row.identity, row.newerLive, row.why)
+		}
+	}
+}
+
+// TestHardExitUnknownIdentityStringParks: identity strings come over the
+// wire from the Python twin; anything unrecognized must fall to park, never
+// to an exit-permitting guess.
+func TestHardExitUnknownIdentityStringParks(t *testing.T) {
+	for _, raw := range []string{"", "Live", "LIVE", "alive", "reused", "0"} {
+		if got := ResolveHardExitAction(raw, false, false, false); got != HardExitPark {
+			t.Fatalf("ResolveHardExitAction(%q) = %s, want park", raw, got)
 		}
 	}
 }

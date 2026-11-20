@@ -26,6 +26,14 @@
 //	  of answering (newer_live_generation is ignored); when no started
 //	  successor decides the exit, that is an error → exit 3.
 //
+//	{"op": "hard_exit", "successor_identity": "live" | "dead" | "unknown" | "none",
+//	 "newer_live_generation": bool, "systemd_managed": bool,
+//	 "mainpid_handover_done": bool}
+//	  → prints the backstop's action as {"action": "requested" | "overlap" | "park"}.
+//	  This is the watchdog-exit decision (ResolveHardExitAction): what a
+//	  hard-exit backstop on a draining predecessor must do so it can never
+//	  kill a live overlap successor's cgroup.
+//
 // An unknown op or trigger exits 2 with a message on stderr.
 package main
 
@@ -48,6 +56,9 @@ func main() {
 		SuccessorStarted    bool   `json:"successor_started"`
 		NewerLiveGeneration bool   `json:"newer_live_generation"`
 		ProbeFailed         bool   `json:"probe_failed"`
+		SuccessorIdentity   string `json:"successor_identity"`
+		SystemdManaged      bool   `json:"systemd_managed"`
+		MainpidHandoverDone bool   `json:"mainpid_handover_done"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 		fmt.Fprintf(os.Stderr, "restartplan: unreadable request: %v\n", err)
@@ -84,6 +95,13 @@ func main() {
 			request.SuccessorStarted, request.Supervised,
 			request.NewerLiveGeneration,
 		))
+	case "hard_exit":
+		emit(struct {
+			Action restartplan.HardExitAction `json:"action"`
+		}{restartplan.ResolveHardExitAction(
+			request.SuccessorIdentity, request.NewerLiveGeneration,
+			request.SystemdManaged, request.MainpidHandoverDone,
+		)})
 	default:
 		fmt.Fprintf(os.Stderr, "restartplan: unknown op %q\n", op)
 		os.Exit(2)

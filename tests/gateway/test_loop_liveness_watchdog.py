@@ -10,7 +10,7 @@ import inspect
 import tempfile
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -338,7 +338,14 @@ def test_gateway_runner_liveness_guards_start_and_stop():
         probe_interval=30.0,
         probe_timeout=10.0,
         max_strikes=3,
+        overlap_exit_plan=ANY,
     )
+    # The guards stay armed through a drain, and the armed 75 orders the
+    # cgroup-killing restart; the wired plan reroutes a firing watchdog
+    # through the overlap handover (behavior pinned in
+    # test_shutdown_watchdog_overlap_exit.py).
+    wired_plan = start_watchdog.call_args.kwargs["overlap_exit_plan"]
+    assert callable(wired_plan)
     assert runner._loop_floor_timer_handle is floor_timer
     assert runner._loop_liveness_watchdog is watchdog
 

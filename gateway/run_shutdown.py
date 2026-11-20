@@ -2807,9 +2807,14 @@ class GatewayShutdownMixin:
             deferred_count=getattr(self, "_active_deferred_agent_worker_count", lambda: 0)
         )
         if not os.environ.get("PYTEST_CURRENT_TEST"):
+            from gateway.overlap_restart import resolve_hard_exit_action
+
             arm_shutdown_watchdog(
                 resolve_shutdown_watchdog_delay(self._restart_drain_timeout), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
+                # Armed 1 orders a failure restart (cgroup kill under KillMode=mixed);
+                # the plan reroutes a hard exit through the overlap handover (76/park).
+                overlap_exit_plan=lambda: resolve_hard_exit_action(self),
             )
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)

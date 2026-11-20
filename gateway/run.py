@@ -8724,11 +8724,17 @@ class GatewayRunner(
                 }
 
             if not os.environ.get("PYTEST_CURRENT_TEST"):
+                from gateway.overlap_restart import resolve_hard_exit_action
+
                 arm_shutdown_watchdog(
                     resolve_shutdown_watchdog_delay(self._restart_drain_timeout),
                     done_event=_watchdog_done,
                     snapshot_fn=_shutdown_watchdog_snapshot,
                     exit_code=1,
+                    # The armed 1 orders a failure restart: under KillMode=mixed that
+                    # kills the cgroup — a live overlap successor included. The plan
+                    # reroutes the hard exit through the overlap handover (76/park).
+                    overlap_exit_plan=lambda: resolve_hard_exit_action(self),
                 )
 
             try:

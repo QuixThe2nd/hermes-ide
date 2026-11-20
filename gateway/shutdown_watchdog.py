@@ -22,7 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from gateway.overlap_restart import HARD_EXIT_OVERLAP, HARD_EXIT_PARK
+from gateway.restart import (
+    GATEWAY_OVERLAP_RESTART_EXIT_CODE,
+    GATEWAY_SERVICE_RESTART_EXIT_CODE,
+)
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
 
@@ -89,10 +93,13 @@ def start_loop_liveness_watchdog(
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    overlap_exit_plan: Optional[Callable[[], str]] = None,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes. The caller
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
-    opt-out."""
+    opt-out. Its armed default (75) orders a supervisor restart, so a draining
+    predecessor passes ``overlap_exit_plan`` to reroute the exit through the
+    overlap handover (or park) — ``_planned_hard_exit_code``."""
     stop_event = threading.Event()
 
     def _watchdog() -> None:
@@ -134,8 +141,14 @@ def start_loop_liveness_watchdog(
                 logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
             if stop_event.is_set():
                 return
-            _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
-            os._exit(exit_code)
+            hard_code = _planned_hard_exit_code(
+                overlap_exit_plan, exit_code, stop_event.wait)
+            if hard_code is None:
+                # Parked beside a live successor: the loop may recover or teardown
+                # may complete; either outcome beats killing the successor's cgroup.
+                return
+            _mark_exited_quietly(hard_code, "loop_liveness_watchdog")
+            os._exit(hard_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -248,13 +261,53 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
         faulthandler.dump_traceback(all_threads=True)
 
 
+# Re-plan cadence while parked beside a live successor (matches the retry sleep in
+# handover_systemd_overlap_successor).
+_PARK_REPLAN_INTERVAL_S = 0.2
+
+
+def _planned_hard_exit_code(
+    overlap_exit_plan: Optional[Callable[[], str]], armed_exit_code: int,
+    wait_for_relief: Callable[[float], bool],
+) -> Optional[int]:
+    """Apply the overlap exit plan at a hard-exit point.
+
+    Returns the code to hard-exit with, or None while the plan parks: beside a
+    verified-live successor the supervisor cannot be safely told about, NOT
+    exiting is strictly better than either armed code (75/1 both order a unit
+    restart, and KillMode=mixed then kills the successor with us), so the
+    backstop waits — wait_for_relief(timeout) reports teardown completion or
+    disarm and aborts to the caller — and re-plans until the successor dies,
+    the MAINPID handover lands, or nothing needs protecting anymore.
+    """
+    if overlap_exit_plan is None:
+        return armed_exit_code
+    while True:
+        try:
+            action = overlap_exit_plan()
+        except Exception:
+            logger.error("Overlap hard-exit plan raised; using the armed exit code",
+                         exc_info=True)
+            return armed_exit_code
+        if action == HARD_EXIT_OVERLAP:
+            return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+        if action != HARD_EXIT_PARK:
+            return armed_exit_code
+        if wait_for_relief(_PARK_REPLAN_INTERVAL_S):
+            return None
+
+
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
     snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None, exit_code: int = 1,
-    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
+    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog",
+    overlap_exit_plan: Optional[Callable[[], str]] = None) -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
-    ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.
-    Never raises; returns ``done_event`` for disarming."""
+    ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit``.
+    ``exit_code`` is the armed default; ``overlap_exit_plan`` (``resolve_hard_exit_action``
+    bound to the draining runner) can override it to the overlap exit (76) or park
+    the exit entirely — see ``_planned_hard_exit_code``. Never raises; returns
+    ``done_event`` for disarming."""
     done = done_event if done_event is not None else threading.Event()
     delay = _coerce_float(delay_s, DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S)
     if delay <= 0:
@@ -291,8 +344,14 @@ def arm_shutdown_watchdog(
         with contextlib.suppress(Exception):
             from hermes_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
-        _mark_exited_quietly(exit_code, "shutdown_watchdog")
-        os._exit(exit_code)
+        hard_code = _planned_hard_exit_code(
+            overlap_exit_plan, exit_code, lambda timeout: done.wait(timeout=timeout))
+        if hard_code is None:
+            # Parked beside a live successor: teardown may still complete, and
+            # this thread exiting quietly beats killing the successor's cgroup.
+            return
+        _mark_exited_quietly(hard_code, "shutdown_watchdog")
+        os._exit(hard_code)
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:
