@@ -88,6 +88,15 @@ async def _chat(ws, text="hello", message_id="m1") -> None:
         "tab": {"id": 1, "url": "https://example.com", "title": "Example"},
     }))
 
+async def _wait_for(condition, timeout=5.0, what="condition"):
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
 
 async def test_attach_replacement_routes_new_turns_only_to_current_gateway(short_af_unix_path):
     """New turns go to the newest generation; a still-attached predecessor may
@@ -119,6 +128,38 @@ async def test_attach_replacement_routes_new_turns_only_to_current_gateway(short
         assert (await current.adapter.send("brave", "done")).success
         assert await _recv(ws) == {"type": "final", "id": "m1", "text": "done"}
         await ws.close()
+
+async def test_detached_active_generation_falls_back_to_client_object(short_af_unix_path):
+    """Regression: detaching the ACTIVE generation must fall back to the
+    previous client OBJECT. The fallback once iterated dict keys, so _active
+    became a generation-id string and the next attach() crashed reading
+    previous.generation_id ("browser_sidebar: hub attach failed" every
+    reconnect)."""
+    async with _HubSidebar(short_af_unix_path) as hub:
+        a = hub.add_gateway("a")
+        await a.connect()
+        b = hub.add_gateway("b")
+        await b.connect()
+
+        await b.disconnect()
+        # The hub server detaches on socket EOF; wait for it to land before
+        # inspecting the fallback.
+        await _wait_for(
+            lambda: b.adapter._generation_id not in hub.server.browser_sidebar._clients,
+            what="b's generation to detach from the hub",
+        )
+        active = hub.server.browser_sidebar._active
+        assert not isinstance(active, str), \
+            "detach fallback must keep _active a client object, not a generation-id string"
+        assert active.generation_id == a.adapter._generation_id
+
+        # A third generation attaches cleanly over the restored predecessor.
+        c = hub.add_gateway("c")
+        await c.connect()
+        assert hub.server.browser_sidebar._active.generation_id == c.adapter._generation_id
+        assert a.adapter._generation_id in hub.server.browser_sidebar._retired_generations
+        await a.disconnect()
+        assert not await a.adapter.connect(), "a retired generation must not reclaim the hub"
 
 
 async def test_gateway_disconnect_and_successor_do_not_drop_extension_socket(short_af_unix_path):

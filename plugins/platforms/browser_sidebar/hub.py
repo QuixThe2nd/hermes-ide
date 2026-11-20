@@ -136,7 +136,7 @@ class BrowserSidebarHub:
                 if owner == generation:
                     self._tool_owners.pop(request_id, None)
         if self._active is client:
-            self._active = next(reversed(self._clients), None) if self._clients else None
+            self._active = next(reversed(self._clients.values()), None) if self._clients else None
 
     def status(self) -> Dict[str, Any]:
         """Nonsecret routing state for diagnostics."""
