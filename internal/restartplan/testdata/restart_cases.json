@@ -1,0 +1,174 @@
+{
+  "cases": [
+    {
+      "name": "user_manual_host",
+      "op": "decide",
+      "trigger": "user",
+      "supervised": false,
+      "container": false,
+      "expect": {
+        "via_service": false,
+        "detached": true,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "update_signal_manual_host_spawns_overlap_successor",
+      "op": "decide",
+      "trigger": "update_signal",
+      "supervised": false,
+      "container": false,
+      "expect": {
+        "via_service": false,
+        "detached": true,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "user_systemd_unit",
+      "op": "decide",
+      "trigger": "user",
+      "supervised": true,
+      "container": false,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "update_signal_systemd_unit_spawns_in_unit_successor",
+      "op": "decide",
+      "trigger": "update_signal",
+      "supervised": true,
+      "container": false,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "user_container_restart_policy",
+      "op": "decide",
+      "trigger": "user",
+      "supervised": false,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": false
+      }
+    },
+    {
+      "name": "update_signal_container_restart_policy_relaunch",
+      "op": "decide",
+      "trigger": "update_signal",
+      "supervised": false,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": false
+      }
+    },
+    {
+      "name": "user_supervised_container",
+      "op": "decide",
+      "trigger": "user",
+      "supervised": true,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "update_signal_supervised_container",
+      "op": "decide",
+      "trigger": "update_signal",
+      "supervised": true,
+      "container": true,
+      "expect": {
+        "via_service": true,
+        "detached": false,
+        "spawns_successor": true
+      }
+    },
+    {
+      "name": "exit_no_restart_requested_is_clean",
+      "op": "exit_code",
+      "restart_requested": false,
+      "via_service": false,
+      "successor_started": false,
+      "supervised": false,
+      "expect_exit_code": null
+    },
+    {
+      "name": "exit_manual_no_successor_is_clean",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": false,
+      "successor_started": false,
+      "supervised": false,
+      "expect_exit_code": null
+    },
+    {
+      "name": "exit_manual_with_successor_is_clean",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": false,
+      "successor_started": true,
+      "supervised": false,
+      "expect_exit_code": null
+    },
+    {
+      "name": "exit_service_without_successor_asks_restart",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": true,
+      "successor_started": false,
+      "supervised": true,
+      "expect_exit_code": 75
+    },
+    {
+      "name": "exit_service_with_successor_hands_over",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": true,
+      "successor_started": true,
+      "supervised": true,
+      "expect_exit_code": 76
+    },
+    {
+      "name": "exit_detached_request_with_successor_under_systemd_hands_over",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": false,
+      "successor_started": true,
+      "supervised": true,
+      "expect_exit_code": 76
+    },
+    {
+      "name": "exit_service_with_newer_live_generation_hands_over",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": true,
+      "successor_started": false,
+      "supervised": true,
+      "newer_live_generation": true,
+      "expect_exit_code": 76
+    },
+    {
+      "name": "exit_newer_generation_alone_on_manual_host_stays_clean",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": false,
+      "successor_started": false,
+      "supervised": false,
+      "newer_live_generation": true,
+      "expect_exit_code": null
+    }
+  ]
+}

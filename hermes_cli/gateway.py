@@ -269,8 +269,11 @@ def _graceful_restart_via_sigusr1(
 ) -> bool | None:
     """SIGUSR1 a gateway PID and wait for exit; False means still alive, None means unsent.
 
-    gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
-    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
+    gateway/run.py maps SIGUSR1 onto the ONE shared restart core
+    (``queue_signal_restart`` → ``queue_user_restart``, exactly ``/restart``'s
+    sequence): refuse new turns, drain, spawn the overlap successor or exit
+    to the supervisor per live host conditions, ``stop()``. ``drain_timeout``
+    must cover after-turn wait + drain
     — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
     a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
 

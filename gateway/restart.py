@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import math
@@ -373,8 +374,41 @@ def is_container_restart_context() -> bool:
     return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
 
+def restart_transport_plan(
+    trigger: str, *, supervised: bool, container: bool
+) -> dict:
+    """The ONE transport decision every restart trigger must derive from.
+
+    Go twin (canonical contract statement): ``internal/restartplan`` — the
+    shared table ``testdata/restart_cases.json`` and the contract test
+    ``tests/gateway/test_restart_plan_contract.py`` pin both twins to the
+    same decisions. ``trigger`` is "user" (/restart, the restart tool, the
+    control-socket verb) or "update_signal" (SIGUSR1 from ``hermes update``
+    or the ``hermes gateway restart`` fallback); it is validated and then
+    MUST NOT influence the outcome — the update signal regressed exactly
+    here by hardcoding ``via_service=True`` on hosts with no supervisor.
+
+    ``supervised`` mirrors :func:`is_gateway_supervisor_process`, ``container``
+    mirrors :func:`is_container_restart_context`. Returns the flags
+    ``request_restart`` consumes: ``via_service`` (exit 75 to the
+    supervisor/container restart policy), ``detached`` (this dying process
+    arms its own replacement replay when nothing else will), and
+    ``spawns_successor`` (an overlap successor is expected during the drain —
+    in-unit under systemd, over the hub RPC on an unsupervised host, never
+    from inside a plain container whose restart policy owns the relaunch).
+    """
+    if trigger not in ("user", "update_signal"):
+        raise ValueError(f"unknown restart trigger: {trigger!r}")
+    via_service = bool(supervised or container)
+    return {
+        "via_service": via_service,
+        "detached": not via_service,
+        "spawns_successor": bool(supervised or not via_service),
+    }
+
+
 def user_restart_via_service() -> bool:
-    """Route a user-initiated restart (``/restart``, the ``restart`` tool) via
+    """Route a restart (``/restart``, the ``restart`` tool, SIGUSR1) via
     the service-manager exit path?
 
     True when a service manager (systemd/launchd/s6) supervises the gateway or
@@ -384,7 +418,11 @@ def user_restart_via_service() -> bool:
     kills the cgroup) or Docker (tini exits when the gateway dies, taking the
     detached helper with it).
     """
-    return is_gateway_supervisor_process() or is_container_restart_context()
+    return restart_transport_plan(
+        "user",
+        supervised=is_gateway_supervisor_process(),
+        container=is_container_restart_context(),
+    )["via_service"]
 
 
 def clear_pre_array_chain_marker() -> bool:
@@ -408,8 +446,12 @@ def clear_pre_array_chain_marker() -> bool:
     return True
 
 
-def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
-    """Return the supervisor restart code, or None for an ordinary clean exit.
+def planned_restart_exit_code(
+    *, restart_requested: bool, via_service: bool,
+    successor_started: bool, supervised: bool,
+    newer_live_generation: bool = False,
+) -> Optional[int]:
+    """Pure core of the planned-exit decision; Go twin: ``internal/restartplan``.
 
     A hub successor may have been started by a request whose ``via_service``
     flag was false. Re-check native supervision at teardown in that case:
@@ -422,21 +464,31 @@ def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
     even when this process's own successor died — the lineage continues in
     the newer process and the supervisor must not start a second gateway.
     """
-    if not getattr(runner, "_restart_requested", False):
+    if not restart_requested:
         return None
-    successor_started = bool(getattr(runner, "_overlap_restart_successor_started", False))
-    if not getattr(runner, "_restart_via_service", False) and not (
-        successor_started and is_gateway_supervisor_process()
-    ):
+    if not via_service and not (successor_started and supervised):
         return None
     if successor_started:
         return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    if via_service and newer_live_generation:
+        return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    return GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
+    """Return the supervisor restart code, or None for an ordinary clean exit."""
+    newer_live_generation = False
     if getattr(runner, "_restart_via_service", False):
         from gateway.overlap_restart import newest_live_other_pid
 
-        if newest_live_other_pid() is not None:
-            return GATEWAY_OVERLAP_RESTART_EXIT_CODE
-    return GATEWAY_SERVICE_RESTART_EXIT_CODE
+        newer_live_generation = newest_live_other_pid() is not None
+    return planned_restart_exit_code(
+        restart_requested=bool(getattr(runner, "_restart_requested", False)),
+        via_service=bool(getattr(runner, "_restart_via_service", False)),
+        successor_started=bool(getattr(runner, "_overlap_restart_successor_started", False)),
+        supervised=is_gateway_supervisor_process(),
+        newer_live_generation=newer_live_generation,
+    )
 
 
 def _restart_notify_payload(
@@ -521,19 +573,25 @@ async def handle_forwarded_restart(
     )
 async def queue_user_restart(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str],
-    *, restart_hub: bool = False,
+    *, restart_hub: bool = False, from_update: bool = False,
 ) -> dict:
     """Queue a user-requested restart — the ONE shared ``/restart`` sequence.
 
-    Every user-restart entry point (the ``/restart`` slash command and the
-    agent-callable ``restart`` tool) funnels through this helper so their
-    requester setup can never drift apart: warn about uncommitted runtime
-    source (the warning-only preflight below), persist the comeback routing
-    (the in-memory command source plus the ``.restart_notify.json`` marker the
-    next gateway process consumes), then
+    Every restart entry point with a requester (the ``/restart`` slash command,
+    the agent-callable ``restart`` tool, the control-socket ``restart`` verb)
+    funnels through this helper so their requester setup can never drift
+    apart; the signal entry (:func:`queue_signal_restart`, no requester)
+    rides the same sequence so a SIGUSR1 cannot drift either: warn about
+    uncommitted runtime source (the warning-only preflight below), persist
+    the comeback routing (the in-memory command source plus the
+    ``.restart_notify.json`` marker the next gateway process consumes), then
     hand off to ``request_restart``, which opens the shared drain. Must run on
     the gateway event loop — ``request_restart`` schedules its drain task
     there.
+
+    ``from_update`` adopts update-drain semantics (idle-past-timeout units
+    stop holding the drain) and skips the requester preflight: the update
+    path has no requester to warn and owns the tree state it just swapped.
 
     The notify-marker write is deliberately synchronous on that loop: an
     unsuspended write cannot keep running after the calling hand-off times out
@@ -579,9 +637,13 @@ async def queue_user_restart(
     # uncommitted runtime source. Bounded (scan + delivery budgets), coalesced
     # across concurrent callers, and never a restart blocker — inspection or
     # delivery failures only downgrade the notice. Cancellation still
-    # propagates: a cancelled setup must not reach request_restart.
-    preflight_attempt = await restart_preflight.warn_before_user_restart(
-        runner, source
+    # propagates: a cancelled setup must not reach request_restart. Skipped
+    # for an update-triggered restart: no requester exists to deliver a
+    # notice to, and the updater owns the tree state it just swapped.
+    preflight_attempt = (
+        None
+        if from_update
+        else await restart_preflight.warn_before_user_restart(runner, source)
     )
     try:
         # Ownership recheck after the preflight's awaits: another entry point
@@ -646,6 +708,7 @@ async def queue_user_restart(
         via_service = user_restart_via_service()
         started = runner.request_restart(
             detached=not via_service, via_service=via_service,
+            from_update=from_update,
         )
 
         return {
@@ -657,6 +720,42 @@ async def queue_user_restart(
         # Setup resolved (started, failed, or cancelled): drop the provisional
         # preflight state so a later attempt retries it, and wake any rider.
         restart_preflight.release_restart_preflight(preflight_attempt)
+
+
+def queue_signal_restart(runner: Any) -> "asyncio.Task[dict]":
+    """SIGUSR1 entry onto the ONE shared restart core (``queue_user_restart``).
+
+    ``hermes update`` signals every gateway after the code swap and
+    ``hermes gateway restart`` falls back to the same signal when the control
+    socket cannot answer. Both must behave exactly like ``/restart`` on the
+    same host — transport flags derived from live supervision, the overlap
+    successor spawned by the hub adapters — instead of a hardcoded
+    service-manager exit that leaves hosts with no supervisor draining
+    successor-less. A consumed update-restart marker adopts update-drain
+    semantics; the marker is consumed synchronously here so a racing second
+    signal cannot read it twice.
+
+    Must run on the gateway event loop (like every ``queue_user_restart``
+    caller). Returns the queued task; its exceptions are logged, never
+    raised into the signal callback.
+    """
+    from gateway.status import consume_update_restart_marker_for_self
+
+    from_update = consume_update_restart_marker_for_self()
+
+    async def _queue() -> dict:
+        try:
+            return await queue_user_restart(
+                runner, None, None, from_update=from_update
+            )
+        except Exception:
+            logger.exception(
+                "signal-triggered restart could not enter the shared restart "
+                "core; the gateway keeps serving until the next trigger"
+            )
+            return {"status": "failed", "active_agents": None, "via_service": None}
+
+    return asyncio.create_task(_queue())
 
 
 def restart_committed(runner: Any) -> bool:
