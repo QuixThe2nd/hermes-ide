@@ -49,6 +49,10 @@ type sharedCase struct {
 	ArmedExitCode int    `json:"armed_exit_code"`
 	ExpectCode    *int   `json:"expect_code"`
 	ExpectExited  bool   `json:"expect_exited"`
+	// stopping_notify inputs reuse the hard_exit fields; expect_notify is
+	// whether the draining predecessor may emit sd_notify STOPPING=1 for
+	// that action (nil = the row forgot its expectation).
+	ExpectNotify *bool `json:"expect_notify"`
 }
 
 func loadSharedCases(t *testing.T) []sharedCase {
@@ -127,6 +131,18 @@ func TestSharedTable(t *testing.T) {
 				if exited != tc.ExpectExited || (tc.ExpectExited && code != *tc.ExpectCode) {
 					t.Fatalf("HardExitCode(%q, armed=%d) = (%d, exited=%t); want exited=%t code=%d",
 						tc.Action, tc.ArmedExitCode, code, exited, tc.ExpectExited, deref(tc.ExpectCode))
+				}
+			case "stopping_notify":
+				if tc.ExpectNotify == nil {
+					t.Fatalf("stopping_notify case %q has no notify expectation", tc.Name)
+				}
+				got := NotifyStoppingOnAction(ResolveHardExitAction(
+					tc.SuccessorIdentity, tc.NewerLiveGeneration,
+					tc.SystemdManaged, tc.MainpidHandoverDone))
+				if got != *tc.ExpectNotify {
+					t.Fatalf("NotifyStoppingOnAction(ResolveHardExitAction(%q, newer_live=%t, managed=%t, handover=%t)) = %t, want %t",
+						tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged,
+						tc.MainpidHandoverDone, got, *tc.ExpectNotify)
 				}
 			default:
 				t.Fatalf("unknown op %q", tc.Op)
@@ -518,6 +534,7 @@ func TestSharedTableNamesEveryOp(t *testing.T) {
 	ops := map[string]bool{
 		"decide": false, "exit_code": false,
 		"hard_exit": false, "hard_exit_runner": false, "hard_exit_code": false,
+		"stopping_notify": false,
 	}
 	for _, tc := range loadSharedCases(t) {
 		if _, known := ops[tc.Op]; !known {
@@ -564,5 +581,146 @@ func TestSharedTableCoversEveryHardExitInput(t *testing.T) {
 		if !seen {
 			t.Fatalf("shared table has no hard_exit_code row for action %q", action)
 		}
+	}
+}
+
+// TestNotifyStoppingMatchesHardExitFullSpace walks the complete hard-exit
+// space and pins the derivation: the stop notification is permitted
+// exactly where the action is "requested" — everywhere a live line (own
+// successor or newer generation) or an unfingerprintable successor makes
+// any other answer, the datagram that deactivates the unit must not go
+// out while the predecessor is still MAINPID (2026-11-21 incident).
+func TestNotifyStoppingMatchesHardExitFullSpace(t *testing.T) {
+	for _, row := range hardExitSpace {
+		action := ResolveHardExitAction(row.identity, row.newerLive, row.managed, row.handoverDone)
+		got := NotifyStoppingOnAction(action)
+		if want := action == HardExitRequested; got != want {
+			t.Fatalf("NotifyStoppingOnAction(%s for %s newer=%t managed=%t handover=%t) = %t, want %t (%s)",
+				action, row.identity, row.newerLive, row.managed, row.handoverDone, got, want, row.why)
+		}
+	}
+}
+
+// TestNotifyStoppingIgnoresTheHandoverState pins the invariance that makes
+// the stop-head gate safe to call BEFORE teardown performs the MAINPID
+// transfer: managed and handover only separate overlap from park, and both
+// stay silent, so no transfer state can switch the notification back on
+// for a live successor.
+func TestNotifyStoppingIgnoresTheHandoverState(t *testing.T) {
+	for _, identity := range []string{"live", "unknown", "dead", "none"} {
+		for _, newerLive := range []bool{false, true} {
+			first := NotifyStoppingOnAction(ResolveHardExitAction(identity, newerLive, false, false))
+			for _, managed := range []bool{false, true} {
+				for _, handover := range []bool{false, true} {
+					got := NotifyStoppingOnAction(ResolveHardExitAction(identity, newerLive, managed, handover))
+					if got != first {
+						t.Fatalf("handover state changed the notify answer for %s newer=%t managed=%t handover=%t: %t vs %t",
+							identity, newerLive, managed, handover, got, first)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestNotifyStoppingNeverDeactivatesUnderALiveLine is the incident stated
+// directly: for NO combination of inputs may a live successor — or a newer
+// live generation once our own successor is gone — permit STOPPING=1, the
+// datagram that flipped the unit to deactivating under the successor.
+func TestNotifyStoppingNeverDeactivatesUnderALiveLine(t *testing.T) {
+	for _, row := range hardExitSpace {
+		liveLine := row.identity == "live" || (row.newerLive && (row.identity == "dead" || row.identity == "none"))
+		if !liveLine {
+			continue
+		}
+		if NotifyStoppingOnAction(ResolveHardExitAction(row.identity, row.newerLive, row.managed, row.handoverDone)) {
+			t.Fatalf("live line (%s newer=%t) must never notify stopping — %s",
+				row.identity, row.newerLive, row.why)
+		}
+	}
+}
+
+// stoppingNotifyRow is one named cell of the resolver-level notification
+// space: which successor evidence may decide whether the stop head stays
+// silent, mirroring the hard_exit_runner evidence rules.
+type stoppingNotifyRow struct {
+	started         bool
+	identity        string
+	mirrorNewerLive bool
+	want            bool
+	why             string
+}
+
+var resolveRunnerNotifyStoppingSpace = []stoppingNotifyRow{
+	{started: false, identity: "none", mirrorNewerLive: false, want: true,
+		why: "no successor, no newer generation: the ordinary stop notifies systemd as before"},
+	{started: false, identity: "none", mirrorNewerLive: true, want: false,
+		why: "a newer generation carries the line even though we never spawned a successor"},
+	{started: false, identity: "live", mirrorNewerLive: false, want: true,
+		why: "started=false means no identity answer exists; the mirror alone decides"},
+	{started: true, identity: "live", mirrorNewerLive: false, want: false,
+		why: "the incident cell: a live successor owns the unit, and the predecessor is still MAINPID"},
+	{started: true, identity: "live", mirrorNewerLive: true, want: false,
+		why: "own live successor decides; the mirror is not even read"},
+	{started: true, identity: "unknown", mirrorNewerLive: false, want: false,
+		why: "an unfingerprintable successor is never guessed about: silence cannot kill"},
+	{started: true, identity: "unknown", mirrorNewerLive: true, want: false,
+		why: "the mirror cannot flip an unknown successor into a permitted stop"},
+	{started: true, identity: "dead", mirrorNewerLive: false, want: true,
+		why: "provably dead: serial supervisor replacement, notify like a normal stop"},
+	{started: true, identity: "dead", mirrorNewerLive: true, want: false,
+		why: "successor died but a newer generation lives: the line is still carried"},
+	{started: true, identity: "", mirrorNewerLive: false, want: false,
+		why: "an unrecognized identity string parks, and park stays silent"},
+}
+
+// TestResolveRunnerNotifyStopping pins the evidence-selection layer the
+// Python runner gate (stopping_notify_permitted) mirrors: the mirror
+// decides only for a dead or never-started successor; a live or
+// unfingerprintable one decides alone and always stays silent.
+func TestResolveRunnerNotifyStopping(t *testing.T) {
+	for _, row := range resolveRunnerNotifyStoppingSpace {
+		got := ResolveRunnerNotifyStopping(row.started, row.identity, row.mirrorNewerLive)
+		if got != row.want {
+			t.Fatalf("ResolveRunnerNotifyStopping(started=%t, %q, mirror_newer=%t) = %t, want %t (%s)",
+				row.started, row.identity, row.mirrorNewerLive, got, row.want, row.why)
+		}
+	}
+}
+
+// TestResolveRunnerNotifyStoppingMirrorsHardExit ties the two layers
+// together over the full action space: wherever the hard-exit resolver
+// answers "requested" the notification is permitted, and nowhere else —
+// the stop head and the backstops read the same evidence, so they can
+// never disagree about whether the unit may be torn down.
+func TestResolveRunnerNotifyStoppingMirrorsHardExit(t *testing.T) {
+	for _, row := range hardExitSpace {
+		started := row.identity != "none"
+		got := ResolveRunnerNotifyStopping(started, row.identity, row.newerLive)
+		if want := row.want == HardExitRequested; got != want {
+			t.Fatalf("ResolveRunnerNotifyStopping(%t, %s, newer=%t) = %t, want %t (action %s — %s)",
+				started, row.identity, row.newerLive, got, want, row.want, row.why)
+		}
+	}
+}
+
+// TestSharedTableCoversEveryStoppingNotifyOutcome guards the notification
+// rows the same way the hard-exit rows are guarded: both outcomes (notify
+// on an ordinary stop, silence beside a successor) must carry rows, so
+// neither side of the parity pin can be dropped silently.
+func TestSharedTableCoversEveryStoppingNotifyOutcome(t *testing.T) {
+	seen := map[bool]bool{}
+	for _, tc := range loadSharedCases(t) {
+		if tc.Op != "stopping_notify" {
+			continue
+		}
+		if tc.ExpectNotify == nil {
+			t.Fatalf("stopping_notify case %q has no notify expectation", tc.Name)
+		}
+		seen[*tc.ExpectNotify] = true
+	}
+	if !seen[true] || !seen[false] {
+		t.Fatalf("shared table stopping_notify rows must cover both outcomes, got notify=%t silent=%t",
+			seen[true], seen[false])
 	}
 }

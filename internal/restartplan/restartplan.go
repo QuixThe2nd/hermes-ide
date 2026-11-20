@@ -323,6 +323,54 @@ func HardExitCode(action HardExitAction, armedExitCode int) (code int, ok bool) 
 	}
 }
 
+// NotifyStoppingOnAction reports whether a draining predecessor may emit
+// sd_notify STOPPING=1, given the hard-exit action its successor evidence
+// resolves to. It is the twin of the Python stop-notification gate
+// (gateway/overlap_restart.py::stopping_notify_on_action).
+//
+// The 2026-11-21 incident: the predecessor's teardown stopped the systemd
+// watchdog at the head of its drain, and SystemdWatchdog.stop emitted
+// STOPPING=1 while the predecessor was still MAINPID. For a Type=notify
+// unit that datagram is a unit-level instruction — systemd flipped the
+// still-active unit to deactivating (stop-sigterm) with no stop job, and
+// when the overlap successor later took MAINPID the unit STAYED
+// deactivating: READY=1 is ignored in stop states, so TimeoutStopSec
+// (24h10min on the incident unit) kept running against the cgroup the
+// live successor serves in, ending in a SIGTERM/SIGKILL of the successor
+// and its in-flight turns. An armed stop notification is the same class
+// of hazard as an armed exit code, so the same action decides it:
+//
+//   - requested → notify: nothing verifiable carries the line (a normal
+//     stop, or a non-overlap restart the supervisor will replace). This
+//     is the only action that permits the datagram.
+//   - overlap → silent: a verified live successor (or newer live
+//     generation) owns the line.
+//   - park → silent: an unfingerprintable successor may own it; silence
+//     cannot order the unit torn down, STOPPING=1 can.
+func NotifyStoppingOnAction(action HardExitAction) bool {
+	return action == HardExitRequested
+}
+
+// ResolveRunnerNotifyStopping is the evidence-selection twin of the Python
+// runner gate (gateway/overlap_restart.py::stopping_notify_permitted):
+// whether THIS draining runner may tell systemd it is stopping. It derives
+// the answer from the same resolver evidence that picks the hard-exit
+// action (ResolveRunnerHardExit), gathered read-only — unlike the
+// hard-exit resolver it performs no MAINPID transfer, because the teardown
+// exit boundary does that; the stop head only needs to know whether the
+// unit may be told to stop.
+//
+// systemdManaged and the transfer outcome are passed false deliberately:
+// they only separate "overlap" from "park", and the stop notification is
+// suppressed for both — a managed live successor whose handover has not
+// landed yet is exactly the incident's shape.
+func ResolveRunnerNotifyStopping(
+	successorStarted bool, identity string, mirrorNewerLive bool,
+) bool {
+	return ResolveRunnerHardExit(successorStarted, identity, mirrorNewerLive, false, false) ==
+		HardExitRequested
+}
+
 // Decide derives the transport plan for one restart request.
 //
 // supervised mirrors is_gateway_supervisor_process (a manager with a

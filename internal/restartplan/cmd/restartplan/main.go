@@ -50,6 +50,14 @@
 //	  {"code": N, "exited": bool}; exited=false is PARK (the backstop must
 //	  not exit — HardExitCode).
 //
+//	{"op": "stopping_notify", "successor_identity": "live" | "dead" | "unknown" | "none",
+//	 "newer_live_generation": bool, "systemd_managed": bool,
+//	 "mainpid_handover_done": bool}
+//	  → prints {"notify": bool}: may THIS draining predecessor emit sd_notify
+//	  STOPPING=1 while it is still MAINPID (NotifyStoppingOnAction)? The
+//	  managed/handover bits mirror the hard_exit request shape; they never
+//	  change the answer — both of their outcomes stay silent.
+//
 // An unknown op or trigger exits 2 with a message on stderr.
 package main
 
@@ -136,6 +144,14 @@ func main() {
 			Code   int  `json:"code"`
 			Exited bool `json:"exited"`
 		}{code, exited})
+	case "stopping_notify":
+		emit(struct {
+			Notify bool `json:"notify"`
+		}{restartplan.NotifyStoppingOnAction(
+			restartplan.ResolveHardExitAction(
+				request.SuccessorIdentity, request.NewerLiveGeneration,
+				request.SystemdManaged, request.MainpidHandoverDone,
+			))})
 	default:
 		fmt.Fprintf(os.Stderr, "restartplan: unknown op %q\n", op)
 		os.Exit(2)

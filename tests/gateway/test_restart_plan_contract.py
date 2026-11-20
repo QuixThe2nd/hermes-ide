@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.overlap_restart import hard_exit_action
+from gateway.overlap_restart import hard_exit_action, stopping_notify_on_action
 from gateway.restart import (
     planned_restart_exit_code,
     resolve_planned_restart_exit_code,
@@ -110,6 +110,10 @@ def _hard_exit_code(case):
     return _planned_hard_exit_code(
         lambda: case["action"], case["armed_exit_code"], lambda timeout: True)
 
+def _stopping_notify(case):
+    """The stop-notification gate reads the same hard-exit action."""
+    return stopping_notify_on_action(_hard_exit_action(case))
+
 def _python_answer(case):
     if case["op"] == "decide":
         return _decide(case)
@@ -117,6 +121,8 @@ def _python_answer(case):
         return _hard_exit_action(case)
     if case["op"] == "hard_exit_code":
         return _hard_exit_code(case)
+    if case["op"] == "stopping_notify":
+        return _stopping_notify(case)
     return _exit_code(case)
 
 def _expected(case):
@@ -128,6 +134,8 @@ def _expected(case):
         return case["expect_action"]
     if case["op"] == "hard_exit_code":
         return case["expect_code"] if case["expect_exited"] else None
+    if case["op"] == "stopping_notify":
+        return case["expect_notify"]
     return case["expect_exit_code"]
 
 
@@ -158,6 +166,9 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
         want = _expected(case)
         assert answer["exited"] == (want is not None)
         assert (answer["code"] if answer["exited"] else None) == want
+    elif case["op"] == "stopping_notify":
+        # {"notify": bool} ↔ the Python stop-notification gate.
+        assert answer == {"notify": _expected(case)}
     elif case["op"] == "exit_code":
         # {"code": N, "special": bool} ↔ the Python None-or-int answer.
         want = _expected(case)

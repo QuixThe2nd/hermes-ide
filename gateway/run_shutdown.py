@@ -2405,12 +2405,29 @@ class GatewayShutdownMixin:
         return True
 
     async def _stop_systemd_watchdog(self) -> None:
-        """Stop heartbeats before any potentially long shutdown drain."""
+        """Stop heartbeats before any potentially long shutdown drain.
+
+        The stop notification is suppressed when the overlap evidence that
+        picks exit 76 says a successor carries the unit: ``STOPPING=1``
+        from the still-MAINPID predecessor deactivates the unit under the
+        live successor's cgroup (2026-11-21 incident). The ping task stops
+        either way. Every path that can emit ``STOPPING=1`` for a
+        predecessor — the facade's ``_stop_impl_body`` and the phased
+        ``_stop_begin_teardown`` twin — funnels through here.
+        """
         watchdog = self._systemd_watchdog
         if watchdog is None:
             return
         self._systemd_watchdog = None
-        await watchdog.stop()
+        from gateway.overlap_restart import stopping_notify_permitted
+
+        permitted = stopping_notify_permitted(self)
+        if not permitted:
+            logger.info(
+                "Overlap successor carries the unit; suppressing STOPPING=1 "
+                "while this predecessor is still systemd MAINPID"
+            )
+        await watchdog.stop(notify_stopping=permitted)
 
     # stop() phases. Invoked as ``GatewayRunner._stop_<phase>(self, ctx)`` so shutdown-path tests
     # can drive them from bare doubles that are not GatewayRunner instances.
