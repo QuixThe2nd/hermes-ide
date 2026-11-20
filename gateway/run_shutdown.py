@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from gateway.config import Platform
 from gateway.restart import (
@@ -32,6 +32,32 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+async def bounded_head_rpc_await(runner: Any, awaitable: Awaitable[Any], what: str) -> None:
+    """Await a shutdown-head hub-RPC call bounded by the runner's adapter timeout.
+
+    The head's notify/rename doors ride hub RPCs whose hub-side handlers park
+    platform REST calls (channel rename/edit) in rate-limit sleeps for
+    minutes; unbounded, the predecessor's stop() never returned and the
+    shutdown watchdog killed the live successor's cgroup (2026-11-20).
+    Shutdown-path test doubles may not carry the adapter-lifecycle mixin, so
+    a missing helper degrades to the historical unbounded await.
+    """
+    bound = getattr(runner, "_await_adapter_cleanup_with_timeout", None)
+    timeout_secs = getattr(runner, "_adapter_disconnect_timeout_secs", None)
+    if bound is None or timeout_secs is None:
+        await awaitable
+        return
+    timeout = timeout_secs()
+    if timeout <= 0:
+        await awaitable
+        return
+    if not await bound(awaitable, timeout):
+        logger.warning(
+            "%s did not finish within %.1fs (hub RPC wedged or rate-limited); "
+            "continuing shutdown", what, timeout,
+        )
 
 
 def _exit_with_failure_verdict(runner) -> bool:
@@ -2483,15 +2509,10 @@ class GatewayShutdownMixin:
         # Notify all chats with active agents BEFORE draining — adapters are still connected here.
         # Bounded like the facade's live path: the notify rides hub RPCs the hub may
         # park in platform rate-limit sleeps for minutes (2026-11-20 overlap kill).
-        notify_timeout = self._adapter_disconnect_timeout_secs()
-        if not await self._await_adapter_cleanup_with_timeout(
-            self._notify_active_sessions_of_shutdown(), notify_timeout
-        ):
-            logger.warning(
-                "Shutdown notify of active sessions did not finish within %.1fs "
-                "(hub RPC wedged or rate-limited); continuing shutdown",
-                notify_timeout,
-            )
+        await bounded_head_rpc_await(
+            self, self._notify_active_sessions_of_shutdown(),
+            "Shutdown notify of active sessions",
+        )
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
     async def _stop_drain_active_work(self, timeout: float, ctx: "GatewayShutdownMixin._StopContext") -> None:

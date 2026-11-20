@@ -8780,26 +8780,18 @@ class GatewayRunner(
             # platform REST calls in rate-limit sleeps for minutes (channel
             # rename/edit is exactly that class) — an unbounded await here
             # held stop() past the shutdown watchdog (2026-11-20 overlap kill).
-            _head_rpc_timeout = self._adapter_disconnect_timeout_secs()
-            if not await self._await_adapter_cleanup_with_timeout(
-                self._notify_active_sessions_of_shutdown(), _head_rpc_timeout
-            ):
-                logger.warning(
-                    "Shutdown notify of active sessions did not finish within "
-                    "%.1fs (hub RPC wedged or rate-limited); continuing shutdown",
-                    _head_rpc_timeout,
-                )
+            from gateway.run_shutdown import bounded_head_rpc_await
+
+            await bounded_head_rpc_await(
+                self, self._notify_active_sessions_of_shutdown(),
+                "Shutdown notify of active sessions",
+            )
             try:
                 from gateway.restart_channel_rename import rename_on_shutdown
 
-                if not await self._await_adapter_cleanup_with_timeout(
-                    rename_on_shutdown(self), _head_rpc_timeout
-                ):
-                    logger.warning(
-                        "Shutdown channel rename did not finish within %.1fs "
-                        "(hub RPC wedged or rate-limited); continuing shutdown",
-                        _head_rpc_timeout,
-                    )
+                await bounded_head_rpc_await(
+                    self, rename_on_shutdown(self), "Shutdown channel rename",
+                )
             except Exception:
                 logger.debug(
                     "restart-channel-rename shutdown hook failed", exc_info=True
