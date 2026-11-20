@@ -201,7 +201,7 @@ def read_live_rows(state_path: Optional[Path] = None) -> list[Dict[str, Any]]:
             start_time = int(start_time) if start_time is not None else None
         except (KeyError, TypeError, ValueError):
             continue
-        if pid <= 0 or not _live_start(pid, start_time):
+        if pid <= 0 or not OverlapSuccessorRegistry._live_start(pid, start_time):
             continue
         try:
             live.append({
