@@ -1037,6 +1037,29 @@ class GatewayStartupMixin:
         marker_path.unlink()
         return discarded
 
+    async def _recover_previous_run_sessions(self, clean_marker: Path) -> None:
+        """Recover sessions active at last exit (exact turn markers + 120s recency fallback for
+        marker-less older turns). SKIP after a clean exit — the previous process already drained."""
+        if clean_marker.exists():
+            logger.info("Previous gateway exited cleanly — skipping session suspension")
+            try:
+                discarded = await self._consume_clean_shutdown_marker(clean_marker)
+            except Exception as exc:
+                logger.error(
+                    "Clean-start marker cleanup failed; refusing startup so the "
+                    "clean-exit receipt cannot mask a later unclean exit: %s", exc,
+                )
+                raise RuntimeError("clean-start recovery cleanup failed") from exc
+            if discarded:
+                logger.info("Discarded %d orphan active-turn marker(s) after clean shutdown", discarded)
+            return
+        exact, fallback = await self._recover_unclean_sessions()
+        if exact + fallback:
+            logger.info(
+                "Marked %d in-flight session(s) as resumable from previous run "
+                "(%d exact, %d legacy)", exact + fallback, exact, fallback,
+            )
+
     async def _recover_unclean_sessions(self) -> tuple[int, int]:
         """Recover exact active turns, then run the legacy recency fallback."""
         from gateway.run import _float_env
@@ -1325,28 +1348,7 @@ class GatewayStartupMixin:
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
-        # Recover sessions active at last exit (exact turn markers + 120s recency fallback for
-        # marker-less older turns). SKIP after a clean exit — the previous process already drained.
-        _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
-            logger.info("Previous gateway exited cleanly — skipping session suspension")
-            try:
-                discarded = await self._consume_clean_shutdown_marker(_clean_marker)
-            except Exception as exc:
-                logger.error(
-                    "Clean-start marker cleanup failed; refusing startup so the "
-                    "clean-exit receipt cannot mask a later unclean exit: %s", exc,
-                )
-                raise RuntimeError("clean-start recovery cleanup failed") from exc
-            if discarded:
-                logger.info("Discarded %d orphan active-turn marker(s) after clean shutdown", discarded)
-        else:
-            exact, fallback = await self._recover_unclean_sessions()
-            if exact + fallback:
-                logger.info(
-                    "Marked %d in-flight session(s) as resumable from previous run "
-                    "(%d exact, %d legacy)", exact + fallback, exact, fallback,
-                )
+        await self._recover_previous_run_sessions(_hermes_home / ".clean_shutdown")
         # Stuck-loop detection: a session active across 3+ consecutive restarts is auto-suspended.
         with _log_suppressed(logging.DEBUG, "Stuck-loop detection failed: %s"):
             # Auto-suspend it so the user gets a clean slate on the next message. See #7536.
