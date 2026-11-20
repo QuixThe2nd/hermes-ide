@@ -22,6 +22,8 @@
 //     after tools, each only at/above 0.1s but always subtracted from the
 //     residual; the residual "other" renders only at/above 0.1s. With no
 //     measured phase the legacy single "other" segment renders instead.
+//   - MergePhases folds the gateway's own setup/save spans into the agent's
+//     buckets by per-key sum before PhaseTail; negative values never count.
 package footerfmt
 
 import (
@@ -279,4 +281,44 @@ func ParsePhases(result map[string]float64) map[string]float64 {
 		return nil
 	}
 	return phases
+}
+
+// MergePhases mirrors the merge step of footer_phase_times: the gateway's own
+// phase seconds (pre-run setup, post-run save) and the agent's measured
+// buckets summed per key into one map for PhaseTail. Nil maps and negative
+// values contribute nothing (a negative span is a clock artifact, never time
+// to attribute). Returns nil when nothing contributed so callers keep the
+// legacy single-"other" render.
+func MergePhases(gateway, agent map[string]float64) map[string]float64 {
+	merged := make(map[string]float64)
+	for _, phases := range []map[string]float64{gateway, agent} {
+		for key, seconds := range phases {
+			if seconds >= 0 {
+				merged[key] += seconds
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+// FooterPhases mirrors footer_phase_times: the footer's phase map for one
+// gateway turn. The gateway's pre-run span ("gateway_setup_time": agent
+// build, history load) joins the agent's setup bucket; given the perf-counter
+// stamp the gateway's turn time ends at, the span from "conversation_ended_at"
+// to it (stream drain, final-delivery bookkeeping) joins save. Both spans lie
+// outside run_conversation, so they never overlap api/tool/agent-phase time.
+// A nil turnEndedAt (or no conversation stamp) measures no save span; a stamp
+// later than turnEndedAt yields a negative span that MergePhases drops.
+func FooterPhases(result map[string]float64, turnEndedAt *float64) map[string]float64 {
+	gateway := make(map[string]float64)
+	if setup, ok := result["gateway_setup_time"]; ok {
+		gateway["setup"] = setup
+	}
+	if endedAt, ok := result["conversation_ended_at"]; ok && turnEndedAt != nil {
+		gateway["save"] = *turnEndedAt - endedAt
+	}
+	return MergePhases(gateway, ParsePhases(result))
 }
