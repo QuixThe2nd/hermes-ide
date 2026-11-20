@@ -810,10 +810,45 @@ class GatewayBusySessionMixin:
             if not redirected:
                 self._cancel_steer_delivery(steer_delivery)
                 steer_delivery = None
+        # Steer-driven force-backgrounding: while the parent is BLOCKED inside a
+        # synchronous delegation (the subagent demotion above), the follow-up can
+        # release the blocking waits — the still-running children are adopted onto
+        # the async-delegation rail (never stopped) and the text enters the live
+        # run as a steer. Sessions without registered waits, or a rail refusal,
+        # keep today's queue-behind-the-run demotion.
+        force_backgrounded = False
+        force_background_ids: Tuple[str, ...] = ()
+        steered_text = ""
+        if (
+            effective_mode == "queue" and demoted_for_subagents and plain_text and agent_live
+        ):
+            from tools import delegate_tool_forcebg
+            if delegate_tool_forcebg.has_eligible_blocking_waits(running_agent):
+                call_text = self._steer_text_with_origin((event.text or "").strip(), event)
+                # agent.steer() and the rail dispatch can block; keep the event loop free.
+                accepted, ids = await asyncio.to_thread(
+                    delegate_tool_forcebg.steer_forcing_background, running_agent, call_text
+                )
+                logger.info(
+                    "Busy steer force-background for session %s: %s",
+                    session_key, delegate_tool_forcebg.summary(accepted, ids),
+                )
+                if accepted:
+                    steered_text = call_text
+                    force_background_ids = tuple(ids)
+                    force_backgrounded = bool(ids)
+                    # Either way the text landed inside the run as a steer: nothing may
+                    # ALSO be queued as a next-turn replay (that would double-deliver).
+                    redirected = True
+                    if not force_backgrounded:
+                        steered = True  # rail refused: plain steer, queue receipt would lie
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, redirected=redirected,
             steered=steered, steer_delivery=steer_delivery,
+            force_backgrounded=force_backgrounded,
+            force_background_ids=force_background_ids,
+            steered_text=steered_text,
         )
 
     @staticmethod
@@ -885,6 +920,8 @@ class GatewayBusySessionMixin:
         demoted_for_compression = outcome.demoted_for_compression
         is_queue_mode = effective_mode == "queue"
         is_redirect_mode = effective_mode == "interrupt" and outcome.redirected
+        force_backgrounded = bool(getattr(outcome, "force_backgrounded", False))
+        steered = bool(getattr(outcome, "steered", False))
 
         # This legacy switch covers both the visible ack and its reaction.
         busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
@@ -895,12 +932,13 @@ class GatewayBusySessionMixin:
         if is_redirect_mode:
             await self._maybe_react_discord_busy_redirect(event, adapter, session_key)
 
-        # Accepted redirects are distinct steering inputs, not repeated status
-        # pings: each receives an ack even inside the ordinary busy-ack cooldown.
+        # Accepted redirects AND released/steered follow-ups are distinct steering
+        # inputs, not repeated status pings: each receives an ack even inside the
+        # ordinary busy-ack cooldown.
         now = time.time()
         busy_state = self._peek_session_state(session_key)
         last_ack = busy_state.turn.busy_ack_ts if busy_state else 0
-        if not is_redirect_mode and now - last_ack < 30:
+        if not (is_redirect_mode or force_backgrounded or steered) and now - last_ack < 30:
             return
 
         from gateway.display_config import resolve_display_setting
@@ -938,7 +976,11 @@ class GatewayBusySessionMixin:
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_redirect_mode and getattr(outcome, "steered", False):
+        if force_backgrounded:
+            from tools.delegate_tool_forcebg import busy_receipt
+
+            message = busy_receipt(outcome.force_background_ids, outcome.steered_text)
+        elif is_redirect_mode and getattr(outcome, "steered", False):
             message = f"⏩ Steered into current run{status_detail}."
             if getattr(outcome, "steer_delivery", None) is not None:
                 message += " Delivery will be confirmed once your message is in the model’s context."
@@ -949,6 +991,12 @@ class GatewayBusySessionMixin:
                 f"↪ Redirected current run{status_detail}. "
                 f"I'll adjust using your correction."
             )
+        elif steered:
+            # Queue-mode plain steer (rail refused the force-background adoption):
+            # the text landed inside the run; nothing is queued to replay it.
+            from tools.delegate_tool_forcebg import steered_queue_receipt
+
+            message = steered_queue_receipt(status_detail)
         elif is_queue_mode and demoted_for_subagents:
             message = (
                 f"⏳ Subagent working{status_detail} — your message is queued for "
