@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
+from agent.turn_timing import reset_turn_phase_times, timed_phase
 from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -538,9 +539,10 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
         agent._iters_since_skill = 0
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
-        _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
-        ))
+        with timed_phase(agent, "mem"):
+            _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
+                original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
+            ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
     if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
         _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
@@ -559,6 +561,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
+    reset_turn_phase_times(agent)
     _ensure_codex_session(agent)
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)

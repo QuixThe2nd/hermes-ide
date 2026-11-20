@@ -27,6 +27,7 @@ from agent.model_metadata import estimate_messages_tokens_rough, estimate_reques
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
+from agent.turn_timing import timed_phase
 
 logger = logging.getLogger(__name__)
 
@@ -876,14 +877,14 @@ def _memory_turn_start_and_prefetch(
     _query = original_user_message if isinstance(original_user_message, str) else ""
     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
     _author = turn_author if isinstance(turn_author, dict) else {}
-    with suppress(Exception):
+    with timed_phase(agent, "mem"), suppress(Exception):
         agent._memory_manager.on_turn_start(
             agent._user_turn_count, _query,
             author_id=_author.get("id") or None, author_name=_author.get("name") or None,
             author_is_bot=bool(_author.get("is_bot")),
         )
     ext_prefetch_cache = ""
-    with suppress(Exception):
+    with timed_phase(agent, "mem"), suppress(Exception):
         if not is_trivial_prompt(_query):
             try:
                 ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
@@ -1212,12 +1213,13 @@ def build_turn_context(
     ):
         agent._flush_messages_to_session_db(conversation_history, conversation_history)
 
-    compaction = run_turn_start_compaction(
-        agent, messages=messages, system_message=system_message,
-        active_system_prompt=active_system_prompt, conversation_history=conversation_history,
-        current_turn_user_idx=current_turn_user_idx, user_message=user_message,
-        effective_task_id=effective_task_id,
-    )
+    with timed_phase(agent, "compress"):
+        compaction = run_turn_start_compaction(
+            agent, messages=messages, system_message=system_message,
+            active_system_prompt=active_system_prompt, conversation_history=conversation_history,
+            current_turn_user_idx=current_turn_user_idx, user_message=user_message,
+            effective_task_id=effective_task_id,
+        )
     messages = compaction.messages
     active_system_prompt = compaction.active_system_prompt
     conversation_history = compaction.conversation_history
