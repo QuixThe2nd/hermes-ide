@@ -35,6 +35,7 @@ _KIND_LABELS = [
     ("intro", "👋 Injecting intro"),
     ("surface_switch", "🔀 Injecting surface switch"),
     ("plugin", "🧩 Injecting plugin context"),
+    ("process", "🖥️ Injecting process info"),
 ]
 
 
@@ -61,6 +62,12 @@ def test_known_kind_renders_its_own_heading(kind, label):
     messages = _fmt(kinds=[kind])
     assert messages
     assert _header(messages).startswith(label)
+
+
+def test_process_kind_payload_renders_process_info_heading():
+    # The per-turn serving-process runtime note ("[System note: This turn is
+    # served by …]") gets its own heading, not the generic context one.
+    assert _header(_fmt(kinds=["process"])) == "🖥️ Injecting process info"
 
 
 def test_unknown_kind_renders_generic_heading():
@@ -291,14 +298,14 @@ def test_turn_wiring_accepts_session_state_restored_tagged_entries():
     assert agent._gateway_turn_note_kinds == ["session_reset", None]
 
 
-def test_turn_wiring_tags_transition_note_as_restart_not_the_runtime_note():
-    # The "conversation moved processes" transition note (#829) is a restart
-    # notice; the per-turn serving-identity runtime note names the serving
-    # process on every turn and is NOT a restart notice — it stays
-    # unclassified rather than guessing a label.
+def test_turn_wiring_tags_runtime_note_as_process_and_transition_as_restart():
+    # The per-turn serving-identity runtime note names the serving process on
+    # every turn — kind "process"; the "conversation moved processes"
+    # transition note (#829) is a restart notice. The staged bytes themselves
+    # are unchanged — the kind is display metadata beside them.
     agent = _wire(consumed_notes=[], runtime_note="runtime note", transition_note="moved note")
     assert agent._gateway_turn_context_notes == "runtime note\n\nmoved note"
-    assert agent._gateway_turn_note_kinds == [None, "restart"]
+    assert agent._gateway_turn_note_kinds == ["process", "restart"]
 
 
 def test_turn_wiring_assigns_empty_kinds_when_no_notes_staged():

@@ -27,6 +27,7 @@ CONTEXT_INJECTION_KIND_LABELS = {
     "intro": "👋 Injecting intro",
     "surface_switch": "🔀 Injecting surface switch",
     "plugin": "🧩 Injecting plugin context",
+    "process": "🖥️ Injecting process info",
 }
 
 CONTEXT_INJECTION_GENERIC_LABEL = "🧠 Injecting context"

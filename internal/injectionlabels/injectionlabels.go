@@ -52,6 +52,7 @@ var KindLabels = map[string]string{
 	"intro":          "👋 Injecting intro",
 	"surface_switch": "🔀 Injecting surface switch",
 	"plugin":         "🧩 Injecting plugin context",
+	"process":        "🖥️ Injecting process info",
 }
 
 // MemoryHeading renders the memory heading. A positive recalledCount is
