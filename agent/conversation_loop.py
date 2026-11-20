@@ -98,6 +98,7 @@ from agent.turn_request_assembly import (
 )
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
+from agent.turn_timing import reset_turn_phase_times, timed_setup_exclusive
 from agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -1461,6 +1462,12 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
                 return None
     return None
 
+def _timed_build_turn_context(agent, *args, **kwargs):
+    """build_turn_context with its wall time claimed as the ``setup`` bucket
+    (minus mem/compress its sub-phases claim — see timed_setup_exclusive)."""
+    with timed_setup_exclusive(agent):
+        return build_turn_context(agent, *args, **kwargs)
+
 
 def _run_conversation_turn(
     agent,
@@ -1503,7 +1510,7 @@ def _run_conversation_turn(
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
-        _ctx = build_turn_context(
+        _ctx = _timed_build_turn_context(
             agent, user_message, system_message, conversation_history, task_id,
             stream_callback, persist_user_message, persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
@@ -1730,8 +1737,11 @@ def _run_conversation_inlined(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
+    # Phase buckets reset BEFORE the prologue: build_turn_context itself
+    # claims mem/setup/compress time, and a later reset would wipe it.
+    reset_turn_phase_times(agent)
     try:
-        _ctx = build_turn_context(
+        _ctx = _timed_build_turn_context(
             agent,
             user_message,
             system_message,

@@ -4750,10 +4750,17 @@ class AIAgent(
                 _api_t = getattr(self, "_turn_api_time", 0.0) or 0.0
                 _tool_t = getattr(self, "_turn_tool_time", 0.0) or 0.0
                 _tool_n = getattr(self, "_turn_tool_calls", 0) or 0
-                if _api_t or _tool_t or _tool_n:
+                _phase_t = {
+                    key: getattr(self, f"_turn_{key}_time", 0.0) or 0.0
+                    for key in ("mem", "setup", "compress", "save")
+                }
+                if _api_t or _tool_t or _tool_n or any(_phase_t.values()):
                     result.setdefault("api_time", _api_t)
                     result.setdefault("tool_time", _tool_t)
                     result.setdefault("tool_calls", _tool_n)
+                    for key, seconds in _phase_t.items():
+                        if seconds:
+                            result.setdefault(f"{key}_time", seconds)
             return result
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (

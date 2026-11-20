@@ -8,6 +8,8 @@ from gateway.runtime_footer import (
     _format_duration,
     build_footer_line,
     format_runtime_footer,
+    phase_times_from_result,
+    turn_metrics,
 )
 
 
@@ -130,3 +132,50 @@ def test_build_footer_wires_timing_values_end_to_end():
         api_calls=3,
     )
     assert out == "x · 0% · 1m10s · api 42s · tools 15s · other 13s · 3 calls"
+
+@pytest.mark.parametrize(
+    "turn,api,tool,n_calls,n_tools,phases,expected",
+    [
+        # Fixed order after tools; residual renders above threshold.
+        (20.0, 11.0, 0.0, 1, 0, {"save": 0.2, "compress": 5.0, "setup": 0.4, "mem": 3.2},
+         "x · 0% · 20s · api 11s · tools 0 · mem 3.2s · setup 0.4s · "
+         "compress 5.0s · save 0.2s · other 0.2s · 1 call"),
+        # A 0.05s phase renders nothing yet shrinks the residual.
+        (30.0, 15.0, 0.0, 1, 0, {"mem": 0.05, "setup": 4.9},
+         "x · 0% · 30s · api 15s · tools 0 · setup 4.9s · other 10s · 1 call"),
+        # Sub-threshold residual `other` renders nothing.
+        (30.0, 15.0, 14.0, 1, 0, {"mem": 0.05, "setup": 0.02},
+         "x · 0% · 30s · api 15s · tools 0 · other 0.9s · 1 call"),
+        # No measured phases (None or {}): legacy single `other`.
+        (70.0, 42.0, 15.0, 3, None, None,
+         "x · 0% · 1m10s · api 42s · tools 15s · other 13s · 3 calls"),
+        (70.0, 42.0, 15.0, 3, None, {},
+         "x · 0% · 1m10s · api 42s · tools 15s · other 13s · 3 calls"),
+        # Unknown phase keys are ignored, not rendered or attributed.
+        (30.0, 14.0, 0.0, 1, 0, {"bogus": 5.0, "mem": 1.0},
+         "x · 0% · 30s · api 14s · tools 0 · mem 1.0s · other 15s · 1 call"),
+    ],
+)
+def test_footer_phase_tail_rules(turn, api, tool, n_calls, n_tools, phases, expected):
+    out = format_runtime_footer(
+        model="x", context_tokens=0, context_length=100,
+        turn_time=turn, api_time=api, tool_time=tool,
+        api_calls=n_calls, tool_calls=n_tools, phase_times=phases,
+    )
+    assert out == expected
+
+
+def test_phase_times_from_result_maps_measured_keys_and_none_without_them():
+    assert phase_times_from_result(
+        {"mem_time": 3.2, "save_time": 0.2, "api_time": 1.0}
+    ) == {"mem": 3.2, "save": 0.2}
+    for result in (None, {}, {"api_time": 1.0}, {"mem_time": None, "setup_time": None}):
+        assert phase_times_from_result(result) is None
+
+
+def test_turn_metrics_carries_phase_times_for_every_return_path():
+    metrics = turn_metrics(
+        {"api_time": 1.0, "tool_time": 0.0, "tool_calls": 0, "mem_time": 0.5}
+    )
+    assert metrics["mem_time"] == 0.5
+    assert metrics["compress_time"] is None
