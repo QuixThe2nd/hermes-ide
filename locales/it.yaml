@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Errore: {error}"
+    switched:               "Modello cambiato a `{model}`"
+    provider_label:         "Provider: {provider}"
+    context_label:          "Contesto: {tokens} token"
+    max_output_label:       "Output massimo: {tokens} token"
+    capabilities_label:     "Capacità: {capabilities}"
+    prompt_caching_enabled: "Caching dei prompt: attivo"
+    warning_prefix:         "Avviso: {warning}"
+    saved_global:           "Salvato in config.yaml (`--global`)"
+    session_only_hint:      "_(solo per questa sessione — aggiungi `--global` per renderlo permanente)_"
+    current_label:          "Attuale: `{model}` su {provider}"
+    current_tag:            " (attuale)"
+    more_models_suffix:     " (+{count} altri)"
+    usage_switch_model:     "`/model <name>` — cambia modello"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — cambia provider"
+    usage_persist:          "`/model <name> --global` — rendi permanente"
+
+  reasoning:
+    unknown_arg:               "⚠️ Argomento sconosciuto: `{arg}`\n\n**Livelli validi:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualizzazione:** show, hide\n**Persistenza:** aggiungi `--global` per salvare oltre questa sessione"
+    set_global:                "🧠 ✓ Sforzo di reasoning impostato su `{effort}` (salvato nella configurazione)\n_(verrà applicato al prossimo messaggio)_"
+    set_global_save_failed:    "🧠 ✓ Sforzo di reasoning impostato su `{effort}` (solo per questa sessione — salvataggio della configurazione non riuscito)\n_(verrà applicato al prossimo messaggio)_"
+    set_session:               "🧠 ✓ Sforzo di reasoning impostato su `{effort}` (solo per questa sessione — aggiungi `--global` per renderlo permanente)\n_(verrà applicato al prossimo messaggio)_"
+
   draining:         "⏳ Chiedo a {count} agente/i attivo/i di mettersi in pausa, poi riavvio..."
   goal_cleared:     "✓ Obiettivo cancellato."
   no_active_goal:   "Nessun obiettivo attivo."

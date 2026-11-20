@@ -1,9 +1,9 @@
-"""Removed batch-3 slash commands: /reset alias, /reasoning, /model, /personality, /fast."""
+"""Removed batch-3 slash commands: /reset alias, /reasoning, /personality, /fast."""
 
 
 from hermes_cli import commands as cmd_mod
 
-REMOVED = ["reasoning", "model", "personality", "fast"]
+REMOVED = ["reasoning", "personality", "fast"]
 
 
 def test_removed_commands_do_not_resolve():

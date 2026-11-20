@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Erro: {error}"
+    switched:               "Modelo alterado para `{model}`"
+    provider_label:         "Fornecedor: {provider}"
+    context_label:          "Contexto: {tokens} tokens"
+    max_output_label:       "Saída máxima: {tokens} tokens"
+    capabilities_label:     "Capacidades: {capabilities}"
+    prompt_caching_enabled: "Cache de prompts: ativado"
+    warning_prefix:         "Aviso: {warning}"
+    saved_global:           "Guardado em config.yaml (`--global`)"
+    session_only_hint:      "_(apenas para esta sessão — adiciona `--global` para tornar permanente)_"
+    current_label:          "Atual: `{model}` em {provider}"
+    current_tag:            " (atual)"
+    more_models_suffix:     " (+{count} mais)"
+    usage_switch_model:     "`/model <name>` — mudar de modelo"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — mudar de fornecedor"
+    usage_persist:          "`/model <name> --global` — guardar permanentemente"
+
+  reasoning:
+    unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
+    set_global:                "🧠 ✓ Esforço de raciocínio definido como `{effort}` (guardado na configuração)\n_(produz efeito na próxima mensagem)_"
+    set_global_save_failed:    "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — falha ao guardar a configuração)\n_(produz efeito na próxima mensagem)_"
+    set_session:               "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — adiciona `--global` para persistir)\n_(produz efeito na próxima mensagem)_"
+
   draining:         "⏳ A pedir a {count} agente(s) ativo(s) que pausem, depois reiniciar..."
   goal_cleared:     "✓ Objetivo removido."
   no_active_goal:   "Não há objetivo ativo."

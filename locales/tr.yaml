@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Hata: {error}"
+    switched:               "Model `{model}` olarak değiştirildi"
+    provider_label:         "Sağlayıcı: {provider}"
+    context_label:          "Bağlam: {tokens} token"
+    max_output_label:       "Maks. çıktı: {tokens} token"
+    capabilities_label:     "Yetenekler: {capabilities}"
+    prompt_caching_enabled: "Prompt önbelleği: etkin"
+    warning_prefix:         "Uyarı: {warning}"
+    saved_global:           "config.yaml'a kaydedildi (`--global`)"
+    session_only_hint:      "_(yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)_"
+    current_label:          "Geçerli: `{model}` ({provider})"
+    current_tag:            " (geçerli)"
+    more_models_suffix:     " (+{count} tane daha)"
+    usage_switch_model:     "`/model <name>` — modeli değiştir"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
+    usage_persist:          "`/model <name> --global` — kalıcı kaydet"
+
+  reasoning:
+    unknown_arg:               "⚠️ Bilinmeyen argüman: `{arg}`\n\n**Geçerli seviyeler:** none, minimal, low, medium, high, xhigh, max, ultra\n**Görüntüleme:** show, hide\n**Kalıcı:** bu oturumun ötesinde kaydetmek için `--global` ekleyin"
+    set_global:                "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yapılandırmaya kaydedildi)\n_(sonraki mesajda etkili)_"
+    set_global_save_failed:    "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — yapılandırma kaydedilemedi)\n_(sonraki mesajda etkili)_"
+    set_session:               "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)\n_(sonraki mesajda etkili)_"
+
   draining:         "⏳ {count} aktif ajanın duraklaması isteniyor, ardından yeniden başlatılıyor..."
   goal_cleared:     "✓ Hedef temizlendi."
   no_active_goal:   "Aktif hedef yok."

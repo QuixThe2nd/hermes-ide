@@ -1129,8 +1129,8 @@ class GatewayBusySessionMixin:
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "memory", "skills",
-        "codex-runtime", "suggestions", "save", "retry",
+        "whoami", "platform", "stop", "memory", "skills",
+        "codex-runtime", "suggestions", "save", "retry", "model",
         "setnotify", "clearnotify", "compress", "insights", "reload-mcp", "reload-skills",
         "debug", "title", "resume", "sessions", "branch", "rollback", "diff",
         "loop", "refine", "review",

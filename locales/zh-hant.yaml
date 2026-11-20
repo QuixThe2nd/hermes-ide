@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "錯誤：{error}"
+    switched:               "已切換模型為 `{model}`"
+    provider_label:         "提供方：{provider}"
+    context_label:          "上下文：{tokens} tokens"
+    max_output_label:       "最大輸出：{tokens} tokens"
+    capabilities_label:     "能力：{capabilities}"
+    prompt_caching_enabled: "提示快取：已啟用"
+    warning_prefix:         "警告：{warning}"
+    saved_global:           "已儲存到 config.yaml（`--global`）"
+    session_only_hint:      "_（僅本次工作階段有效 — 加上 `--global` 可永久儲存）_"
+    current_label:          "目前：`{model}`（{provider}）"
+    current_tag:            "（目前）"
+    more_models_suffix:     "（還有 {count} 個）"
+    usage_switch_model:     "`/model <name>` — 切換模型"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — 切換提供方"
+    usage_persist:          "`/model <name> --global` — 永久儲存"
+
+  reasoning:
+    unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh, max, ultra\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
+    set_global:                "🧠 ✓ 推理強度已設定為 `{effort}`（已儲存到設定）\n_（下一則訊息生效）_"
+    set_global_save_failed:    "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）\n_（下一則訊息生效）_"
+    set_session:               "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）\n_（下一則訊息生效）_"
+
   draining:         "⏳ 正在請 {count} 個活躍代理暫停後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"
   no_active_goal:   "目前沒有作用中的目標。"

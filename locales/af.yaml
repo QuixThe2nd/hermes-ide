@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Fout: {error}"
+    switched:               "Model verander na `{model}`"
+    provider_label:         "Verskaffer: {provider}"
+    context_label:          "Konteks: {tokens} tokens"
+    max_output_label:       "Maks. uitvoer: {tokens} tokens"
+    capabilities_label:     "Vermoëns: {capabilities}"
+    prompt_caching_enabled: "Prompt-kasing: geaktiveer"
+    warning_prefix:         "Waarskuwing: {warning}"
+    saved_global:           "Gestoor in config.yaml (`--global`)"
+    session_only_hint:      "_(slegs sessie — voeg `--global` by om permanent te stoor)_"
+    current_label:          "Huidig: `{model}` op {provider}"
+    current_tag:            " (huidig)"
+    more_models_suffix:     " (+{count} meer)"
+    usage_switch_model:     "`/model <name>` — verander model"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — verander verskaffer"
+    usage_persist:          "`/model <name> --global` — stoor permanent"
+
+  reasoning:
+    unknown_arg:               "⚠️ Onbekende argument: `{arg}`\n\n**Geldige vlakke:** none, minimal, low, medium, high, xhigh, max, ultra\n**Vertoon:** show, hide\n**Permanent:** voeg `--global` by om verby hierdie sessie te stoor"
+    set_global:                "🧠 ✓ Redenering-inspanning gestel op `{effort}` (gestoor in konfigurasie)\n_(neem effek by die volgende boodskap)_"
+    set_global_save_failed:    "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — konfigurasie-stoor het misluk)\n_(neem effek by die volgende boodskap)_"
+    set_session:               "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — voeg `--global` by om permanent te stoor)\n_(neem effek by die volgende boodskap)_"
+
   draining:         "⏳ Vra {count} aktiewe agent(e) om te parkeer, dan herbegin..."
   goal_cleared:     "✓ Doelwit verwyder."
   no_active_goal:   "Geen aktiewe doelwit nie."

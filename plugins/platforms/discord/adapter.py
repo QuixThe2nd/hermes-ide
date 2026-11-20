@@ -203,6 +203,9 @@ _NATIVE_SLASH_COMMANDS: tuple = (
     ("retry", "Retry your last message", (), "/retry", "Retrying~"),
     ("undo", "Remove the last exchange", (), "/undo", None),
     ("status", "Show Hermes session status", (), "/status", "Status sent~"),
+    ("model", "Show or change the model",
+     (("name", str, "", "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.", None),),
+     "/model {name}", None),
     # Discord-only provisioning command; the gateway handler rejects it on
     # every other platform, and Slack reaches it via /hermes sethomeserver.
     ("sethomeserver", "Provision and wire the Discord home server",

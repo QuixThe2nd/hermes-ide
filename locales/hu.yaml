@@ -2,6 +2,31 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 gateway:
+
+  model:
+    error_prefix:           "Hiba: {error}"
+    switched:               "Modell átváltva: `{model}`"
+    provider_label:         "Szolgáltató: {provider}"
+    context_label:          "Kontextus: {tokens} token"
+    max_output_label:       "Max. kimenet: {tokens} token"
+    capabilities_label:     "Képességek: {capabilities}"
+    prompt_caching_enabled: "Prompt-gyorsítótárazás: bekapcsolva"
+    warning_prefix:         "Figyelmeztetés: {warning}"
+    saved_global:           "Mentve a config.yaml fájlba (`--global`)"
+    session_only_hint:      "_(csak ehhez a munkamenethez — add hozzá a `--global` opciót a megőrzéshez)_"
+    current_label:          "Aktuális: `{model}` ezen: {provider}"
+    current_tag:            " (aktuális)"
+    more_models_suffix:     " (+{count} további)"
+    usage_switch_model:     "`/model <name>` — modell váltása"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — szolgáltató váltása"
+    usage_persist:          "`/model <name> --global` — megőrzés"
+
+  reasoning:
+    unknown_arg:               "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes szintek:** none, minimal, low, medium, high, xhigh, max, ultra\n**Megjelenítés:** show, hide\n**Megőrzés:** add hozzá a `--global` opciót a munkameneten túli mentéshez"
+    set_global:                "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (mentve a konfigurációba)\n_(a következő üzenettől lép életbe)_"
+    set_global_save_failed:    "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — a konfiguráció mentése sikertelen)\n_(a következő üzenettől lép életbe)_"
+    set_session:               "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — add hozzá a `--global` opciót a megőrzéshez)\n_(a következő üzenettől lép életbe)_"
+
   draining:         "⏳ {count} aktív ügynököt kérünk, hogy álljon meg, majd újraindítás..."
   goal_cleared:     "✓ A cél törölve."
   no_active_goal:   "Nincs aktív cél."

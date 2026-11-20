@@ -57,6 +57,10 @@ curl -fsSL https://raw.githubusercontent.com/QuixThe2nd/hermes-ide/main/scripts/
 
 Then `hermes setup`, make a Discord server for you and your bot, and run `/sethomeserver`.
 
+Slash commands are shared across the CLI and every messaging platform: `/model` with no
+arguments lists the active model and what you can switch to; `/model <name>` switches to it
+for the session (`--global` persists the choice).
+
 ## More
 
 - [FEATURES.md](FEATURES.md) — the long version: every subsystem, flag and behaviour.
