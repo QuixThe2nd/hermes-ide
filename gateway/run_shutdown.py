@@ -2481,7 +2481,17 @@ class GatewayShutdownMixin:
             await stop_watchdog()
         await self._cancel_secondary_profile_reconnect_tasks()
         # Notify all chats with active agents BEFORE draining — adapters are still connected here.
-        await self._notify_active_sessions_of_shutdown()
+        # Bounded like the facade's live path: the notify rides hub RPCs the hub may
+        # park in platform rate-limit sleeps for minutes (2026-11-20 overlap kill).
+        notify_timeout = self._adapter_disconnect_timeout_secs()
+        if not await self._await_adapter_cleanup_with_timeout(
+            self._notify_active_sessions_of_shutdown(), notify_timeout
+        ):
+            logger.warning(
+                "Shutdown notify of active sessions did not finish within %.1fs "
+                "(hub RPC wedged or rate-limited); continuing shutdown",
+                notify_timeout,
+            )
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
     async def _stop_drain_active_work(self, timeout: float, ctx: "GatewayShutdownMixin._StopContext") -> None:
