@@ -656,21 +656,38 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     return [], [], []
 
 
-def _post_workspace_parts(agent: Any) -> List[str]:
-    """Blocks that follow the worktree-specific context: environment probe
-    (config.yaml agent.environment_probe; one line, nothing when clean, skipped
-    for remote backends), bot-mode protocol, profile line, platform hint."""
+def _post_workspace_parts(agent: Any) -> Tuple[List[str], List[Tuple[str, Optional[str]]]]:
+    """Blocks that follow the worktree-specific context, with their manifest
+    rows: environment probe (config.yaml agent.environment_probe; one line,
+    nothing when clean, skipped for remote backends), bot-mode protocol,
+    profile line, platform hint. Returns ``(parts, sections)`` — *sections*
+    carries one ``(kind, detail)`` row per part that actually landed, for the
+    session-context injection card (agent/turn_context.py)."""
     parts: List[str] = []
+    sections: List[Tuple[str, Optional[str]]] = []
     if getattr(agent, "_environment_probe", True):
         try:
             from tools.env_probe import get_environment_probe_line
-            parts.append(get_environment_probe_line())
+            _probe = get_environment_probe_line()
+            if _probe:
+                parts.append(_probe)
+                sections.append(("environment", None))
         except Exception:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
-        parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), platform_hint(agent)]
-    return parts
+        _bot_parts = _bot_mode_parts(agent)
+        if _bot_parts:
+            parts.extend(_bot_parts)
+            sections.append(("bot_mode", None))
+    _profile = _active_profile_line(agent)
+    if _profile:
+        parts.append(_profile)
+        sections.append(("profile", None))
+    _hint = platform_hint(agent)
+    if _hint:
+        parts.append(_hint)
+        sections.append(("platform", agent.platform or None))
+    return parts, sections
 
 
 def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -> List[str]:
@@ -703,41 +720,72 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
+    # Section manifest for the session-context injection card
+    # (agent/turn_context.py): one (kind, detail) row per block that actually
+    # landed, in prompt order, so the card inventories what THIS session's
+    # system prompt carries. Memory is excluded — it has its own sha-gated
+    # card. A restore path that reconstructs the prefix from stored bytes
+    # records no manifest, and the card simply stays silent there.
+    _manifest: List[Tuple[str, Optional[str]]] = []
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    _manifest.append(("identity", "soul" if _soul_loaded else "default"))
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
     _help_guidance_slot = len(stable_parts)
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
-    stable_parts.extend(_guidance_parts(agent))
+    _manifest.append(("docs", None))
+    _guidance_parts_landed = _guidance_parts(agent)
+    stable_parts.extend(_guidance_parts_landed)
+    if _guidance_parts_landed:
+        _manifest.append(("guidance", str(len(_guidance_parts_landed))))
     skills_prompt = _skills_prompt(agent)
+    if skills_prompt:
+        _manifest.append(("skills_index", None))
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
-    stable_parts.extend(_alibaba_identity_part(agent))
+    _alibaba_parts = _alibaba_identity_part(agent)
+    stable_parts.extend(_alibaba_parts)
+    if _alibaba_parts:
+        _manifest.append(("alibaba_identity", None))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
-    stable_parts.extend(_auto_load_parts(agent))
+    _auto_parts = _auto_load_parts(agent)
+    stable_parts.extend(_auto_parts)
+    if _auto_parts:
+        _manifest.append(("auto_skills", str(len(_auto_parts))))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.
     environment_hints = _pb.build_environment_hints()
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
     stable_parts.extend(coding_prefix_parts)
-    post_workspace_parts = _post_workspace_parts(agent)
+    if coding_prefix_parts:
+        _manifest.append(("coding_brief", None))
+    post_workspace_parts, post_workspace_sections = _post_workspace_parts(agent)
     # ── Context tier (project/worktree-dependent, may change between sessions) ──
     context_parts: List[str] = []
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
-    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+        _manifest.append(("caller_system", None))
+    _context_files_landed = [
+        _part for _part in _context_files_part(agent, _ctx_len, _soul_loaded) if _part and _part.strip()
+    ]
+    context_parts.extend(_context_files_landed)
+    if _context_files_landed:
+        _manifest.append(("context_files", None))
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
+        _manifest.append(("workspace", None))
+        _manifest.extend(post_workspace_sections)
     else:
         # Preserve the stable placement for non-workspace sessions; there is no
         # worktree snapshot whose later position would improve their prefix.
         stable_parts.extend([*coding_trailing_parts, *post_workspace_parts])
+        _manifest.extend(post_workspace_sections)
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
@@ -754,14 +802,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = [skills_prompt, *memory_blocks]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
-    volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
+    _plugin_sections_frozen = _frozen_plugin_prompt_sections(agent)
+    volatile_parts.extend(_plugin_section_blocks(_plugin_sections_frozen, "after_memory"))
+    if _plugin_sections_frozen:
+        _manifest.append(("plugins", str(len(_plugin_sections_frozen))))
     volatile_parts.append(_timestamp_line(agent))
+    _manifest.append(("timestamp", None))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.
     if environment_hints:
         # Embedder hints are prose too; reserve the delimiter for the renderer.
         environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
+        _manifest.append(("runtime_env", None))
+    agent._system_prompt_section_manifest = _manifest
     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
 
 

@@ -145,11 +145,11 @@ def _reset_session_memory_card_state():
     """The session-scoped hash registry is process state; every test starts dry
     (all fake agents share session id "sess-1", so leakage would cross-contaminate
     the emission assertions)."""
-    from agent import turn_context as _tc
+    from agent import context_injection_cards as _cic
 
-    _tc._MEMORY_CARD_STATE.clear()
+    _cic._SESSION_CARD_SHAS.clear()
     yield
-    _tc._MEMORY_CARD_STATE.clear()
+    _cic._SESSION_CARD_SHAS.clear()
 
 
 class TestMemoryCardEmission:
@@ -266,9 +266,9 @@ class TestMemoryCardEmission:
         agent._last_memory_blocks = ["MEMORY-BLOCK"]
         with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
             _build(agent, moa_active=True)
-        from agent.turn_context import _MEMORY_CARD_STATE
+        from agent.context_injection_cards import _SESSION_CARD_SHAS
 
-        assert _MEMORY_CARD_STATE == {}
+        assert _SESSION_CARD_SHAS == {}
         with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
             _build(agent)
         assert len(agent.tool_progress_events) == 1
@@ -607,37 +607,37 @@ class TestSessionMemoryCardRegistry:
     """Unit coverage for the process-scoped per-session hash registry."""
 
     def test_remember_and_lookup_roundtrip(self):
-        from agent.turn_context import (
-            _remember_session_memory_card_sha,
-            _session_memory_card_sha,
+        from agent.context_injection_cards import (
+            remember_session_card_sha,
+            session_card_sha,
         )
 
-        assert _session_memory_card_sha("sess-1") is None
-        _remember_session_memory_card_sha("sess-1", "abc")
-        assert _session_memory_card_sha("sess-1") == "abc"
+        assert session_card_sha("sess-1") is None
+        remember_session_card_sha("sess-1", "abc")
+        assert session_card_sha("sess-1") == "abc"
 
     def test_sessionless_keys_are_ignored(self):
-        from agent.turn_context import (
-            _MEMORY_CARD_STATE,
-            _remember_session_memory_card_sha,
-            _session_memory_card_sha,
+        from agent.context_injection_cards import (
+            _SESSION_CARD_SHAS,
+            remember_session_card_sha,
+            session_card_sha,
         )
 
         for absent in (None, "", "   ", 123):
-            assert _session_memory_card_sha(absent) is None
-            _remember_session_memory_card_sha(absent, "abc")
-        assert _MEMORY_CARD_STATE == {}
+            assert session_card_sha(absent) is None
+            remember_session_card_sha(absent, "abc")
+        assert _SESSION_CARD_SHAS == {}
 
     def test_registry_is_bounded_and_evicts_oldest_first(self):
-        from agent.turn_context import (
-            _MEMORY_CARD_STATE,
-            _remember_session_memory_card_sha,
-            _session_memory_card_sha,
+        from agent.context_injection_cards import (
+            _SESSION_CARD_SHAS,
+            remember_session_card_sha,
+            session_card_sha,
         )
 
-        with patch("agent.turn_context._MEMORY_CARD_STATE_MAX", 1):
-            _remember_session_memory_card_sha("sess-old", "h1")
-            _remember_session_memory_card_sha("sess-new", "h2")
-        assert sorted(_MEMORY_CARD_STATE) == ["sess-new"]
+        with patch("agent.context_injection_cards._SESSION_CARD_SHAS_MAX", 1):
+            remember_session_card_sha("sess-old", "h1")
+            remember_session_card_sha("sess-new", "h2")
+        assert sorted(_SESSION_CARD_SHAS) == ["sess-new"]
         # An evicted session re-announces once — restart semantics.
-        assert _session_memory_card_sha("sess-old") is None
+        assert session_card_sha("sess-old") is None
