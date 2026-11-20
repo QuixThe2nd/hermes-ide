@@ -21,13 +21,15 @@ Invariants:
 import logging
 import threading
 import time
-import weakref
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.RLock()
-_WAITS: "weakref.WeakKeyDictionary[Any, List['_BlockingWait']]" = weakref.WeakKeyDictionary()
+# Keyed by ``id(parent)`` with the parent held strongly beside its waits: agents need not be
+# weak-referenceable or hashable (slotted/namespace doubles), and every registration is
+# removed in ``await_child``'s ``finally``, so the id cannot be recycled while registered.
+_WAITS: "Dict[int, Tuple[Any, List['_BlockingWait']]]" = {}
 
 
 class _BlockingWait:
@@ -85,8 +87,7 @@ def register_blocking_wait(run: Any, future: Any, settled: threading.Event) -> O
         return None
     wait = _BlockingWait(run, future, settled)
     with _LOCK:
-        waits = _WAITS.setdefault(parent_agent, [])
-        waits.append(wait)
+        _WAITS.setdefault(id(parent_agent), (parent_agent, []))[1].append(wait)
     return wait
 
 
@@ -95,30 +96,36 @@ def unregister_blocking_wait(run: Any, wait: Optional[_BlockingWait]) -> None:
         return
     parent_agent = getattr(run, "parent_agent", None)
     with _LOCK:
-        waits = _WAITS.get(parent_agent)
-        if waits and wait in waits:
+        waits = _waits_for(parent_agent)
+        if wait in waits:
             waits.remove(wait)
-        if waits is not None and not waits and parent_agent in _WAITS:
-            del _WAITS[parent_agent]
+        if not waits and _WAITS.get(id(parent_agent), (None,))[0] is parent_agent:
+            del _WAITS[id(parent_agent)]
+
+
+def _waits_for(parent_agent: Any) -> List[_BlockingWait]:
+    """The registered wait list for *parent_agent* (empty when none). Caller holds ``_LOCK``."""
+    held = _WAITS.get(id(parent_agent))
+    return held[1] if held is not None and held[0] is parent_agent else []
 
 
 def registered_wait_count(parent_agent: Any) -> int:
     """How many still-running, unadopted waits are registered (live only — a
     settled worker leaves no phantom, matching internal/forcebg LiveCount)."""
     with _LOCK:
-        return sum(1 for w in _WAITS.get(parent_agent) or () if w.live())
+        return sum(1 for w in _waits_for(parent_agent) if w.live())
 
 
 def has_eligible_blocking_waits(parent_agent: Any) -> bool:
     """True when at least one still-running, unadopted wait is registered for the
     agent — the gateway's cheap gate before it commits to the release path."""
     with _LOCK:
-        return any(w.live() for w in _WAITS.get(parent_agent) or ())
+        return any(w.live() for w in _waits_for(parent_agent))
 
 
 def _live_waits_for(parent_agent: Any) -> List[_BlockingWait]:
     with _LOCK:
-        return [w for w in _WAITS.get(parent_agent) or () if w.live()]
+        return [w for w in _waits_for(parent_agent) if w.live()]
 
 
 def adopt(wait: _BlockingWait, join_inflight: float = 5.0) -> Optional[str]:
