@@ -63,6 +63,9 @@ migrated or deleted while moving toward a 100% Go codebase; do not grow it.
 `.github/workflows/go-line-balance.yml` enforces this mechanically: every PR
 must keep `python added lines <= go added lines`, and a violating diff cannot
 merge (the check is required via "All required checks pass").
+Net Python deletions — where deleted `.py` lines are at least 10x the added
+`.py` lines — pass, so removal/cleanup PRs whose dedented leftovers git
+counts as added lines aren't blocked.
 
 ## Contribution Rubric — What We Want / What We Don't
 

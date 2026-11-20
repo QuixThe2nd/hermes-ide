@@ -7,7 +7,8 @@ name: Go Line Balance
 # it counts lines ADDED between the change's merge-base and its head,
 # classifies them by path suffix (.py vs .go), and fails the build when
 # pythonLineDiff > golangLineDiff. Added lines only — deletions never
-# offset additions, there are no path filters and no exemptions.
+# offset additions — there are no path filters, and one exemption: a net
+# Python deletion (python deleted lines >= 10x python added lines) passes.
 #
 # Runs unconditionally from ci.yaml (no change-classifier gate) so every
 # PR and every push to main is measured.
