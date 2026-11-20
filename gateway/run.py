@@ -7680,43 +7680,7 @@ class GatewayRunner(
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
-        # Recover sessions that were active when the gateway last exited.
-        # Exact durable turn markers cover long-running work; the 120-second
-        # recency heuristic remains as an upgrade fallback for turns started by
-        # older Hermes versions that did not write exact markers.
-        #
-        # SKIP suspension after a clean (graceful) shutdown — the previous
-        # process already drained active agents, so sessions aren't stuck.
-        # This prevents unwanted auto-resets after `hermes update`,
-        # `hermes gateway restart`, or `/restart`.
-        _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
-            logger.info("Previous gateway exited cleanly — skipping session suspension")
-            try:
-                discarded = await self._consume_clean_shutdown_marker(_clean_marker)
-            except Exception as exc:
-                logger.error(
-                    "Clean-start marker cleanup failed; refusing startup so the "
-                    "clean-exit receipt cannot mask a later unclean exit: %s",
-                    exc,
-                )
-                raise RuntimeError("clean-start recovery cleanup failed") from exc
-            if discarded:
-                logger.info(
-                    "Discarded %d orphan active-turn marker(s) after clean shutdown",
-                    discarded,
-                )
-        else:
-            exact, fallback = await self._recover_unclean_sessions()
-            recovered = exact + fallback
-            if recovered:
-                logger.info(
-                    "Marked %d in-flight session(s) as resumable from previous run "
-                    "(%d exact, %d legacy)",
-                    recovered,
-                    exact,
-                    fallback,
-                )
+        await self._recover_previous_run_sessions(_hermes_home / ".clean_shutdown")
 
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same

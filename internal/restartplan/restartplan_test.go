@@ -2,6 +2,7 @@ package restartplan
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +26,10 @@ type sharedCase struct {
 	SuccessorStarted    bool `json:"successor_started"`
 	NewerLiveGeneration bool `json:"newer_live_generation"`
 	ExpectExitCode      *int `json:"expect_exit_code"`
+	// probe_failed rows: the newer-generation probe raised instead of
+	// answering; expect_probe_error marks a row whose decision is an error.
+	ProbeFailed      bool `json:"probe_failed"`
+	ExpectProbeError bool `json:"expect_probe_error"`
 }
 
 func loadSharedCases(t *testing.T) []sharedCase {
@@ -76,6 +81,10 @@ func TestSharedTable(t *testing.T) {
 						tc.Trigger, tc.Supervised, tc.Container, got, *tc.ExpectPlan)
 				}
 			case "exit_code":
+				if tc.ProbeFailed {
+					checkProbeFailedCase(t, tc)
+					return
+				}
 				got := ResolveExitCode(tc.RestartRequested, tc.ViaService, tc.SuccessorStarted, tc.Supervised, tc.NewerLiveGeneration)
 				special := tc.ExpectExitCode != nil
 				if got.Special != special || (special && got.Code != *tc.ExpectExitCode) {
@@ -86,6 +95,68 @@ func TestSharedTable(t *testing.T) {
 				t.Fatalf("unknown op %q", tc.Op)
 			}
 		})
+	}
+}
+
+func checkProbeFailedCase(t *testing.T, tc sharedCase) {
+	t.Helper()
+	got, err := ResolveExitCodeProbeFailed(tc.RestartRequested, tc.ViaService, tc.SuccessorStarted, tc.Supervised)
+	if tc.ExpectProbeError {
+		if !errors.Is(err, ErrProbeUnanswered) {
+			t.Fatalf("ResolveExitCodeProbeFailed(%+v) = %+v, %v; want ErrProbeUnanswered", tc, got, err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("ResolveExitCodeProbeFailed(%+v): unexpected error %v", tc, err)
+	}
+	special := tc.ExpectExitCode != nil
+	if got.Special != special || (special && got.Code != *tc.ExpectExitCode) {
+		t.Fatalf("ResolveExitCodeProbeFailed(%+v) = %+v, want exit %d special=%t",
+			tc, got, deref(tc.ExpectExitCode), special)
+	}
+}
+
+// TestProbeFailureNeverKillsStartedSuccessor is the bug this path exists
+// for: a broken newer-generation probe must never turn a started successor's
+// handover into the service restart (75) that kills it with the unit.
+func TestProbeFailureNeverKillsStartedSuccessor(t *testing.T) {
+	for _, viaService := range []bool{false, true} {
+		for _, supervised := range []bool{false, true} {
+			if !viaService && !supervised {
+				continue // unsupervised manual restart: the successor owns the home, exit is clean
+			}
+			got, err := ResolveExitCodeProbeFailed(true, viaService, true, supervised)
+			if err != nil || got.Code != OverlapRestartExitCode || !got.Special {
+				t.Fatalf("via_service=%t supervised=%t: got %+v, %v; want exit %d",
+					viaService, supervised, got, err, OverlapRestartExitCode)
+			}
+		}
+	}
+}
+
+// TestProbeFailureFailsOnlyWhereProbeDecides pins the probe-failed path
+// against ResolveExitCode over the full input space: it fails exactly where
+// the two probe answers disagree, and it never invents a code that neither
+// answer would give.
+func TestProbeFailureFailsOnlyWhereProbeDecides(t *testing.T) {
+	for _, restartRequested := range []bool{false, true} {
+		for _, viaService := range []bool{false, true} {
+			for _, successorStarted := range []bool{false, true} {
+				for _, supervised := range []bool{false, true} {
+					absent := ResolveExitCode(restartRequested, viaService, successorStarted, supervised, false)
+					present := ResolveExitCode(restartRequested, viaService, successorStarted, supervised, true)
+					got, err := ResolveExitCodeProbeFailed(restartRequested, viaService, successorStarted, supervised)
+					if (absent != present) != errors.Is(err, ErrProbeUnanswered) {
+						t.Fatalf("restart=%t via_service=%t successor=%t supervised=%t: err=%v, answers %+v vs %+v",
+							restartRequested, viaService, successorStarted, supervised, err, absent, present)
+					}
+					if err == nil && got != absent {
+						t.Fatalf("probe-irrelevant decision diverged: got %+v, want %+v", got, absent)
+					}
+				}
+			}
+		}
 	}
 }
 

@@ -477,18 +477,28 @@ def planned_restart_exit_code(
 
 def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
     """Return the supervisor restart code, or None for an ordinary clean exit."""
-    newer_live_generation = False
-    if getattr(runner, "_restart_via_service", False):
-        from gateway.overlap_restart import newest_live_other_pid
-
-        newer_live_generation = newest_live_other_pid() is not None
-    return planned_restart_exit_code(
+    inputs = dict(
         restart_requested=bool(getattr(runner, "_restart_requested", False)),
         via_service=bool(getattr(runner, "_restart_via_service", False)),
         successor_started=bool(getattr(runner, "_overlap_restart_successor_started", False)),
         supervised=is_gateway_supervisor_process(),
-        newer_live_generation=newer_live_generation,
     )
+    if not inputs["via_service"]:
+        return planned_restart_exit_code(**inputs)
+    from gateway.overlap_restart import newest_live_other_pid
+
+    try:
+        newer_live_generation = newest_live_other_pid() is not None
+    except Exception:
+        # Raising here exits 75 through the teardown fallback, and systemd
+        # kills a started successor with the unit. Raise only where the
+        # probe's answer decides the code (Go twin: ResolveExitCodeProbeFailed).
+        code = planned_restart_exit_code(**inputs)
+        if planned_restart_exit_code(**inputs, newer_live_generation=True) != code:
+            raise
+        logger.exception("Newer-generation probe failed; planned exit code %s does not depend on it", code)
+        return code
+    return planned_restart_exit_code(**inputs, newer_live_generation=newer_live_generation)
 
 
 def _restart_notify_payload(

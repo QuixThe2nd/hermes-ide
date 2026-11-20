@@ -49,3 +49,26 @@ def test_unknown_spawn_fingerprint_does_not_prune_before_live_attach(monkeypatch
     # A live process with a different birth fingerprint is a reused PID.
     live_starts[successor_pid] = attached_start_time + 1
     assert registry.snapshot() == []
+
+
+def test_sync_reader_returns_live_row_the_hub_mirrored(tmp_path):
+    """Teardown's sync reader must see a live successor the hub wrote to disk."""
+    from gateway.overlap_registry import read_live_rows
+    from gateway.status import get_process_start_time
+
+    me = os.getpid()
+    state_path = tmp_path / "hub-overlap-successors.json"
+    registry = OverlapSuccessorRegistry(state_path=state_path)
+    registry.record_spawn(me, str(tmp_path), predecessor_pid=4242)
+    registry.attach(
+        pid=me,
+        start_time=get_process_start_time(me),
+        gateway_home=str(tmp_path),
+        generation_id="successor",
+        peer_pid=me,
+    )
+
+    rows = read_live_rows(state_path)
+
+    assert [(row["pid"], row["state"]) for row in rows] == [(me, "attached")]
+    assert rows[0]["predecessor_pid"] == 4242

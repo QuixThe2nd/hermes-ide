@@ -169,6 +169,46 @@
       "supervised": false,
       "newer_live_generation": true,
       "expect_exit_code": null
+    },
+    {
+      "name": "exit_probe_failure_with_started_successor_hands_over",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": true,
+      "successor_started": true,
+      "supervised": true,
+      "probe_failed": true,
+      "expect_exit_code": 76
+    },
+    {
+      "name": "exit_probe_failure_with_started_successor_unsupervised_service_hands_over",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": true,
+      "successor_started": true,
+      "supervised": false,
+      "probe_failed": true,
+      "expect_exit_code": 76
+    },
+    {
+      "name": "exit_probe_failure_without_successor_is_an_error",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": true,
+      "successor_started": false,
+      "supervised": true,
+      "probe_failed": true,
+      "expect_probe_error": true
+    },
+    {
+      "name": "exit_probe_never_runs_off_the_service_route",
+      "op": "exit_code",
+      "restart_requested": true,
+      "via_service": false,
+      "successor_started": true,
+      "supervised": true,
+      "probe_failed": true,
+      "expect_exit_code": 76
     }
   ]
 }

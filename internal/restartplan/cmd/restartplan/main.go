@@ -22,6 +22,9 @@
 //	 "successor_started": bool, "supervised": bool,
 //	 "newer_live_generation": bool}
 //	  → prints the planned exit code as {"code": N, "special": bool}.
+//	  With "probe_failed": true the newer-generation probe raised instead
+//	  of answering (newer_live_generation is ignored); when no started
+//	  successor decides the exit, that is an error → exit 3.
 //
 // An unknown op or trigger exits 2 with a message on stderr.
 package main
@@ -44,6 +47,7 @@ func main() {
 		ViaService          bool   `json:"via_service"`
 		SuccessorStarted    bool   `json:"successor_started"`
 		NewerLiveGeneration bool   `json:"newer_live_generation"`
+		ProbeFailed         bool   `json:"probe_failed"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 		fmt.Fprintf(os.Stderr, "restartplan: unreadable request: %v\n", err)
@@ -63,6 +67,18 @@ func main() {
 		}
 		emit(plan)
 	case "exit_code":
+		if request.ProbeFailed {
+			code, err := restartplan.ResolveExitCodeProbeFailed(
+				request.RestartRequested, request.ViaService,
+				request.SuccessorStarted, request.Supervised,
+			)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(3)
+			}
+			emit(code)
+			return
+		}
 		emit(restartplan.ResolveExitCode(
 			request.RestartRequested, request.ViaService,
 			request.SuccessorStarted, request.Supervised,

@@ -17,11 +17,14 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from gateway.restart import (
     planned_restart_exit_code,
+    resolve_planned_restart_exit_code,
     restart_transport_plan,
 )
 
@@ -41,6 +44,8 @@ def _decide(case) -> dict:
 
 
 def _exit_code(case):
+    if case.get("probe_failed"):
+        return _exit_code_with_failed_probe(case)
     return planned_restart_exit_code(
         restart_requested=case["restart_requested"],
         via_service=case["via_service"],
@@ -48,6 +53,20 @@ def _exit_code(case):
         supervised=case["supervised"],
         newer_live_generation=case.get("newer_live_generation", False),
     )
+
+def _exit_code_with_failed_probe(case):
+    """Drive the runtime resolver itself with a probe that raises."""
+    runner = SimpleNamespace(
+        _restart_requested=case["restart_requested"],
+        _restart_via_service=case["via_service"],
+        _overlap_restart_successor_started=case["successor_started"],
+    )
+    with patch("gateway.restart.is_gateway_supervisor_process", return_value=case["supervised"]), \
+            patch("gateway.overlap_restart.newest_live_other_pid", side_effect=OSError("probe failed")):
+        try:
+            return resolve_planned_restart_exit_code(runner)
+        except OSError:
+            return "probe_error"
 
 @pytest.fixture(scope="session")
 def go_restartplan(tmp_path_factory) -> str | None:
@@ -71,6 +90,8 @@ def _python_answer(case):
     return _exit_code(case)
 
 def _expected(case):
+    if case.get("expect_probe_error"):
+        return "probe_error"
     return case["expect"] if case["op"] == "decide" else case["expect_exit_code"]
 
 
@@ -88,6 +109,9 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
         input=json.dumps(case),
         capture_output=True, text=True, timeout=30,
     )
+    if case.get("expect_probe_error"):
+        assert run.returncode == 3, run.stderr
+        return
     assert run.returncode == 0, run.stderr
     answer = json.loads(run.stdout)
     if case["op"] == "exit_code":
