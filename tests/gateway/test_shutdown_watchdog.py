@@ -73,6 +73,37 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 
+@pytest.mark.asyncio
+async def test_watchdog_dump_names_the_wedged_asyncio_await(tmp_path):
+    """A wedged shutdown is an await that never returned; the dump must say
+    WHICH one. faulthandler only shows the loop thread parked in the select —
+    the 2026-11-20 overlap-kill incident dump was thread-stacks-only and the
+    stuck hub-RPC await was invisible."""
+    loop = asyncio.get_running_loop()
+    release = asyncio.Event()
+    stuck = loop.create_task(_never_release_waiter(release), name="wedged-shutdown-awaiter")
+    await asyncio.sleep(0)  # let the task reach its await point
+
+    fired = threading.Event()
+    dump = tmp_path / "watchdog.log"
+
+    with patch("gateway.shutdown_watchdog.os._exit", side_effect=lambda code: fired.set()):
+        arm_shutdown_watchdog(0.05, dump_path=dump, exit_code=9, loop=loop)
+        await loop.run_in_executor(None, fired.wait, 5.0)
+
+    text = dump.read_text(encoding="utf-8")
+    assert "asyncio task stacks" in text
+    assert "wedged-shutdown-awaiter" in text, "pending task missing from the dump"
+    assert "_never_release_waiter" in text, "suspended frame missing from the dump"
+
+    release.set()
+    await stuck
+
+
+async def _never_release_waiter(release: asyncio.Event) -> None:
+    await release.wait()
+
+
 
 
 async def _run_heartbeat_until_payload(tmp_path, timeout_s=10.0):

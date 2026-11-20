@@ -139,6 +139,13 @@ def start_loop_liveness_watchdog(
                 faulthandler.dump_traceback(all_threads=True)
             except Exception:
                 logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+            with contextlib.suppress(Exception):
+                # Thread stacks show the frozen loop parked in the selector; the
+                # pending tasks' frames say which await never returned.
+                task_stacks = _format_asyncio_task_stacks(loop)
+                if task_stacks:
+                    sys.stderr.write("--- asyncio task stacks ---\n" + task_stacks)
+                    sys.stderr.flush()
             if stop_event.is_set():
                 return
             hard_code = _planned_hard_exit_code(
@@ -236,9 +243,39 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
+def _format_asyncio_task_stacks(loop: Optional[asyncio.AbstractEventLoop]) -> str:
+    """Render the pending tasks of ``loop`` with their suspended-at frames.
+
+    Called from a watchdog thread, not the loop: faulthandler shows the loop
+    thread parked in the selector, which is where every wedged-await incident
+    looks identical — the 2026-11-20 overlap-kill dump had no clue which
+    await was stuck because the interesting state is in the pending tasks'
+    coroutine frames, which only this walk surfaces. Never raises.
+    """
+    if loop is None:
+        return ""
+    try:
+        tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
+    except Exception:
+        return "(asyncio.all_tasks failed)\n"
+    if not tasks:
+        return "(no pending asyncio tasks)\n"
+    lines = []
+    for task in sorted(tasks, key=lambda t: t.get_name()):
+        try:
+            lines.append(f"Task {task.get_name()} pending coro={task.get_coro()!r}")
+            for frame in task.get_stack(limit=None):
+                code = frame.f_code
+                lines.append(f"    at {code.co_filename}:{frame.f_lineno} in {code.co_name}")
+        except Exception:
+            lines.append("    (task stack unreadable)")
+    return "\n".join(lines) + "\n"
+
+
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit."""
+                         snapshot: Optional[Dict[str, Any]],
+                         loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+    """Best-effort faulthandler + asyncio-task + metadata dump before hard-exit."""
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -252,6 +289,8 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
             faulthandler.dump_traceback(file=fh, all_threads=True)
         except Exception:
             fh.write("(faulthandler.dump_traceback failed)\n")
+        fh.write("--- asyncio task stacks ---\n")
+        fh.write(_format_asyncio_task_stacks(loop))
         fh.write("--- end dump ---\n")
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
@@ -259,6 +298,10 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
                          f"(pid={os.getpid()}); dumping all thread stacks.\n")
         sys.stderr.flush()
         faulthandler.dump_traceback(all_threads=True)
+        task_stacks = _format_asyncio_task_stacks(loop)
+        if task_stacks:
+            sys.stderr.write("--- asyncio task stacks ---\n" + task_stacks)
+            sys.stderr.flush()
 
 
 # Re-plan cadence while parked beside a live successor (matches the retry sleep in
@@ -301,12 +344,15 @@ def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
     snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None, exit_code: int = 1,
     dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog",
-    overlap_exit_plan: Optional[Callable[[], str]] = None) -> threading.Event:
+    overlap_exit_plan: Optional[Callable[[], str]] = None,
+    loop: Optional[asyncio.AbstractEventLoop] = None) -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit``.
     ``exit_code`` is the armed default; ``overlap_exit_plan`` (``resolve_hard_exit_action``
     bound to the draining runner) can override it to the overlap exit (76) or park
-    the exit entirely — see ``_planned_hard_exit_code``. Never raises; returns
+    the exit entirely — see ``_planned_hard_exit_code``. ``loop`` (the gateway's
+    event loop) adds pending-task coroutine stacks to the dump — thread stacks
+    alone show a wedged loop parked in the selector. Never raises; returns
     ``done_event`` for disarming."""
     done = done_event if done_event is not None else threading.Event()
     delay = _coerce_float(delay_s, DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S)
@@ -325,7 +371,7 @@ def arm_shutdown_watchdog(
         except Exception as exc:
             snapshot = {"snapshot_error": repr(exc)}
         target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
-        _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot)
+        _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot, loop=loop)
         with contextlib.suppress(Exception):
             logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
                             "(asyncio drain path appears wedged; see %s)", delay, target)

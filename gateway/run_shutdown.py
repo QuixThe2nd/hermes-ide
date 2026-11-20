@@ -2815,6 +2815,7 @@ class GatewayShutdownMixin:
                 # Armed 1 orders a failure restart (cgroup kill under KillMode=mixed);
                 # the plan reroutes a hard exit through the overlap handover (76/park).
                 overlap_exit_plan=lambda: resolve_hard_exit_action(self),
+                loop=getattr(self, "_gateway_loop", None),
             )
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)

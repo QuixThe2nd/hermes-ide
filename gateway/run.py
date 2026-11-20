@@ -8735,6 +8735,7 @@ class GatewayRunner(
                     # kills the cgroup — a live overlap successor included. The plan
                     # reroutes the hard exit through the overlap handover (76/park).
                     overlap_exit_plan=lambda: resolve_hard_exit_action(self),
+                    loop=getattr(self, "_gateway_loop", None),
                 )
 
             try:
