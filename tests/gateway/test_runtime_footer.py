@@ -309,12 +309,20 @@ def test_tool_calls_field(count, expected):
     assert out == expected
 
 
-def test_turn_metrics_keeps_timing_and_tool_calls():
+def test_turn_metrics_keeps_timing_tool_calls_and_phase_times():
     from gateway.runtime_footer import turn_metrics
 
     result = {"api_time": 1.5, "tool_time": 2.5, "tool_calls": 4, "final_response": "x"}
-    assert turn_metrics(result) == {"api_time": 1.5, "tool_time": 2.5, "tool_calls": 4}
-    assert turn_metrics(None) == {"api_time": None, "tool_time": None, "tool_calls": None}
+    assert turn_metrics(result) == {
+        "api_time": 1.5, "tool_time": 2.5, "tool_calls": 4,
+        "mem_time": None, "setup_time": None, "compress_time": None, "save_time": None,
+    }
+    result["mem_time"] = 3.2
+    assert turn_metrics(result)["mem_time"] == 3.2
+    assert turn_metrics(None) == {
+        "api_time": None, "tool_time": None, "tool_calls": None,
+        "mem_time": None, "setup_time": None, "compress_time": None, "save_time": None,
+    }
 
 
 @pytest.mark.parametrize(
