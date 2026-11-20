@@ -112,9 +112,10 @@ func run(request map[string]any, stdout io.Writer) error {
 			return encode(map[string]any{"stub": stub, "found": found})
 		}
 		text := stringValue(request["text"])
-		return encode(map[string]any{
-			"stub": text, "found": injectionlabels.IsSpilledStub(text),
-		})
+		if injectionlabels.IsSpilledStub(text) {
+			return encode(map[string]any{"stub": text, "found": true})
+		}
+		return encode(map[string]any{"stub": "", "found": false})
 	default:
 		return fmt.Errorf("unknown op %q", op)
 	}

@@ -354,7 +354,17 @@
       "ephemeral": false,
       "tool_count": 0,
       "expect_content": "identity (soul)\ncontext_files\ntimestamp",
-      "expect_sha": "2c717380492f7076adf82b971cc478a61b4b22d197ae45ae0782558d97e7afc7"
+      "expect_sha": "2c717380492f7076adf82b971cc478a61b4b22d197ae45ae0782558d97e7afc7",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (soul)\ncontext_files\ntimestamp",
+        "injected_chars": 39,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "blank_detail_renders_bare_kind",
@@ -371,7 +381,17 @@
       "ephemeral": false,
       "tool_count": 0,
       "expect_content": "identity (default)\nskills_index",
-      "expect_sha": "ac228d299d9ad70d4fe5f1550f5d4bd59ea4900a6ec8cd15c7be2d2ab707c134"
+      "expect_sha": "ac228d299d9ad70d4fe5f1550f5d4bd59ea4900a6ec8cd15c7be2d2ab707c134",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (default)\nskills_index",
+        "injected_chars": 31,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "counted_sections_carry_their_count",
@@ -388,7 +408,17 @@
       "ephemeral": false,
       "tool_count": 0,
       "expect_content": "guidance (3)\nauto_skills (2)",
-      "expect_sha": "513d36403f5bda3660929d0550e6e205c556c82938f17e35d8e413a035f0c1bf"
+      "expect_sha": "513d36403f5bda3660929d0550e6e205c556c82938f17e35d8e413a035f0c1bf",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "guidance (3)\nauto_skills (2)",
+        "injected_chars": 28,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "ephemeral_and_tool_rows_ride_the_card",
@@ -401,7 +431,17 @@
       "ephemeral": true,
       "tool_count": 2,
       "expect_content": "identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas",
-      "expect_sha": "137b7b80c6a68270b47af7c0d101895d71ab0e3836da77804186ef0d7ff7a203"
+      "expect_sha": "137b7b80c6a68270b47af7c0d101895d71ab0e3836da77804186ef0d7ff7a203",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas",
+        "injected_chars": 71,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "one_tool_schema_is_not_pluralized",
@@ -414,7 +454,17 @@
       "ephemeral": false,
       "tool_count": 1,
       "expect_content": "identity (soul)\n1 tool schemas",
-      "expect_sha": "10c5dbe050690e232263513653b9cd866067b792dbe2c4945443e53853e0357f"
+      "expect_sha": "10c5dbe050690e232263513653b9cd866067b792dbe2c4945443e53853e0357f",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (soul)\n1 tool schemas",
+        "injected_chars": 30,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "shape_change_alters_the_sha_a",
@@ -431,7 +481,17 @@
       "ephemeral": false,
       "tool_count": 0,
       "expect_content": "identity (default)\nworkspace",
-      "expect_sha": "a881367a95f740270465f703281952503aefde60d198fbafb55f13c17b258496"
+      "expect_sha": "a881367a95f740270465f703281952503aefde60d198fbafb55f13c17b258496",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (default)\nworkspace",
+        "injected_chars": 28,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "shape_change_alters_the_sha_b",
@@ -452,7 +512,17 @@
       "ephemeral": false,
       "tool_count": 0,
       "expect_content": "identity (default)\nworkspace\nskills_index",
-      "expect_sha": "9170c4cbc87cefa0a890e399396707a299b6af84679e3e680e4240cdd31c36cc"
+      "expect_sha": "9170c4cbc87cefa0a890e399396707a299b6af84679e3e680e4240cdd31c36cc",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (default)\nworkspace\nskills_index",
+        "injected_chars": 41,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "empty_composition_is_blank",
@@ -460,7 +530,17 @@
       "ephemeral": false,
       "tool_count": 0,
       "expect_content": "",
-      "expect_sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "expect_sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "",
+        "injected_chars": 0,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "tool_row_without_manifest",
@@ -468,7 +548,17 @@
       "ephemeral": false,
       "tool_count": 7,
       "expect_content": "7 tool schemas",
-      "expect_sha": "0578b32419afc0d1cb789dc131913670904f0455272ffa3f7356e1f7e91cb97e"
+      "expect_sha": "0578b32419afc0d1cb789dc131913670904f0455272ffa3f7356e1f7e91cb97e",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "7 tool schemas",
+        "injected_chars": 14,
+        "sources": [
+          "session"
+        ]
+      }
     },
     {
       "name": "ephemeral_alone_reopens_the_shape",
@@ -476,7 +566,17 @@
       "ephemeral": true,
       "tool_count": 0,
       "expect_content": "session context (ephemeral, per-request)",
-      "expect_sha": "87778375e917aff71046256e2dd2c42109e41bef7937981dc8561623205c4765"
+      "expect_sha": "87778375e917aff71046256e2dd2c42109e41bef7937981dc8561623205c4765",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "session context (ephemeral, per-request)",
+        "injected_chars": 40,
+        "sources": [
+          "session"
+        ]
+      }
     }
   ],
   "event_card_cases": [

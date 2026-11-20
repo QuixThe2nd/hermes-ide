@@ -18,8 +18,11 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.system_prompt import build_system_prompt_parts
-from tests.agent.test_memory_injection_card import _make_prompt_agent
+from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+from tests.agent.test_memory_injection_card import (
+    _FakeMemoryStore,
+    _make_prompt_agent,
+)
 from agent.turn_context import build_turn_context
 from tests.agent.test_gateway_turn_sidecar import _FakeAgent, _build
 
@@ -208,3 +211,168 @@ class TestManifestRecording:
             build_system_prompt_parts(agent)
         kinds = [kind for kind, _detail in agent._system_prompt_section_manifest]
         assert "memory" not in kinds
+
+
+# ---------------------------------------------------------------------------
+# Byte identity against the pre-card scaffold (6ac6f2c9)
+# ---------------------------------------------------------------------------
+
+_BASE_COMMIT = "6ac6f2c9"
+_SOUL_BYTES = "You are Hermes Agent — pinned soul identity bytes."
+
+
+def _pinned_dependencies():
+    """Dependency surface both scaffold versions read: pinned so the only
+    variable between them is the scaffold itself."""
+    return [
+        patch("agent.prompt_builder.load_soul_md", return_value=_SOUL_BYTES),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch(
+            "agent.prompt_builder.build_context_files_prompt",
+            return_value="PROJECT CONTEXT BYTES",
+        ),
+        patch(
+            "agent.prompt_builder.build_skills_system_prompt",
+            return_value="SKILLS INDEX BYTES",
+        ),
+        patch("agent.skill_commands.build_auto_load_prompt", return_value=("", [], [])),
+        patch(
+            "agent.coding_context.coding_system_prompt_parts",
+            return_value=(["CODING PREFIX"], ["WORKSPACE SNAPSHOT"], ["CODING TRAILING"]),
+        ),
+        patch(
+            "agent.coding_context.coding_compact_skill_categories",
+            return_value=frozenset(),
+        ),
+        patch(
+            "tools.bot_mode_probe.get_bot_mode_protocol_section",
+            return_value="BOT MODE PROTOCOL",
+        ),
+        patch("tools.bot_mode_probe.epoch_line", return_value="EPOCH LINE"),
+        patch(
+            "hermes_cli.plugins.format_system_prompt_sections",
+            return_value="PLUGIN SECTIONS RENDERED",
+        ),
+    ]
+
+
+def _fresh_default():
+    return _make_prompt_agent()
+
+
+def _fresh_soul():
+    return _make_prompt_agent(load_soul_identity=True, skip_context_files=True)
+
+
+def _fresh_workspace():
+    agent = _make_prompt_agent(
+        valid_tool_names=["skills_list", "skill_view", "terminal"],
+        _memory_enabled=True,
+        _user_profile_enabled=True,
+        _memory_store=_FakeMemoryStore(
+            {"memory": "MEMORY-BLOCK", "user": "PROFILE-BLOCK"}
+        ),
+    )
+    agent._plugin_system_prompt_sections_snapshot = (
+        types.SimpleNamespace(position="after_memory"),
+    )
+    return agent
+
+
+def _fresh_bot_mode():
+    agent = _make_prompt_agent(_bot_mode_protocol=True)
+    agent._session_title_hint = "Bot Chat"
+    return agent
+
+
+_PROMPT_SHAPES = [
+    pytest.param(_fresh_default, id="default"),
+    pytest.param(_fresh_soul, id="soul_identity"),
+    pytest.param(_fresh_workspace, id="workspace_skills_memory_plugins"),
+    pytest.param(_fresh_bot_mode, id="bot_mode"),
+]
+
+
+@pytest.fixture(scope="session")
+def base_system_prompt(tmp_path_factory):
+    """The pre-card scaffold loaded from git: the byte-identity baseline."""
+    import importlib.util
+    import subprocess
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    src = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{_BASE_COMMIT}:agent/system_prompt.py"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    path = tmp_path_factory.mktemp("scaffold_base", numbered=True) / "system_prompt_base.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("system_prompt_base", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("factory", _PROMPT_SHAPES)
+def test_system_prompt_bytes_identical_to_pre_card_scaffold(factory, base_system_prompt):
+    """The session-card recording is pure scaffolding: every tier of the
+    prompt — and the joined full prompt — is byte-identical to the scaffold
+    before the card existed (6ac6f2c9), across the representative shapes."""
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        for p in _pinned_dependencies():
+            stack.enter_context(p)
+        base_parts = base_system_prompt.build_system_prompt_parts(
+            factory(), system_message=None
+        )
+        current_parts = build_system_prompt_parts(factory(), system_message=None)
+    assert current_parts == base_parts
+    assert (
+        "\n\n".join(p for p in current_parts.values() if p)
+        == "\n\n".join(p for p in base_parts.values() if p)
+    )
+
+
+@pytest.mark.parametrize("factory", _PROMPT_SHAPES)
+def test_full_prompt_bytes_identical_to_pre_card_scaffold(factory, base_system_prompt):
+    """The cached-prompt entrypoint (build_system_prompt) also produces
+    identical bytes — manifest recording changes no model-facing output."""
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        for p in _pinned_dependencies():
+            stack.enter_context(p)
+        base_prompt = base_system_prompt.build_system_prompt(factory())
+        current_prompt = build_system_prompt(factory())
+    assert current_prompt == base_prompt
+
+
+def test_manifest_recording_is_pure():
+    """Purity on the current scaffold: a stale manifest attribute is
+    replaced, never consulted, and the prompt bytes do not depend on it."""
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        for p in _pinned_dependencies():
+            stack.enter_context(p)
+        clean = build_system_prompt_parts(_fresh_workspace())
+        agent = _fresh_workspace()
+        agent._system_prompt_section_manifest = [("junk", "stale")]
+        reloaded = build_system_prompt_parts(agent)
+    assert reloaded == clean
+    assert ("junk", "stale") not in agent._system_prompt_section_manifest
+    assert agent._system_prompt_section_manifest
+
+
+def test_prompt_is_deterministic_across_rebuilds():
+    """Rebuilding on a fresh agent yields identical bytes: the manifest and
+    its bookkeeping introduce no render-order nondeterminism."""
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        for p in _pinned_dependencies():
+            stack.enter_context(p)
+        first = build_system_prompt_parts(_fresh_workspace())
+        second = build_system_prompt_parts(_fresh_workspace())
+    assert first == second

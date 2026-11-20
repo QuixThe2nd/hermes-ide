@@ -41,6 +41,7 @@ type sessionCardCase struct {
 	ToolCount     int       `json:"tool_count"`
 	ExpectContent string    `json:"expect_content"`
 	ExpectSHA     string    `json:"expect_sha"`
+	ExpectCard    Card      `json:"expect_card"`
 }
 
 // eventCardCase is one per-event payload-builder expectation: the exact
@@ -216,17 +217,8 @@ func TestSessionCardMatchSharedTable(t *testing.T) {
 		if got != c.ExpectSHA {
 			t.Errorf("%s: sha = %s, want %s", c.Name, got, c.ExpectSHA)
 		}
-		if card.Content != c.ExpectContent {
-			t.Errorf("%s: content = %q, want %q", c.Name, card.Content, c.ExpectContent)
-		}
-		if len(card.Kinds) != 1 || card.Kinds[0] != KindSession {
-			t.Errorf("%s: kinds = %v, want [session]", c.Name, card.Kinds)
-		}
-		if len(card.Sources) != 1 || card.Sources[0] != SourceSession {
-			t.Errorf("%s: sources = %v, want [session]", c.Name, card.Sources)
-		}
-		if want := len([]rune(c.ExpectContent)); card.InjectedChars != want {
-			t.Errorf("%s: injected_chars = %d, want %d", c.Name, card.InjectedChars, want)
+		if !reflect.DeepEqual(card, c.ExpectCard) {
+			t.Errorf("%s: card = %+v, want %+v", c.Name, card, c.ExpectCard)
 		}
 	}
 }

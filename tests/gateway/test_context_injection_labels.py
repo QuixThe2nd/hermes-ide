@@ -363,3 +363,227 @@ def test_user_message_classifier_matches_the_shared_contract_table():
         kind, detail = classify_user_message_injection(case["text"])
         assert kind == (case["expect_kind"] or None), case["name"]
         assert detail == case["expect_detail"], case["name"]
+
+
+# ---------------------------------------------------------------------------
+# Card payloads, detectors, and the running Go binary
+# (internal/injectionlabels — the canonical twin)
+# ---------------------------------------------------------------------------
+
+
+def _event_card(case):
+    """Render one event-card case through the Python twin."""
+    from agent.context_injection_cards import (
+        assembled_user_card,
+        compaction_card,
+        spillover_card,
+        steer_card,
+        subdirectory_card,
+    )
+
+    builders = {
+        "steer": lambda c: steer_card(c["text"]),
+        "spillover": lambda c: spillover_card(c["stub"]),
+        "subdirectory": lambda c: subdirectory_card(c["hints"]),
+        "compaction": lambda c: compaction_card(c["summary"]),
+        "assembled": lambda c: assembled_user_card(c["kind"], c["detail"], c["content"]),
+    }
+    return builders[case["op"]](case)
+
+
+def _labels_table():
+    return json.loads(_LABELS_TABLE.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    "case", _labels_table()["event_card_cases"], ids=lambda case: case["name"]
+)
+def test_event_card_payloads_match_the_shared_contract_table(case):
+    """The per-event payload builders and the Go twin
+    (internal/injectionlabels) read the SAME table: kinds, content, char
+    count, sources, and the goal/skill meta detail must match it."""
+    assert _event_card(case) == case["expect"], case["name"]
+
+
+def test_session_card_composition_matches_the_shared_contract_table():
+    """The session-inventory composition and its sha gating key match the
+    shared table the Go twin also derives from."""
+    from agent.context_injection_cards import session_inventory_card
+
+    for case in _labels_table()["session_card_cases"]:
+        sections = [(row["kind"], row.get("detail", "")) for row in case["sections"]]
+        content, sha = session_inventory_card(
+            sections, ephemeral=case["ephemeral"], tool_count=case["tool_count"]
+        )
+        assert content == case["expect_content"], case["name"]
+        assert sha == case["expect_sha"], case["name"]
+
+
+def test_compaction_detection_matches_the_shared_contract_table():
+    """The new-summary extraction matches the shared table: commits
+    extract, skip paths and preserved summaries stay silent, metadata
+    flags and legacy prefixes classify."""
+    from agent.context_injection_cards import new_compaction_summary
+
+    for case in _labels_table()["compaction_cases"]:
+        summary = new_compaction_summary(case["before"], case["after"])
+        assert summary == case["expect_summary"], case["name"]
+
+
+def test_spillover_detection_matches_the_shared_contract_table():
+    """The persisted-output detection matches the shared table for string
+    results and multimodal parts lists."""
+    from agent.context_injection_cards import spilled_stub_from_result
+
+    for case in _labels_table()["spillover_cases"]:
+        result = {"content": case["parts"]} if case["op"] == "parts" else case["text"]
+        assert spilled_stub_from_result(result) == case["expect_stub"], case["name"]
+
+
+def test_summary_anchors_match_the_shared_contract_table():
+    """The compaction anchors are context_compressor's own constants, and
+    the shared table (which the Go twin's prefix set must equal) carries
+    exactly them — plus the persisted-output tag."""
+    from agent.context_compressor import (
+        _HISTORICAL_SUMMARY_PREFIXES,
+        LEGACY_SUMMARY_PREFIX,
+        SUMMARY_PREFIX,
+    )
+    from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+
+    table = _labels_table()
+    assert table["summary_prefixes"] == [
+        SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES,
+    ]
+    assert table["persisted_output_tag"] == PERSISTED_OUTPUT_TAG
+
+
+def _go_binary(tmp_path_factory) -> str | None:
+    """Build cmd/injectionlabels once per session; None when no Go toolchain."""
+    import shutil
+    import subprocess
+
+    if shutil.which("go") is None:
+        return None
+    binary = tmp_path_factory.mktemp("injectionlabels", numbered=True) / "injectionlabels"
+    build = subprocess.run(
+        ["go", "build", "-o", str(binary), "./cmd/injectionlabels"],
+        cwd=_REPO / "internal" / "injectionlabels",
+        capture_output=True, text=True, timeout=300,
+    )
+    if build.returncode != 0:
+        pytest.fail(f"go build cmd/injectionlabels failed:\n{build.stderr}")
+    return str(binary)
+
+
+@pytest.fixture(scope="session")
+def go_injectionlabels(tmp_path_factory):
+    return _go_binary(tmp_path_factory)
+
+
+def _run_go(binary, request):
+    import subprocess
+
+    run = subprocess.run(
+        [binary], input=json.dumps(request), capture_output=True, text=True, timeout=60
+    )
+    assert run.returncode == 0, f"go op {request['op']} failed: {run.stderr}"
+    return json.loads(run.stdout)
+
+
+_CMD_EVENT_OPS = {
+    "steer": lambda c: {"op": "steer_card", "text": c["text"]},
+    "spillover": lambda c: {"op": "spillover_card", "stub": c["stub"]},
+    "subdirectory": lambda c: {"op": "subdirectory_card", "hints": c["hints"]},
+    "compaction": lambda c: {"op": "compaction_card", "summary": c["summary"]},
+    "assembled": lambda c: {
+        "op": "assembled_card", "kind": c["kind"], "detail": c["detail"],
+        "content": c["content"],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "case", _labels_table()["event_card_cases"], ids=lambda case: case["name"]
+)
+def test_event_card_payloads_match_the_running_go_binary(case, go_injectionlabels):
+    """The real Go binary builds the same payload: Python twin == Go output."""
+    if go_injectionlabels is None:
+        pytest.skip("no Go toolchain")
+    assert _run_go(go_injectionlabels, _CMD_EVENT_OPS[case["op"]](case)) == case["expect"]
+
+
+@pytest.mark.parametrize(
+    "case", _labels_table()["session_card_cases"], ids=lambda case: case["name"]
+)
+def test_session_card_matches_the_running_go_binary(case, go_injectionlabels):
+    """The real Go binary composes the same inventory card and sha."""
+    if go_injectionlabels is None:
+        pytest.skip("no Go toolchain")
+    out = _run_go(go_injectionlabels, {
+        "op": "session_card",
+        "sections": case["sections"],
+        "ephemeral": case["ephemeral"],
+        "tool_count": case["tool_count"],
+    })
+    assert out == {"card": case["expect_card"], "sha": case["expect_sha"]}, case["name"]
+
+
+@pytest.mark.parametrize(
+    "case", _labels_table()["compaction_cases"], ids=lambda case: case["name"]
+)
+def test_compaction_detection_matches_the_running_go_binary(case, go_injectionlabels):
+    """The real Go binary extracts the same summary."""
+    if go_injectionlabels is None:
+        pytest.skip("no Go toolchain")
+    out = _run_go(go_injectionlabels, {
+        "op": "compaction_summary", "before": case["before"], "after": case["after"],
+    })
+    expected = case["expect_summary"]
+    assert out == {
+        "summary": expected or "", "changed": expected is not None,
+    }, case["name"]
+
+
+@pytest.mark.parametrize(
+    "case", _labels_table()["spillover_cases"], ids=lambda case: case["name"]
+)
+def test_spillover_detection_matches_the_running_go_binary(case, go_injectionlabels):
+    """The real Go binary detects the same stub."""
+    if go_injectionlabels is None:
+        pytest.skip("no Go toolchain")
+    request = (
+        {"op": "spilled_stub", "parts": case["parts"]}
+        if case["op"] == "parts"
+        else {"op": "spilled_stub", "text": case["text"]}
+    )
+    out = _run_go(go_injectionlabels, request)
+    assert out == {
+        "stub": case["expect_stub"] or "", "found": case["expect_stub"] is not None,
+    }, case["name"]
+
+
+def test_heading_and_classifier_ops_match_the_running_go_binary(go_injectionlabels):
+    """The heading renderer and the anchored classifier also round-trip
+    through the binary for one representative request each."""
+    if go_injectionlabels is None:
+        pytest.skip("no Go toolchain")
+    from gateway.context_injection_labels import (
+        classify_user_message_injection,
+        context_injection_heading_lines,
+    )
+
+    heading_req = {
+        "op": "heading", "kinds": ["skill"], "memory_sourced": False,
+        "recalled_count": 0, "meta": {"skill": "research"},
+    }
+    assert _run_go(go_injectionlabels, heading_req) == context_injection_heading_lines(
+        ["skill"], memory_sourced=False, meta={"skill": "research"}
+    )
+    classify_req = {
+        "op": "classify",
+        "text": '[IMPORTANT: The user has invoked the "research" skill, indicating',
+    }
+    assert _run_go(go_injectionlabels, classify_req) == dict(
+        zip(("kind", "detail"), classify_user_message_injection(classify_req["text"]))
+    )

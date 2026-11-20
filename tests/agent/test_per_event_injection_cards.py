@@ -18,7 +18,7 @@ import pytest
 
 from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
 from agent.compression_facade import _emit_compaction_card
-from agent.context_injection_cards import emit_injection_card
+from agent.context_injection_cards import emit_card, steer_card
 from agent.tool_executor import _commit_tool_result, _ToolCallRef
 from agent.turn_context import build_turn_context
 from tests.agent.test_gateway_turn_sidecar import _FakeAgent, _build
@@ -289,20 +289,55 @@ class TestToolResultCards:
 class TestEmitterHelper:
     def test_no_callback_is_silent_not_fatal(self):
         agent = types.SimpleNamespace()  # no tool_progress_callback at all
-        assert emit_injection_card(agent, ["steer"], "text") is False
+        assert emit_card(agent, steer_card("text")) is False
 
     def test_raising_callback_is_swallowed(self):
         def _boom(*a, **k):
             raise RuntimeError("presenter is broken")
 
         agent = types.SimpleNamespace(tool_progress_callback=_boom)
-        assert emit_injection_card(agent, ["steer"], "text") is False
+        assert emit_card(agent, steer_card("text")) is False
 
     def test_sources_default_to_first_kind(self):
+        from agent.context_injection_cards import card_payload
+
         seen = []
         agent = types.SimpleNamespace(
             tool_progress_callback=lambda *a, **k: seen.append(a[3] if len(a) > 3 else k),
         )
-        assert emit_injection_card(agent, ["goal"], "text") is True
+        assert emit_card(agent, card_payload(["goal"], "text")) is True
         assert seen[0]["sources"] == ["goal"]
         assert seen[0]["injected_chars"] == 4
+
+
+class TestCardPipelinePurity:
+    def test_tool_message_bytes_identical_with_and_without_cards(self, monkeypatch):
+        """Display plumbing stays off the model path: the tool message the
+        model receives is byte-identical whether the card pipeline is wired
+        (cards emitted) or absent (no callback at all)."""
+        harness = TestToolResultCards()
+
+        stub = (
+            "<persisted-output>/tmp/spill-9.txt</persisted-output>\n"
+            "Output too large; read the file."
+        )
+        hints = "[Subdirectory context discovered: pkg/AGENTS.md]"
+
+        quiet = harness._agent()
+        quiet.tool_progress_callback = None
+        wired = _wire_cards(harness._agent())
+
+        quiet_msgs = harness._commit(
+            quiet, monkeypatch, result="x" * 9000, hints=hints, spilled=stub,
+        )
+        wired_msgs = harness._commit(
+            wired, monkeypatch, result="x" * 9000, hints=hints, spilled=stub,
+        )
+
+        def _sans_clock(msgs):
+            return [{k: v for k, v in m.items() if k != "timestamp"} for m in msgs]
+
+        assert _sans_clock(wired_msgs) == _sans_clock(quiet_msgs)
+        assert [m["content"] for m in wired_msgs] == [m["content"] for m in quiet_msgs]
+        assert _cards(wired), "cards rode the callback on the wired agent"
+        assert not _cards(quiet)

@@ -30,10 +30,13 @@ from agent.turn_author import parse_turn_author
 # Sha-gated injection cards (memory, session context) share the per-session
 # registry and the never-raises emitter in this leaf module.
 from agent.context_injection_cards import (
-    emit_injection_card,
+    assembled_user_card,
+    emit_card,
     remember_session_card_sha,
+    session_card,
     session_card_sha,
     session_card_unseen,
+    session_inventory_card,
 )
 
 logger = logging.getLogger("run_agent")
@@ -1325,29 +1328,19 @@ def build_turn_context(
     ):
         try:
             _sections = getattr(agent, "_system_prompt_section_manifest", None) or []
-            _session_rows: List[str] = []
-            if getattr(agent, "ephemeral_system_prompt", None):
-                _session_rows.append("session context (ephemeral, per-request)")
-            _tools = getattr(agent, "tools", None)
-            if _tools:
-                _session_rows.append(f"{len(_tools)} tool schemas")
-            if _sections or _session_rows:
-                _lines = [
-                    f"{_kind} ({_detail})" if _detail else str(_kind)
-                    for _kind, _detail in _sections
-                ] + _session_rows
-                _session_content = "\n".join(_lines)
-                _session_sha = hashlib.sha256(_session_content.encode("utf-8")).hexdigest()
-                if (
-                    getattr(agent, "_session_card_state", None) != _session_sha
-                    and session_card_unseen(
-                        getattr(agent, "session_id", None), _session_sha
-                    )
-                ):
-                    agent._session_card_state = _session_sha
-                    emit_injection_card(
-                        agent, ["session"], _session_content, sources=["session"],
-                    )
+            _session_content, _session_sha = session_inventory_card(
+                _sections,
+                ephemeral=bool(getattr(agent, "ephemeral_system_prompt", None)),
+                tool_count=len(getattr(agent, "tools", None) or []),
+            )
+            if _session_content and (
+                getattr(agent, "_session_card_state", None) != _session_sha
+                and session_card_unseen(
+                    getattr(agent, "session_id", None), _session_sha
+                )
+            ):
+                agent._session_card_state = _session_sha
+                emit_card(agent, session_card(_session_content))
         except Exception:
             # Display plumbing must never block the model call.
             logger.debug("session context card progress callback failed", exc_info=True)
@@ -1489,10 +1482,7 @@ def build_turn_context(
 
             _cls_kind, _cls_detail = classify_user_message_injection(_clean)
             if _cls_kind:
-                emit_injection_card(
-                    agent, [_cls_kind], _clean, sources=["session"],
-                    meta={_cls_kind: _cls_detail} if _cls_detail else None,
-                )
+                emit_card(agent, assembled_user_card(_cls_kind, _cls_detail, _clean))
         except Exception:
             # Display plumbing must never block the model call.
             logger.debug("context injection progress callback failed", exc_info=True)
