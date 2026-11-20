@@ -199,6 +199,98 @@ func TestDeletionsDoNotOffsetAdditions(t *testing.T) {
 	assertContains(t, out, "go added lines: 0")
 }
 
+// TestNetPythonDeletionExemptionPasses pins the single exemption: a diff
+// that deletes at least 10x more Python than it adds passes even when
+// Python additions exceed Go additions.
+func TestNetPythonDeletionExemptionPasses(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "big.py", lines(100, "p"))
+	base := commit(t, repo, "base")
+	if err := os.Remove(filepath.Join(repo, "big.py")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "new.py", lines(5, "n"))
+	commit(t, repo, "replace")
+
+	// 100 deleted >= 10x 5 added, so the exemption applies: exit 0.
+	code, out, _ := check(t, repo, base, "HEAD")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	assertContains(t, out, "python added lines: 5")
+	assertContains(t, out, "python deleted lines: 100")
+	assertContains(t, out, "go added lines: 0")
+	assertContains(t, out, "net-deletion exemption: python deleted >= 10x added")
+}
+
+// TestNetPythonDeletionBelowFactorFails pins the exemption boundary: a
+// dominant-but-under-10x deletion does not rescue an over-quota diff.
+func TestNetPythonDeletionBelowFactorFails(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "big.py", lines(100, "p"))
+	base := commit(t, repo, "base")
+	if err := os.Remove(filepath.Join(repo, "big.py")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "new.py", lines(20, "n"))
+	commit(t, repo, "replace")
+
+	// 100 deleted < 10x 20 added, so the normal rule fails the diff.
+	code, out, _ := check(t, repo, base, "HEAD")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1\n%s", code, out)
+	}
+	assertContains(t, out, "python added lines: 20")
+	assertContains(t, out, "python deleted lines: 100")
+	if strings.Contains(out, "net-deletion exemption") {
+		t.Fatalf("unexpected exemption line:\n%s", out)
+	}
+}
+
+// TestNetPythonDeletionExactBoundaryPasses pins the >= comparison: exactly
+// 10x deleted per added line (30 deleted, 3 added) passes.
+func TestNetPythonDeletionExactBoundaryPasses(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "big.py", lines(30, "p"))
+	base := commit(t, repo, "base")
+	if err := os.Remove(filepath.Join(repo, "big.py")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "new.py", lines(3, "n"))
+	commit(t, repo, "replace")
+
+	code, out, _ := check(t, repo, base, "HEAD")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	assertContains(t, out, "python deleted lines: 30")
+	assertContains(t, out, "net-deletion exemption: python deleted >= 10x added")
+}
+
+// TestPurePythonDeletionShowsNoExemption pins that a zero-addition diff
+// passes via the normal rule (0 <= 0) without an exemption line: the
+// exemption only engages when Python added lines exist to dominate.
+func TestPurePythonDeletionShowsNoExemption(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "gone.py", lines(5, "p"))
+	base := commit(t, repo, "base")
+	if err := os.Remove(filepath.Join(repo, "gone.py")); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "remove")
+
+	code, out, _ := check(t, repo, base, "HEAD")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	assertContains(t, out, "python added lines: 0")
+	assertContains(t, out, "python deleted lines: 5")
+	assertContains(t, out, "OK: go added lines (0) >= python added lines (0)")
+	if strings.Contains(out, "net-deletion exemption") {
+		t.Fatalf("unexpected exemption line:\n%s", out)
+	}
+}
+
 func TestMixedFileCountsOnlyAddedLines(t *testing.T) {
 	repo := newRepo(t)
 	writeFile(t, repo, "m.py", []byte("a\nb\nc\n"))
