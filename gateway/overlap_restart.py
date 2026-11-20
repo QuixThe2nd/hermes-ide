@@ -808,6 +808,50 @@ def hard_exit_action(
     return HARD_EXIT_PARK  # unknown or unrecognized: never guessed about
 
 
+def stopping_notify_on_action(action: str) -> bool:
+    """May the stop notification be sent for this resolved hard-exit action?
+
+    Only ``requested`` — nothing verifiable carries the restart line —
+    permits ``STOPPING=1``. ``overlap`` (a verified successor) and ``park``
+    (an unfingerprintable one) both suppress it: sent while this
+    predecessor is still MAINPID, the notification deactivates the unit
+    under the successor's cgroup and arms TimeoutStopSec against it
+    (2026-11-21 incident; Go twin: NotifyStoppingOnAction).
+    """
+    return action == HARD_EXIT_REQUESTED
+
+
+def stopping_notify_permitted(runner: Any) -> bool:
+    """May THIS draining process still tell systemd it is stopping?
+
+    Read-only twin of ``resolve_hard_exit_action`` (Go twin:
+    ResolveRunnerNotifyStopping): the same successor evidence that decides
+    a hard exit decides the stop notification, because an armed stop
+    notification is the same class of unit-level instruction — sent while
+    this predecessor is still MAINPID, ``STOPPING=1`` flipped the incident
+    unit to ``deactivating (stop-sigterm)`` with no stop job, and it stayed
+    there after the successor took MAINPID (READY=1 is ignored in stop
+    states). Unlike the hard-exit resolver this never performs the MAINPID
+    transfer: teardown does that at its exit boundary, and the stop head
+    only needs to know whether the unit may be told to stop.
+    """
+    successor_pid = int(getattr(runner, "_overlap_restart_successor_pid", 0) or 0)
+    started = getattr(runner, "_overlap_restart_successor_started", False) is True
+    if started and successor_pid > 0:
+        identity = _overlap_successor_identity_state(runner, successor_pid)
+    else:
+        identity = "none"
+    if identity in ("live", "unknown"):
+        # The runner's own successor state is the only evidence here — the
+        # mirror cannot turn either into "requested", so do not read it.
+        newer = False
+    else:
+        newer = _newer_live_generation()
+    # systemd_managed/mainpid_handover_done defaults are deliberate: they
+    # only separate overlap from park, and both stay silent.
+    return stopping_notify_on_action(hard_exit_action(identity, newer))
+
+
 def _newer_live_generation() -> bool:
     """Registry-mirror probe; a failed read adds no evidence either way."""
     try:

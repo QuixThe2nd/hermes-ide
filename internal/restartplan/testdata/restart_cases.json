@@ -422,6 +422,78 @@
       "action": "park",
       "armed_exit_code": 75,
       "expect_exited": false
+    },
+    {
+      "name": "stopping_notify_live_unmanaged_stays_silent",
+      "op": "stopping_notify",
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_notify": false
+    },
+    {
+      "name": "stopping_notify_live_managed_after_handover_stays_silent",
+      "op": "stopping_notify",
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": true,
+      "mainpid_handover_done": true,
+      "expect_notify": false
+    },
+    {
+      "name": "stopping_notify_live_managed_before_handover_stays_silent",
+      "op": "stopping_notify",
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": true,
+      "mainpid_handover_done": false,
+      "expect_notify": false
+    },
+    {
+      "name": "stopping_notify_unknown_stays_silent",
+      "op": "stopping_notify",
+      "successor_identity": "unknown",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_notify": false
+    },
+    {
+      "name": "stopping_notify_dead_serial_replacement_notifies",
+      "op": "stopping_notify",
+      "successor_identity": "dead",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_notify": true
+    },
+    {
+      "name": "stopping_notify_dead_but_newer_generation_stays_silent",
+      "op": "stopping_notify",
+      "successor_identity": "dead",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_notify": false
+    },
+    {
+      "name": "stopping_notify_none_ordinary_stop_notifies",
+      "op": "stopping_notify",
+      "successor_identity": "none",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_notify": true
+    },
+    {
+      "name": "stopping_notify_none_but_newer_generation_stays_silent",
+      "op": "stopping_notify",
+      "successor_identity": "none",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_notify": false
     }
   ]
 }

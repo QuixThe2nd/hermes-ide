@@ -110,8 +110,15 @@ class SystemdWatchdog:
                 if scheduled_at < now:
                     scheduled_at = now + cadence
 
-    async def stop(self) -> None:
-        """Stop feeding systemd and emit ``STOPPING=1`` at most once."""
+    async def stop(self, *, notify_stopping: bool = True) -> None:
+        """Stop feeding systemd; emit ``STOPPING=1`` at most once and only
+        when ``notify_stopping`` permits it.
+
+        An overlap predecessor whose successor carries the unit must not
+        tell systemd the unit is stopping while it is still MAINPID (Go
+        twin: NotifyStoppingOnAction) — the datagram deactivates the unit
+        under the live successor's cgroup. The ping task stops either way.
+        """
         self._stopping = True
         task = self._task
         if task is not None and task is not asyncio.current_task():
@@ -119,7 +126,7 @@ class SystemdWatchdog:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._task = None
-        if self.enabled and not self._stopping_notified:
+        if notify_stopping and self.enabled and not self._stopping_notified:
             notify("STOPPING=1")
             self._stopping_notified = True
 

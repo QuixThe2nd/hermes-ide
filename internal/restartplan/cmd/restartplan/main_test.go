@@ -343,3 +343,81 @@ func TestBinaryProbeFailedExit3(t *testing.T) {
 		t.Fatalf("stderr %q must name the failed probe", stderr)
 	}
 }
+
+// TestBinaryStoppingNotifyWireContract pins the stopping_notify op added
+// for the 2026-11-21 incident: may a draining predecessor still emit
+// sd_notify STOPPING=1 while it is MAINPID? The rows are the failure
+// modes that gate exists for — a live successor (managed or not, handover
+// done or not) and an unfingerprintable one must keep the unit
+// active(running), while a provably dead successor and an ordinary stop
+// keep notifying exactly as before.
+func TestBinaryStoppingNotifyWireContract(t *testing.T) {
+	bin := buildBinary(t)
+	requests := []struct {
+		name    string
+		stdin   string
+		wantOut string
+	}{
+		{
+			name: "live_unmanaged_successor_stays_silent",
+			stdin: `{"op":"stopping_notify","successor_identity":"live",` +
+				`"newer_live_generation":false,"systemd_managed":false,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":false}`,
+		},
+		{
+			name: "live_managed_after_handover_stays_silent",
+			stdin: `{"op":"stopping_notify","successor_identity":"live",` +
+				`"newer_live_generation":false,"systemd_managed":true,` +
+				`"mainpid_handover_done":true}`,
+			wantOut: `{"notify":false}`,
+		},
+		{
+			name: "live_managed_before_handover_stays_silent",
+			stdin: `{"op":"stopping_notify","successor_identity":"live",` +
+				`"newer_live_generation":false,"systemd_managed":true,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":false}`,
+		},
+		{
+			name: "unknown_identity_stays_silent",
+			stdin: `{"op":"stopping_notify","successor_identity":"unknown",` +
+				`"newer_live_generation":false,"systemd_managed":false,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":false}`,
+		},
+		{
+			name: "unrecognized_identity_stays_silent",
+			stdin: `{"op":"stopping_notify","successor_identity":"",` +
+				`"newer_live_generation":false,"systemd_managed":false,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":false}`,
+		},
+		{
+			name: "dead_successor_notifies",
+			stdin: `{"op":"stopping_notify","successor_identity":"dead",` +
+				`"newer_live_generation":false,"systemd_managed":false,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":true}`,
+		},
+		{
+			name: "dead_successor_but_newer_generation_stays_silent",
+			stdin: `{"op":"stopping_notify","successor_identity":"dead",` +
+				`"newer_live_generation":true,"systemd_managed":false,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":false}`,
+		},
+		{
+			name: "no_successor_ordinary_stop_notifies",
+			stdin: `{"op":"stopping_notify","successor_identity":"none",` +
+				`"newer_live_generation":false,"systemd_managed":false,` +
+				`"mainpid_handover_done":false}`,
+			wantOut: `{"notify":true}`,
+		},
+	}
+	for _, tc := range requests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertJSONOutput(t, bin, tc.stdin, tc.wantOut)
+		})
+	}
+}
