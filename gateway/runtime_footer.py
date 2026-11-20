@@ -246,6 +246,24 @@ def phase_times_from_result(result: dict[str, Any] | None) -> Optional[dict]:
     return measured or None
 
 
+def footer_phase_times(result: dict[str, Any] | None, *, turn_ended_at: Optional[float] = None) -> Optional[dict]:
+    """Agent phase buckets plus the gateway's spans outside ``run_conversation`` (so no api/tool
+    overlap): ``gateway_setup_time`` into ``setup``; ``conversation_ended_at`` → ``turn_ended_at``
+    (perf_counter, delivery drain) into ``save``. Per-key sum skipping missing, non-numeric and
+    negative values; ``None`` if nothing counted. Go twin: ``footerfmt.FooterPhases``."""
+    result = result or {}
+    gateway = {"setup": result.get("gateway_setup_time")}
+    ended_at = result.get("conversation_ended_at")
+    if turn_ended_at is not None and isinstance(ended_at, (int, float)):
+        gateway["save"] = turn_ended_at - ended_at
+    merged: dict[str, float] = {}
+    for phases in (gateway, phase_times_from_result(result) or {}):
+        for key, seconds in phases.items():
+            if isinstance(seconds, (int, float)) and seconds >= 0:
+                merged[key] = merged.get(key, 0.0) + float(seconds)
+    return merged or None
+
+
 def turn_metrics(result: dict[str, Any] | None) -> dict[str, Any]:
     """Footer inputs carried from an agent result onto the gateway's agent_result dict; spread
     it (``**turn_metrics(result)``) into every return path so the timing fields never get dropped."""

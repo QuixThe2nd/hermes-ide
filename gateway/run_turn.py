@@ -1696,7 +1696,7 @@ class GatewayTurnMixin:
         from gateway.run import _terminal_scope_cwd
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
-            from gateway.runtime_footer import phase_times_from_result as _ptfr
+            from gateway.runtime_footer import footer_phase_times as _ftp
             return _bfl(
                 model=agent_result.get("model"),
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
@@ -1707,7 +1707,7 @@ class GatewayTurnMixin:
                 tool_time=agent_result.get("tool_time"),
                 api_calls=agent_result.get("api_calls"),
                 tool_calls=agent_result.get("tool_calls"),
-                phase_times=_ptfr(agent_result),
+                phase_times=_ftp(agent_result),
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
                 reasoning_effort=self._footer_reasoning_effort(
@@ -4123,7 +4123,8 @@ class GatewayTurnMixin:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.perf_counter() - _msg_start_time
+            _response_ended_at = time.perf_counter()
+            _response_time = _response_ended_at - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
             logger.info(
@@ -4221,7 +4222,7 @@ class GatewayTurnMixin:
                 _footer_line = ""
                 try:
                     from gateway.runtime_footer import build_footer_line as _bfl
-                    from gateway.runtime_footer import phase_times_from_result as _ptfr
+                    from gateway.runtime_footer import footer_phase_times as _ftp
                     _footer_line = _bfl(
                         model=agent_result.get("model"),
                         context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
@@ -4233,7 +4234,7 @@ class GatewayTurnMixin:
                         tool_time=agent_result.get("tool_time"),
                         api_calls=_api_calls,
                         tool_calls=agent_result.get("tool_calls"),
-                        phase_times=_ptfr(agent_result),
+                        phase_times=_ftp(agent_result, turn_ended_at=_response_ended_at),
                         requested_model=agent_result.get("requested_model"),
                         served_model=agent_result.get("served_model"),
                         reasoning_effort=self._footer_reasoning_effort(session_key),

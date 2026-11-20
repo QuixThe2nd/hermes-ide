@@ -179,3 +179,23 @@ def test_turn_metrics_carries_phase_times_for_every_return_path():
     )
     assert metrics["mem_time"] == 0.5
     assert metrics["compress_time"] is None
+
+
+def test_footer_splits_live_other_into_gateway_setup_and_save():
+    """The live bare `other 4.4s` splits into mem/setup/save with only the true residual left:
+    pre-run gateway work joins setup, run_conversation's end → the turn-time stamp joins save."""
+    from gateway.runtime_footer import footer_phase_times
+
+    result = {"mem_time": 1.9, "setup_time": 0.05, "save_time": 0.02,
+              "gateway_setup_time": 0.85, "conversation_ended_at": 50.0}
+    assert footer_phase_times(result)["save"] == pytest.approx(0.02)  # no stamp, no span
+    # Missing, non-numeric and negative spans never count (MergePhases semantics).
+    assert footer_phase_times({"conversation_ended_at": "x", "mem_time": None}, turn_ended_at=5.0) is None
+    assert footer_phase_times({"conversation_ended_at": 6.0, "setup_time": 0.0}, turn_ended_at=5.0) == {"setup": 0.0}
+    common = dict(model="claude-opus-5-5", context_tokens=1900, context_length=10000,
+                  turn_time=15.4, api_time=11.0, tool_time=0.0, api_calls=1, tool_calls=0)
+    assert build_footer_line(**common) == (
+        "opus-5-5 · 19% · 15s · api 11s · tools 0 · other 4.4s · 1 call")
+    assert build_footer_line(**common, phase_times=footer_phase_times(result, turn_ended_at=51.4)) == (
+        "opus-5-5 · 19% · 15s · api 11s · tools 0 · mem 1.9s · setup 0.9s · save 1.4s · "
+        "other 0.2s · 1 call")
