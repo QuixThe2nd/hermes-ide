@@ -639,7 +639,7 @@ async def test_fetch_channel_context_cold_retains_human_pasted_goal_intent_statu
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     adapter.config.extra["history_backfill_limit"] = 10
 
-    status = "```\n🔍 Goal Intent: 0.91 Confidence\n```"
+    status = "```\n🔍 Goal Intent: Task (0.91)\n```"
     human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
 
     channel = FakeHistoryChannel(
@@ -718,7 +718,7 @@ async def test_fetch_channel_context_warm_tracked_notice_id_still_excludes(adapt
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     adapter.config.extra["history_backfill_limit"] = 10
 
-    notice = "```\n🔍 Goal Intent: 0.91 Confidence\n```"
+    notice = "```\n🔍 Goal Intent: Task (0.91)\n```"
     human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
 
     channel = FakeHistoryChannel(
@@ -1240,7 +1240,7 @@ async def test_discord_send_does_not_cache_goal_intent_status_as_history_boundar
     )
     adapter._last_self_message_id["778"] = "111"
 
-    result = await adapter.send("778", "```\n🔍 Goal Intent: 0.90 Confidence\n```")
+    result = await adapter.send("778", "```\n🔍 Goal Intent: Task (0.90)\n```")
 
     assert result.success is True
     assert adapter._last_self_message_id["778"] == "111"

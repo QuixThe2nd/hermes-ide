@@ -290,12 +290,16 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
 # trusted exclusions (metadata flags, tracked message ids) are
 # author-independent and stay in force.
 # The second pattern is the goal-intent fenced status, pinned to the exact
-# shape the Go formatter emits (notice.go goalIntentStatus) so the bot's
-# ordinary fenced code answers never match.
+# shapes the Go formatter emits (notice.go goalIntentStatus) so the bot's
+# ordinary fenced code answers never match: a known label with optional
+# confidence, the bare confidence fallback, the failure class, or the
+# unavailability marker.
 _DISCORD_SELF_NOTICE_HISTORY_MESSAGE_PATTERNS = (
     re.compile(r"^\s*🔎\s+jev\s+\S", re.IGNORECASE),
     re.compile(
-        r"^\s*```\s*\n🔍 Goal Intent: (?:[0-9]+\.[0-9]{2} Confidence"
+        r"^\s*```\s*\n🔍 Goal Intent: (?:"
+        r"(?:Chat|Task|Approval|Chase)(?: \([0-9]+\.[0-9]{2}\))?"
+        r"|[0-9]+\.[0-9]{2} Confidence"
         r"|failed \([A-Za-z0-9_.\-]{1,48}\)"
         r"|confidence unavailable)\n```\s*$",
         re.IGNORECASE,

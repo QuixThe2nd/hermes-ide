@@ -13,7 +13,7 @@ import (
 // no control runes, no backtick/@ in the author fragment, sanitized tokens
 // only, and the attempt fragment exactly when the caller retries; the
 // goal-intent status renders as a fenced code block whose only content is
-// the confidence line — never numbering, subject, author or label.
+// the status line — never numbering, subject or author.
 func TestFormatMatrixInvariants(t *testing.T) {
 	purposes := []string{PurposeGoalIntent, PurposeResponseGate, PurposeReactionGate}
 	authors := []string{"", "Alice", "@everyone", "line\nbreak", strings.Repeat("long", 60)}
@@ -112,8 +112,10 @@ func assertNoticeInvariants(t *testing.T, line string, n Notice) {
 
 // assertGoalIntentNoticeInvariants pins the fenced goal-intent status:
 // opening fence on its own line, exactly one status line starting with the
-// fixed head, closing fence on its own line, and none of the fragments the
-// record may still carry (numbering, subject, author, label) leaking in.
+// fixed head, closing fence on its own line, the status exactly one of the
+// allowed shapes (label + confidence, label alone, confidence fallback,
+// failure, unavailability), and none of the fragments the record may still
+// carry (numbering, subject, author) leaking in.
 func assertGoalIntentNoticeInvariants(t *testing.T, block string, n Notice) {
 	t.Helper()
 	const head = "```\n🔍 Goal Intent: "
@@ -124,10 +126,19 @@ func assertGoalIntentNoticeInvariants(t *testing.T, block string, n Notice) {
 		t.Fatalf("goal-intent notice %q has %d newlines, want exactly the two fence lines", block, got)
 	}
 	status := strings.TrimSuffix(strings.TrimPrefix(block, head), "\n```")
+	label := goalIntentLabel(n)
 	switch {
 	case n.Error != "":
 		if !strings.HasPrefix(status, "failed (") || !strings.HasSuffix(status, ")") {
 			t.Fatalf("error notice status %q is not a failure", status)
+		}
+	case label != "" && n.HasConfidence:
+		if status != label+" ("+fixed2(n.Confidence)+")" {
+			t.Fatalf("label status %q is not a label readout for %q", status, label)
+		}
+	case label != "":
+		if status != label {
+			t.Fatalf("label-only status %q must name the label %q", status, label)
 		}
 	case n.HasConfidence:
 		if !strings.HasSuffix(status, " Confidence") || len(status) != len("0.00 Confidence") {
@@ -138,10 +149,13 @@ func assertGoalIntentNoticeInvariants(t *testing.T, block string, n Notice) {
 			t.Fatalf("no-confidence status %q must say confidence unavailable", status)
 		}
 	}
-	for _, banned := range []string{"attempt", "user message", "message", "from ", "jev", n.Label} {
-		if banned != "" && strings.Contains(status, banned) {
+	for _, banned := range []string{"attempt", "user message", "message", "from ", "jev"} {
+		if strings.Contains(status, banned) {
 			t.Fatalf("goal-intent status %q leaks %q", status, banned)
 		}
+	}
+	if raw := strings.TrimSpace(n.Label); raw != "" && label == "" && strings.Contains(status, raw) {
+		t.Fatalf("goal-intent status %q leaks the non-renderable label %q", status, raw)
 	}
 	if author := SanitizeAuthor(n.Author); author != "" && strings.Contains(block, author) {
 		t.Fatalf("goal-intent notice %q leaks author %q", block, author)
@@ -215,21 +229,37 @@ func TestReactionVerdictCoversReactAbstainAndMissingFragments(t *testing.T) {
 	}
 }
 
-// TestGoalIntentStatusIgnoresLabelAndCoversMissingConfidence: labels never
-// render — every success is the same confidence readout — and a missing
-// confidence says so instead of inventing one.
-func TestGoalIntentStatusIgnoresLabelAndCoversMissingConfidence(t *testing.T) {
-	for _, label := range []string{"chat", "task", "approval", "chase", "unknown"} {
+// TestGoalIntentStatusRendersKnownLabelsAndCoversMissingConfidence: every
+// known label renders title-cased — with the fixed-two-decimal confidence
+// when present, alone when not — an unknown label falls back to the
+// confidence-only readout, and a missing confidence says so instead of
+// inventing one.
+func TestGoalIntentStatusRendersKnownLabelsAndCoversMissingConfidence(t *testing.T) {
+	for label, display := range map[string]string{
+		"chat": "Chat", "task": "Task", "approval": "Approval", "chase": "Chase",
+	} {
 		line := Format(Notice{Purpose: PurposeGoalIntent, Label: label, HasConfidence: true, Confidence: 0.5})
-		want := "```\n🔍 Goal Intent: 0.50 Confidence\n```"
+		want := "```\n🔍 Goal Intent: " + display + " (0.50)\n```"
 		if line != want {
 			t.Errorf("label %s: Format = %q, want %q", label, line, want)
 		}
+		line = Format(Notice{Purpose: PurposeGoalIntent, Label: label})
+		want = "```\n🔍 Goal Intent: " + display + "\n```"
+		if line != want {
+			t.Errorf("label %s without confidence: Format = %q, want %q", label, line, want)
+		}
 	}
-	line := Format(Notice{Purpose: PurposeGoalIntent, Label: "task"})
+	for _, label := range []string{"unknown", "submarine!!", ""} {
+		line := Format(Notice{Purpose: PurposeGoalIntent, Label: label, HasConfidence: true, Confidence: 0.5})
+		want := "```\n🔍 Goal Intent: 0.50 Confidence\n```"
+		if line != want {
+			t.Errorf("label %q: Format = %q, want %q", label, line, want)
+		}
+	}
+	line := Format(Notice{Purpose: PurposeGoalIntent})
 	want := "```\n🔍 Goal Intent: confidence unavailable\n```"
 	if line != want {
-		t.Errorf("no-confidence: Format = %q, want %q", line, want)
+		t.Errorf("no verdict: Format = %q, want %q", line, want)
 	}
 }
 

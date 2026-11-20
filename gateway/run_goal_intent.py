@@ -169,13 +169,13 @@ class GatewayGoalIntentMixin:
         profile_home = self._resolve_profile_home_for_source(source)
 
         def on_attempt(attempt: int, attempts: int, label, confidence, error) -> None:
-            # attempt/attempts/label stay in the callback contract (the
-            # classifier owns retry numbering) but the fenced status renders
-            # none of them.
+            # attempt/attempts stay in the callback contract (the classifier
+            # owns retry numbering) but the fenced status renders neither;
+            # the label rides the success path only.
             from gateway.jev_notice import format_notice, goal_intent_attempt_record
 
             line = format_notice(
-                goal_intent_attempt_record(confidence=confidence, error=error),
+                goal_intent_attempt_record(label=label, confidence=confidence, error=error),
                 profile_home,
             )
             if line is None:

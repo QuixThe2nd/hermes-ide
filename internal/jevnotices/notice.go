@@ -62,8 +62,9 @@ const (
 // Allowed+Scores (response gate), Emoji/Abstain (reaction gate), or Error
 // (any caller's failed attempt). Attempt/Attempts carry retry numbering;
 // Attempts <= 1 hides the attempt fragment (the gates never retry). The
-// goal-intent purpose renders only Confidence/Error (goalIntentStatus) —
-// Subject, Author, Label and the numbering are gates-only inputs.
+// goal-intent purpose renders Label with Confidence, or Error
+// (goalIntentStatus) — Subject, Author and the numbering are gates-only
+// inputs.
 type Notice struct {
 	Purpose       string
 	Subject       string
@@ -186,19 +187,52 @@ func Format(n Notice) string {
 }
 
 // goalIntentStatus is the goal-intent notice: a fenced status block whose
-// only content is the confidence readout, the sanitized failure class, or
-// the unavailability marker. Subject, author, attempt numbering and label
-// are deliberately NOT rendered — the status reports the classifier's own
-// health, not the classified message. The fence makes chat platforms keep
-// the block verbatim instead of folding it into conversational history.
+// content is the label with its confidence readout, the sanitized failure
+// class, or the unavailability marker. Subject, author and attempt
+// numbering are deliberately NOT rendered — the status reports the
+// classifier's own health, not the classified message. The fence makes chat
+// platforms keep the block verbatim instead of folding it into
+// conversational history.
 func goalIntentStatus(n Notice) string {
-	value := "confidence unavailable"
+	return "```\n🔍 Goal Intent: " + goalIntentValue(n) + "\n```"
+}
+
+// goalLabelDisplay maps a goal-intent label token to its display form. The
+// classifier's schema admits exactly these labels on the success path; a
+// label outside the table (empty, "unknown" fail-closed, a future token) is
+// not rendered at all — the status falls back to the bare confidence
+// readout rather than printing an unvetted token.
+var goalLabelDisplay = map[string]string{
+	"chat":     "Chat",
+	"task":     "Task",
+	"approval": "Approval",
+	"chase":    "Chase",
+}
+
+// goalIntentLabel returns the display form of a renderable goal-intent
+// label, or "" when the label is absent or outside the display table (the
+// status then falls back to the confidence readout). Detail after a ':' is
+// dropped first — the same rule as SanitizeToken, so judge-appended human
+// detail never reaches the status line.
+func goalIntentLabel(n Notice) string {
+	head, _, _ := strings.Cut(n.Label, ":")
+	return goalLabelDisplay[strings.ToLower(strings.TrimSpace(head))]
+}
+
+func goalIntentValue(n Notice) string {
 	if n.Error != "" {
-		value = "failed (" + SanitizeToken(n.Error) + ")"
-	} else if n.HasConfidence {
-		value = fixed2(n.Confidence) + " Confidence"
+		return "failed (" + SanitizeToken(n.Error) + ")"
 	}
-	return "```\n🔍 Goal Intent: " + value + "\n```"
+	if label := goalIntentLabel(n); label != "" {
+		if n.HasConfidence {
+			return label + " (" + fixed2(n.Confidence) + ")"
+		}
+		return label
+	}
+	if n.HasConfidence {
+		return fixed2(n.Confidence) + " Confidence"
+	}
+	return "confidence unavailable"
 }
 
 func verdict(n Notice) string {
