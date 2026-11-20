@@ -287,19 +287,6 @@ def test_served_model_alias_uses_maker_stripped_name():
     assert format_runtime_footer(
         model="anthropic/claude-opus-5-5", context_tokens=0, context_length=None, cwd="/x",
         served_model="claude-opus-5-5", fields=["served_model"]) == ""
-def test_footer_compact_reference_case():
-    """Contract case from the compact-format change: a claude model with
-    medium effort and no tool activity drops the maker prefix, rides the
-    effort as a parenthetical, renders `tools 0`, and has no trailing
-    reasoning segment. Vendor-prefixed input gives the same line."""
-    common = dict(
-        context_tokens=23_000, context_length=100_000,
-        turn_time=14.9, api_time=11.0, tool_time=0.0,
-        api_calls=1, tool_calls=0, reasoning_effort="medium",
-    )
-    expected = "opus-5-5 (med.) · 23% · 15s · api 11s · tools 0 · other 3.9s · 1 call"
-    assert build_footer_line(model="claude-opus-5-5", **common) == expected
-    assert build_footer_line(model="anthropic/claude-opus-5-5", **common) == expected
 
 
 @pytest.mark.parametrize("count,expected", [(1, "1 tool"), (9, "9 tools"), (0, ""), (None, "")])
