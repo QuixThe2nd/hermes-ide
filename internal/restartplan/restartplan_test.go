@@ -38,6 +38,12 @@ type sharedCase struct {
 	SystemdManaged      bool   `json:"systemd_managed"`
 	MainpidHandoverDone bool   `json:"mainpid_handover_done"`
 	ExpectAction        string `json:"expect_action"`
+	// hard_exit_code inputs: the resolved action plus the code the backstop
+	// was armed with, and the expected exit (expect_exited=false is PARK).
+	Action        string `json:"action"`
+	ArmedExitCode int    `json:"armed_exit_code"`
+	ExpectCode    *int   `json:"expect_code"`
+	ExpectExited  bool   `json:"expect_exited"`
 }
 
 func loadSharedCases(t *testing.T) []sharedCase {
@@ -66,9 +72,10 @@ func loadSharedCases(t *testing.T) []sharedCase {
 	return cases
 }
 
-// TestSharedTable pins all three decisions against the shared table: the
-// transport rows (op "decide"), the planned-exit rows (op "exit_code"), and
-// the watchdog hard-exit rows (op "hard_exit").
+// TestSharedTable pins all four decisions against the shared table: the
+// transport rows (op "decide"), the planned-exit rows (op "exit_code"), the
+// watchdog hard-exit rows (op "hard_exit"), and the action→exit-code rows
+// (op "hard_exit_code").
 func TestSharedTable(t *testing.T) {
 	for _, tc := range loadSharedCases(t) {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -99,6 +106,12 @@ func TestSharedTable(t *testing.T) {
 				if string(got) != tc.ExpectAction {
 					t.Fatalf("ResolveHardExitAction(%q, newer_live=%t, managed=%t, handover=%t) = %q, want %q",
 						tc.SuccessorIdentity, tc.NewerLiveGeneration, tc.SystemdManaged, tc.MainpidHandoverDone, got, tc.ExpectAction)
+				}
+			case "hard_exit_code":
+				code, exited := HardExitCode(HardExitAction(tc.Action), tc.ArmedExitCode)
+				if exited != tc.ExpectExited || (tc.ExpectExited && code != *tc.ExpectCode) {
+					t.Fatalf("HardExitCode(%q, armed=%d) = (%d, exited=%t); want exited=%t code=%d",
+						tc.Action, tc.ArmedExitCode, code, exited, tc.ExpectExited, deref(tc.ExpectCode))
 				}
 			default:
 				t.Fatalf("unknown op %q", tc.Op)
@@ -420,6 +433,121 @@ func TestHardExitUnknownIdentityStringParks(t *testing.T) {
 	for _, raw := range []string{"", "Live", "LIVE", "alive", "reused", "0"} {
 		if got := ResolveHardExitAction(raw, false, false, false); got != HardExitPark {
 			t.Fatalf("ResolveHardExitAction(%q) = %s, want park", raw, got)
+		}
+	}
+}
+
+// TestHardExitCodeNeverArmsAKillAgainstALiveSuccessor pins the mapping half
+// of the invariant: whatever the backstop was armed with (1 from the
+// shutdown watchdog, 75 from the loop-liveness watchdog — both order the
+// cgroup-killing restart), an "overlap" action must translate to the
+// handover code, and a "park" action must not exit at all. Only "requested"
+// lets the armed code through.
+func TestHardExitCodeNeverArmsAKillAgainstALiveSuccessor(t *testing.T) {
+	for _, armed := range []int{0, 1, 75, 78, 255} {
+		if code, exited := HardExitCode(HardExitOverlap, armed); !exited || code != OverlapRestartExitCode {
+			t.Fatalf("overlap with armed=%d = (%d, exited=%t); want (%d, true)",
+				armed, code, exited, OverlapRestartExitCode)
+		}
+		if _, exited := HardExitCode(HardExitPark, armed); exited {
+			t.Fatalf("park with armed=%d must not exit", armed)
+		}
+		if code, exited := HardExitCode(HardExitRequested, armed); !exited || code != armed {
+			t.Fatalf("requested with armed=%d = (%d, exited=%t); want (%d, true)",
+				armed, code, exited, armed)
+		}
+	}
+}
+
+// TestHardExitCodeUnknownActionParks: an unrecognized action string must
+// fall to park, mirroring ResolveHardExitAction's treatment of unknown
+// identities — the cost of parking is a stuck backstop, the cost of a wrong
+// exit is a killed successor.
+func TestHardExitCodeUnknownActionParks(t *testing.T) {
+	for _, raw := range []string{"", "OVERLAP", "restart", "exit"} {
+		if _, exited := HardExitCode(HardExitAction(raw), 1); exited {
+			t.Fatalf("HardExitCode(%q, 1) must not exit", raw)
+		}
+	}
+}
+
+// TestHardExitAgreesWithPlannedExit is the two-doors invariant: the
+// planned-exit decision (what a RETURNING teardown exits with) and the
+// hard-exit decision (what a firing backstop does instead) read the same
+// runner state, so wherever the planned exit protects a live successor
+// (overlap 76), the hard exit must protect it too (overlap or park — never
+// "requested"). A divergence would mean one of the two doors can still kill
+// the successor the other door promised to keep.
+func TestHardExitAgreesWithPlannedExit(t *testing.T) {
+	for _, row := range hardExitSpace {
+		// Reconstruct the planned-exit inputs from the row's world:
+		// a restart was requested on the service route, a successor was
+		// started iff we have an identity answer, supervision is implied
+		// by systemdManaged, and the mirror probe answers newerLive.
+		successorStarted := row.identity == "live" || row.identity == "unknown"
+		planned := ResolveExitCode(true, true, successorStarted, true, row.newerLive)
+		protected := planned.Special && planned.Code == OverlapRestartExitCode
+		if protected && row.want == HardExitRequested {
+			t.Fatalf("planned exit protects (%s newer=%t → 76) but hard exit answers requested — %s",
+				row.identity, row.newerLive, row.why)
+		}
+	}
+}
+
+// TestSharedTableNamesEveryOp guards the parity document itself: every op
+// the twins and cmd/restartplan dispatch on must carry rows in the shared
+// table, and no row may name an op outside that set. The Python contract
+// test only runs table rows — an op without rows would ship invisible to
+// the parity net, and a typo'd op field would silently exercise nothing.
+func TestSharedTableNamesEveryOp(t *testing.T) {
+	ops := map[string]bool{
+		"decide": false, "exit_code": false,
+		"hard_exit": false, "hard_exit_code": false,
+	}
+	for _, tc := range loadSharedCases(t) {
+		if _, known := ops[tc.Op]; !known {
+			t.Fatalf("case %s names op %q, which no twin dispatches on", tc.Name, tc.Op)
+		}
+		ops[tc.Op] = true
+	}
+	for op, seen := range ops {
+		if !seen {
+			t.Fatalf("shared table has no %q rows — the op ships without parity coverage", op)
+		}
+	}
+}
+
+// TestSharedTableCoversEveryHardExitInput guards the hard-exit rows the
+// same way: every documented successor identity and every hard-exit action
+// must appear in at least one row, so no input class can lose its
+// Python-parity pin by a row being dropped (the identities are the
+// /proc answers, the actions are what a firing backstop may do).
+func TestSharedTableCoversEveryHardExitInput(t *testing.T) {
+	identities := map[string]bool{
+		string(IdentityLive): false, string(IdentityDead): false,
+		string(IdentityUnknown): false, string(IdentityNone): false,
+	}
+	actions := map[string]bool{
+		string(HardExitRequested): false,
+		string(HardExitOverlap):   false,
+		string(HardExitPark):      false,
+	}
+	for _, tc := range loadSharedCases(t) {
+		if tc.Op == "hard_exit" {
+			identities[tc.SuccessorIdentity] = true
+		}
+		if tc.Op == "hard_exit_code" {
+			actions[tc.Action] = true
+		}
+	}
+	for identity, seen := range identities {
+		if !seen {
+			t.Fatalf("shared table has no hard_exit row for identity %q", identity)
+		}
+	}
+	for action, seen := range actions {
+		if !seen {
+			t.Fatalf("shared table has no hard_exit_code row for action %q", action)
 		}
 	}
 }

@@ -266,6 +266,27 @@ func ResolveHardExitAction(
 	}
 }
 
+// HardExitCode maps a resolved hard-exit action to the code the backstop
+// must exit with. It is the twin of the Python watchdog helper
+// (_planned_hard_exit_code in gateway/shutdown_watchdog.py): "overlap"
+// carries the handover exit regardless of what the backstop was armed with
+// (arming happens before the drain, when no successor state is known);
+// "requested" keeps the armed code; "park" does not exit at all.
+//
+// The returned ok=false means PARK: the caller (a watchdog thread) must not
+// exit the process — both armed codes order a unit restart that kills the
+// live successor's cgroup, so the backstop waits and re-plans instead.
+func HardExitCode(action HardExitAction, armedExitCode int) (code int, ok bool) {
+	switch action {
+	case HardExitOverlap:
+		return OverlapRestartExitCode, true
+	case HardExitRequested:
+		return armedExitCode, true
+	default: // park (and any unrecognized action: never guess an exit)
+		return 0, false
+	}
+}
+
 // Decide derives the transport plan for one restart request.
 //
 // supervised mirrors is_gateway_supervisor_process (a manager with a

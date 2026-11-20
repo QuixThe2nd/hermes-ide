@@ -299,6 +299,29 @@
       "systemd_managed": false,
       "mainpid_handover_done": false,
       "expect_action": "park"
+    },
+    {
+      "name": "hard_exit_code_overlap_ignores_the_armed_code",
+      "op": "hard_exit_code",
+      "action": "overlap",
+      "armed_exit_code": 1,
+      "expect_code": 76,
+      "expect_exited": true
+    },
+    {
+      "name": "hard_exit_code_requested_keeps_the_armed_code",
+      "op": "hard_exit_code",
+      "action": "requested",
+      "armed_exit_code": 1,
+      "expect_code": 1,
+      "expect_exited": true
+    },
+    {
+      "name": "hard_exit_code_park_does_not_exit",
+      "op": "hard_exit_code",
+      "action": "park",
+      "armed_exit_code": 75,
+      "expect_exited": false
     }
   ]
 }

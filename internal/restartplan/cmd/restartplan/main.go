@@ -34,6 +34,12 @@
 //	  hard-exit backstop on a draining predecessor must do so it can never
 //	  kill a live overlap successor's cgroup.
 //
+//	{"op": "hard_exit_code", "action": "requested" | "overlap" | "park",
+//	 "armed_exit_code": int}
+//	  → prints the code a firing backstop exits with as
+//	  {"code": N, "exited": bool}; exited=false is PARK (the backstop must
+//	  not exit — HardExitCode).
+//
 // An unknown op or trigger exits 2 with a message on stderr.
 package main
 
@@ -59,6 +65,8 @@ func main() {
 		SuccessorIdentity   string `json:"successor_identity"`
 		SystemdManaged      bool   `json:"systemd_managed"`
 		MainpidHandoverDone bool   `json:"mainpid_handover_done"`
+		Action              string `json:"action"`
+		ArmedExitCode       int    `json:"armed_exit_code"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 		fmt.Fprintf(os.Stderr, "restartplan: unreadable request: %v\n", err)
@@ -102,6 +110,13 @@ func main() {
 			request.SuccessorIdentity, request.NewerLiveGeneration,
 			request.SystemdManaged, request.MainpidHandoverDone,
 		)})
+	case "hard_exit_code":
+		code, exited := restartplan.HardExitCode(
+			restartplan.HardExitAction(request.Action), request.ArmedExitCode)
+		emit(struct {
+			Code   int  `json:"code"`
+			Exited bool `json:"exited"`
+		}{code, exited})
 	default:
 		fmt.Fprintf(os.Stderr, "restartplan: unknown op %q\n", op)
 		os.Exit(2)

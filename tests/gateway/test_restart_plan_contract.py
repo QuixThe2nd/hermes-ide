@@ -97,11 +97,20 @@ def _hard_exit_action(case):
         mainpid_handover_done=case.get("mainpid_handover_done", False),
     )
 
+def _hard_exit_code(case):
+    """Drive the runtime watchdog mapping; None ↔ the Go twin's exited=false (park)."""
+    from gateway.shutdown_watchdog import _planned_hard_exit_code
+
+    return _planned_hard_exit_code(
+        lambda: case["action"], case["armed_exit_code"], lambda timeout: True)
+
 def _python_answer(case):
     if case["op"] == "decide":
         return _decide(case)
     if case["op"] == "hard_exit":
         return _hard_exit_action(case)
+    if case["op"] == "hard_exit_code":
+        return _hard_exit_code(case)
     return _exit_code(case)
 
 def _expected(case):
@@ -111,6 +120,8 @@ def _expected(case):
         return case["expect"]
     if case["op"] == "hard_exit":
         return case["expect_action"]
+    if case["op"] == "hard_exit_code":
+        return case["expect_code"] if case["expect_exited"] else None
     return case["expect_exit_code"]
 
 
@@ -136,6 +147,11 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
     if case["op"] == "hard_exit":
         # {"action": "..."} ↔ the Python action string.
         assert answer == {"action": _expected(case)}
+    elif case["op"] == "hard_exit_code":
+        # {"code": N, "exited": bool} ↔ the Python None-or-int answer.
+        want = _expected(case)
+        assert answer["exited"] == (want is not None)
+        assert (answer["code"] if answer["exited"] else None) == want
     elif case["op"] == "exit_code":
         # {"code": N, "special": bool} ↔ the Python None-or-int answer.
         want = _expected(case)
