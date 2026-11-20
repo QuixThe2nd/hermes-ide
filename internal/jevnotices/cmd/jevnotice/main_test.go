@@ -32,7 +32,8 @@ func TestRunRendersOneLinePerRecord(t *testing.T) {
 // TestRunRendersTheFencedGoalIntentStatus: the goal-intent record is the one
 // multi-line render — the whole notice is a fenced code block (fences on
 // their own lines), still newline-terminated as one stdout write the bridge
-// strips with rstrip("\n").
+// strips with rstrip("\n"). A record without a label keeps the confidence
+// readout.
 func TestRunRendersTheFencedGoalIntentStatus(t *testing.T) {
 	out, errOut, code := runRecord(t, `{"purpose":"goal-intent","confidence":0.61}`)
 	if code != 0 || errOut != "" {
@@ -41,6 +42,44 @@ func TestRunRendersTheFencedGoalIntentStatus(t *testing.T) {
 	want := "```\n🔍 Goal Intent: 0.61 Confidence\n```\n"
 	if out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
+	}
+}
+
+// TestRunRendersTheFencedGoalIntentLabelForms: the label record field flows
+// through the same stdin path the gateway bridge uses — known labels render
+// title-cased (with the fixed-two-decimal confidence when the record carries
+// one, alone when it does not), unknown labels keep the confidence-only
+// fallback.
+func TestRunRendersTheFencedGoalIntentLabelForms(t *testing.T) {
+	cases := []struct {
+		name, stdin, want string
+	}{
+		{
+			"label with confidence",
+			`{"purpose":"goal-intent","label":"chase","confidence":0.61}`,
+			"```\n🔍 Goal Intent: Chase (0.61)\n```\n",
+		},
+		{
+			"label without confidence",
+			`{"purpose":"goal-intent","label":"chase"}`,
+			"```\n🔍 Goal Intent: Chase\n```\n",
+		},
+		{
+			"unknown label keeps the confidence readout",
+			`{"purpose":"goal-intent","label":"submarine","confidence":0.5}`,
+			"```\n🔍 Goal Intent: 0.50 Confidence\n```\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, errOut, code := runRecord(t, tc.stdin)
+			if code != 0 || errOut != "" {
+				t.Fatalf("run exit=%d stderr=%q", code, errOut)
+			}
+			if out != tc.want {
+				t.Fatalf("stdout = %q, want %q", out, tc.want)
+			}
+		})
 	}
 }
 

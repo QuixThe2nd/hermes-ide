@@ -160,26 +160,92 @@ func TestFormatFailsClosedOnMalformedNotices(t *testing.T) {
 	}
 }
 
-// TestGoalIntentNoticeDropsNumberingSubjectAuthorAndLabel: the fenced
-// goal-intent status carries ONLY the confidence — attempt numbering,
-// subject, author and label are accepted record inputs that must never
-// reach the rendered notice, on any attempt shape.
-func TestGoalIntentNoticeDropsNumberingSubjectAuthorAndLabel(t *testing.T) {
+// TestGoalIntentNoticeDropsNumberingSubjectAuthor: the fenced goal-intent
+// status renders the known label and the confidence — attempt numbering,
+// subject and author are accepted record inputs that must never reach the
+// rendered notice, on any attempt shape.
+func TestGoalIntentNoticeDropsNumberingSubjectAuthor(t *testing.T) {
 	for _, shape := range [][2]int{{0, 0}, {1, 1}, {1, 2}, {2, 2}, {3, 4}} {
 		got := Format(Notice{
 			Purpose: PurposeGoalIntent, Subject: "user message", Author: "Alice",
 			Attempt: shape[0], Attempts: shape[1],
 			Label: "task", HasConfidence: true, Confidence: 0.61,
 		})
-		want := "```\n🔍 Goal Intent: 0.61 Confidence\n```"
+		want := "```\n🔍 Goal Intent: Task (0.61)\n```"
 		if got != want {
 			t.Fatalf("attempt shape %v: notice = %q, want %q", shape, got, want)
 		}
-		for _, banned := range []string{"attempt", "user message", "Alice", "task", "jev"} {
+		for _, banned := range []string{"attempt", "user message", "Alice", "jev"} {
 			if strings.Contains(got, banned) {
 				t.Fatalf("attempt shape %v: notice %q leaks %q", shape, got, banned)
 			}
 		}
+	}
+}
+
+// TestGoalIntentLabelForms pins every goal-intent status shape: the four
+// known labels title-cased with the fixed-two-decimal confidence in
+// parentheses, the label alone when the attempt carried no confidence, the
+// confidence-only fallback for absent or unknown labels, and the garbage and
+// detail-bearing label shapes.
+func TestGoalIntentLabelForms(t *testing.T) {
+	cases := []struct {
+		name   string
+		notice Notice
+		want   string
+	}{
+		{
+			"chat with confidence",
+			Notice{Purpose: PurposeGoalIntent, Label: "chat", HasConfidence: true, Confidence: 0.61},
+			"```\n🔍 Goal Intent: Chat (0.61)\n```",
+		},
+		{
+			"task with confidence",
+			Notice{Purpose: PurposeGoalIntent, Label: "task", HasConfidence: true, Confidence: 0.82},
+			"```\n🔍 Goal Intent: Task (0.82)\n```",
+		},
+		{
+			"approval with confidence",
+			Notice{Purpose: PurposeGoalIntent, Label: "approval", HasConfidence: true, Confidence: 0.74},
+			"```\n🔍 Goal Intent: Approval (0.74)\n```",
+		},
+		{
+			"chase with confidence",
+			Notice{Purpose: PurposeGoalIntent, Label: "chase", HasConfidence: true, Confidence: 0.61},
+			"```\n🔍 Goal Intent: Chase (0.61)\n```",
+		},
+		{
+			"label without confidence",
+			Notice{Purpose: PurposeGoalIntent, Label: "chase"},
+			"```\n🔍 Goal Intent: Chase\n```",
+		},
+		{
+			"unknown label falls back to the confidence readout",
+			Notice{Purpose: PurposeGoalIntent, Label: "submarine", HasConfidence: true, Confidence: 0.61},
+			"```\n🔍 Goal Intent: 0.61 Confidence\n```",
+		},
+		{
+			"garbage label sanitizes out of the render",
+			Notice{Purpose: PurposeGoalIntent, Label: "!!!", HasConfidence: true, Confidence: 0.5},
+			"```\n🔍 Goal Intent: 0.50 Confidence\n```",
+		},
+		{
+			"label detail after the colon is dropped",
+			Notice{Purpose: PurposeGoalIntent, Label: "task: contract draft", HasConfidence: true, Confidence: 0.9},
+			"```\n🔍 Goal Intent: Task (0.90)\n```",
+		},
+		{
+			"uppercase label still title-cases",
+			Notice{Purpose: PurposeGoalIntent, Label: "CHASE", HasConfidence: true, Confidence: 0.5},
+			"```\n🔍 Goal Intent: Chase (0.50)\n```",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Format(tc.notice); got != tc.want {
+				t.Fatalf("Format = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -197,12 +263,12 @@ func TestFormatExtraScoreKeysAreSortedAfterTheFixedFour(t *testing.T) {
 
 func TestFormatConfidenceRoundingIsFixedTwoDecimals(t *testing.T) {
 	got := Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Label: "task", HasConfidence: true, Confidence: 0.005})
-	want := "```\n🔍 Goal Intent: 0.01 Confidence\n```"
+	want := "```\n🔍 Goal Intent: Task (0.01)\n```"
 	if got != want {
 		t.Fatalf("rounding = %q, want %q", got, want)
 	}
 	got = Format(Notice{Purpose: PurposeGoalIntent, Subject: "user message", Label: "chase", HasConfidence: true, Confidence: 0.66666})
-	want = "```\n🔍 Goal Intent: 0.67 Confidence\n```"
+	want = "```\n🔍 Goal Intent: Chase (0.67)\n```"
 	if got != want {
 		t.Fatalf("rounding = %q, want %q", got, want)
 	}

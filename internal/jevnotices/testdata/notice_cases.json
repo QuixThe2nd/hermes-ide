@@ -2,12 +2,65 @@
   "comment": "Shared contract between internal/jevnotices (Go, canonical) and gateway/jev_notice.py (Python twin). Each case is one notice record and the exact line BOTH implementations must produce. Both sides' tests execute this table.",
   "cases": [
     {
-      "name": "goal-intent success posts the fenced confidence",
+      "name": "goal-intent success without a label falls back to the confidence readout",
       "record": {
         "purpose": "goal-intent",
         "confidence": 0.82
       },
       "expect": "```\n🔍 Goal Intent: 0.82 Confidence\n```"
+    },
+    {
+      "name": "goal-intent chat label with confidence",
+      "record": {
+        "purpose": "goal-intent",
+        "label": "chat",
+        "confidence": 0.61
+      },
+      "expect": "```\n🔍 Goal Intent: Chat (0.61)\n```"
+    },
+    {
+      "name": "goal-intent task label with confidence",
+      "record": {
+        "purpose": "goal-intent",
+        "label": "task",
+        "confidence": 0.82
+      },
+      "expect": "```\n🔍 Goal Intent: Task (0.82)\n```"
+    },
+    {
+      "name": "goal-intent approval label with confidence",
+      "record": {
+        "purpose": "goal-intent",
+        "label": "approval",
+        "confidence": 0.74
+      },
+      "expect": "```\n🔍 Goal Intent: Approval (0.74)\n```"
+    },
+    {
+      "name": "goal-intent chase label with confidence",
+      "record": {
+        "purpose": "goal-intent",
+        "label": "chase",
+        "confidence": 0.61
+      },
+      "expect": "```\n🔍 Goal Intent: Chase (0.61)\n```"
+    },
+    {
+      "name": "goal-intent label without confidence names the label",
+      "record": {
+        "purpose": "goal-intent",
+        "label": "chase"
+      },
+      "expect": "```\n🔍 Goal Intent: Chase\n```"
+    },
+    {
+      "name": "goal-intent unknown label falls back to the confidence readout",
+      "record": {
+        "purpose": "goal-intent",
+        "label": "submarine",
+        "confidence": 0.5
+      },
+      "expect": "```\n🔍 Goal Intent: 0.50 Confidence\n```"
     },
     {
       "name": "goal-intent low confidence is visible",
@@ -42,7 +95,7 @@
       "expect": "```\n🔍 Goal Intent: failed (schema_mismatch)\n```"
     },
     {
-      "name": "goal-intent retried attempt carries no numbering or fragments",
+      "name": "goal-intent retried attempt carries no numbering or subject/author",
       "record": {
         "purpose": "goal-intent",
         "subject": "user message",
@@ -52,7 +105,7 @@
         "label": "task",
         "confidence": 0.77
       },
-      "expect": "```\n🔍 Goal Intent: 0.77 Confidence\n```"
+      "expect": "```\n🔍 Goal Intent: Task (0.77)\n```"
     },
     {
       "name": "response-gate allow with all four nouls",

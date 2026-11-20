@@ -79,7 +79,7 @@ func TestSubjectAuthorFragmentTable(t *testing.T) {
 		{
 			"goal-intent renders the fenced status head",
 			Notice{Purpose: PurposeGoalIntent, Subject: "user message", Author: "Alice", Attempt: 1, Attempts: 2, Label: "task", HasConfidence: true, Confidence: 0.61},
-			"```\n🔍 Goal Intent: 0.61 Confidence\n```",
+			"```\n🔍 Goal Intent: Task (0.61)\n```",
 		},
 	}
 	for _, tc := range cases {
@@ -140,7 +140,7 @@ func ExampleFormat() {
 	}))
 	// Output:
 	// ```
-	// 🔍 Goal Intent: 0.82 Confidence
+	// 🔍 Goal Intent: Task (0.82)
 	// ```
 	// 🔎 jev response-gate user message from Tek: allow (addresses_bot=0.91 continues_bot_thread=0.12 joins_bot_thread=0.03 noise=0.05)
 	// 🔎 jev reaction-gate user message from Tek: no reaction (abstain 0.63)
