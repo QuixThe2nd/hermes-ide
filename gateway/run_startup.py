@@ -990,6 +990,7 @@ class GatewayStartupMixin:
 
         See #69089.
         """
+        from gateway.overlap_restart import resolve_hard_exit_action
         from gateway.shutdown_watchdog import _arm_loop_floor_timer, start_loop_liveness_watchdog
         config = getattr(self, "config", None)
         if config is not None and not getattr(config, "loop_watchdog", True):
@@ -1001,6 +1002,9 @@ class GatewayStartupMixin:
         if watchdog is None or not watchdog.is_alive():
             try:
                 # getattr defaults cover config=None test paths; loaded values are already clamped.
+                # The plan resolves at fire time: this guard stays armed through a
+                # drain (stopped only at stop() start), and its armed 75 orders a
+                # supervisor restart that would kill a live successor's cgroup.
                 self._loop_liveness_watchdog = start_loop_liveness_watchdog(
                     loop,
                     probe_interval=float(getattr(
@@ -1012,6 +1016,7 @@ class GatewayStartupMixin:
                     max_strikes=int(getattr(
                         config, "loop_watchdog_max_strikes", DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
                     )),
+                    overlap_exit_plan=lambda: resolve_hard_exit_action(self),
                 )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)

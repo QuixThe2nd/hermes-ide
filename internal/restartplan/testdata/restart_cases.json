@@ -209,6 +209,219 @@
       "supervised": true,
       "probe_failed": true,
       "expect_exit_code": 76
+    },
+    {
+      "name": "hard_exit_live_unmanaged_overlaps",
+      "op": "hard_exit",
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "hard_exit_live_managed_after_handover_overlaps",
+      "op": "hard_exit",
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": true,
+      "mainpid_handover_done": true,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "hard_exit_live_managed_without_handover_parks",
+      "op": "hard_exit",
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": true,
+      "mainpid_handover_done": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "hard_exit_unknown_parks",
+      "op": "hard_exit",
+      "successor_identity": "unknown",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "hard_exit_unknown_with_newer_live_still_parks",
+      "op": "hard_exit",
+      "successor_identity": "unknown",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "hard_exit_dead_serial_replacement",
+      "op": "hard_exit",
+      "successor_identity": "dead",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "requested"
+    },
+    {
+      "name": "hard_exit_dead_newer_live_overlaps",
+      "op": "hard_exit",
+      "successor_identity": "dead",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "hard_exit_none_serial_replacement",
+      "op": "hard_exit",
+      "successor_identity": "none",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "requested"
+    },
+    {
+      "name": "hard_exit_none_newer_live_overlaps",
+      "op": "hard_exit",
+      "successor_identity": "none",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "hard_exit_unrecognized_identity_parks",
+      "op": "hard_exit",
+      "successor_identity": "",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_handover_done": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "runner_none_newer_live_generation_overlaps",
+      "op": "hard_exit_runner",
+      "successor_started": false,
+      "successor_identity": "none",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "runner_none_no_newer_generation_requested",
+      "op": "hard_exit_runner",
+      "successor_started": false,
+      "successor_identity": "none",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "requested"
+    },
+    {
+      "name": "runner_dead_newer_live_generation_overlaps",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "dead",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "runner_dead_serial_replacement_requested",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "dead",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "requested"
+    },
+    {
+      "name": "runner_live_unmanaged_overlaps",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "runner_live_unmanaged_ignores_the_mirror",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "live",
+      "newer_live_generation": true,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "runner_live_managed_transfer_lands_overlaps",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": true,
+      "mainpid_transfer_succeeds": true,
+      "expect_action": "overlap"
+    },
+    {
+      "name": "runner_live_managed_transfer_fails_parks",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "live",
+      "newer_live_generation": false,
+      "systemd_managed": true,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "runner_unknown_managed_mirror_parks",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "unknown",
+      "newer_live_generation": true,
+      "systemd_managed": true,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "runner_unknown_unmanaged_parks",
+      "op": "hard_exit_runner",
+      "successor_started": true,
+      "successor_identity": "unknown",
+      "newer_live_generation": false,
+      "systemd_managed": false,
+      "mainpid_transfer_succeeds": false,
+      "expect_action": "park"
+    },
+    {
+      "name": "hard_exit_code_overlap_ignores_the_armed_code",
+      "op": "hard_exit_code",
+      "action": "overlap",
+      "armed_exit_code": 1,
+      "expect_code": 76,
+      "expect_exited": true
+    },
+    {
+      "name": "hard_exit_code_requested_keeps_the_armed_code",
+      "op": "hard_exit_code",
+      "action": "requested",
+      "armed_exit_code": 1,
+      "expect_code": 1,
+      "expect_exited": true
+    },
+    {
+      "name": "hard_exit_code_park_does_not_exit",
+      "op": "hard_exit_code",
+      "action": "park",
+      "armed_exit_code": 75,
+      "expect_exited": false
     }
   ]
 }

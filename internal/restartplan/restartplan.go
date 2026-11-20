@@ -170,6 +170,159 @@ func ResolveExitCodeProbeFailed(restartRequested, viaService, successorStarted, 
 	return absent, nil
 }
 
+// SuccessorIdentity is the /proc-backed identity answer for the process a
+// draining predecessor spawned: shared with the Python twin's
+// _overlap_successor_identity_state, which compares the successor's PID
+// start-time fingerprint against the one recorded at spawn.
+type SuccessorIdentity string
+
+const (
+	// IdentityNone: no successor was started (or its PID is unknown to us).
+	IdentityNone SuccessorIdentity = "none"
+	// IdentityLive: the PID exists and the start-time fingerprint matches —
+	// the successor we spawned is still that process.
+	IdentityLive SuccessorIdentity = "live"
+	// IdentityDead: the PID is gone, or a different incarnation now owns it
+	// (PID reuse — the fingerprint mismatch proves our successor ended).
+	IdentityDead SuccessorIdentity = "dead"
+	// IdentityUnknown: the PID exists but cannot be fingerprinted (missing
+	// start time on either side). Never guessed about.
+	IdentityUnknown SuccessorIdentity = "unknown"
+)
+
+// HardExitAction is what a teardown backstop — the thread shutdown watchdog,
+// the loop-liveness watchdog, any hard os._exit on the predecessor — must do
+// at its exit point. The 2026-11-20 incident: a draining predecessor wedged
+// in stop(), the shutdown watchdog fired after 60s and os._exit(1)-ed; under
+// Restart=always + KillMode=mixed systemd read exit 1 as unit failure, killed
+// the whole cgroup — including the live, authoritative successor serving
+// turns — and restarted the unit beside whatever survived. The armed code of
+// a backstop is a unit-level instruction to the supervisor; when a verified
+// successor carries the restart line, that instruction must be the overlap
+// handover (or nothing at all).
+type HardExitAction string
+
+const (
+	// HardExitRequested: nothing verifiable protects the line — the armed
+	// exit code stands (the supervisor may restart the unit).
+	HardExitRequested HardExitAction = "requested"
+	// HardExitOverlap: a verified live successor (or newer live generation)
+	// owns the line — exit through the overlap code (76) so the supervisor
+	// stands down for it instead of restarting the unit.
+	HardExitOverlap HardExitAction = "overlap"
+	// HardExitPark: do not exit. Both armed codes order a unit restart that
+	// kills the successor's cgroup, so beside a successor we cannot safely
+	// hand over to, staying alive is strictly better: the backstop waits and
+	// re-plans until the successor dies, the MAINPID transfer lands, or
+	// teardown completes.
+	HardExitPark HardExitAction = "park"
+)
+
+// ResolveHardExitAction decides what a hard-exit backstop does with the
+// successor evidence in hand. It is the twin of the Python resolver's pure
+// core (gateway/overlap_restart.py::hard_exit_action); the imperative half —
+// reading /proc, probing the registry mirror, performing the systemd MAINPID
+// transfer — is what the Python runtime executes.
+//
+// successorIdentity comes from the identity state above. systemdManaged is
+// whether the successor lives in this unit's cgroup and therefore needs the
+// MAINPID handover before exit 76 is safe (an unmanaged successor — hub
+// spawn on a manual host — needs nothing). mainpidHandoverDone is whether
+// that transfer already succeeded.
+//
+// The rules, each earned by a failure mode:
+//
+//   - live + (unmanaged OR handover done) → overlap: the successor provably
+//     owns the line and the supervisor can be told.
+//   - live + managed + handover not done → park: exiting 76 without the
+//     transfer leaves an untracked successor the supervisor may duplicate;
+//     exiting the armed code kills it. Neither is acceptable; park and retry.
+//   - unknown → park: an unfingerprintable successor is never guessed about.
+//   - dead/none + newer live generation → overlap: our successor is gone but
+//     a NEWER generation (a forwarded restart, a forked line) still lives —
+//     serial supervisor replacement would start a duplicate beside it.
+//   - dead/none + no newer generation → requested: the ordinary case; the
+//     supervisor's restart is exactly what we want.
+//
+// An unrecognized identity string is treated as unknown (park): the cost of
+// parking is a stuck process an operator can kill by PID; the cost of a
+// wrong exit is a killed successor or a duplicate gateway.
+func ResolveHardExitAction(
+	successorIdentity string, newerLiveGeneration, systemdManaged, mainpidHandoverDone bool,
+) HardExitAction {
+	switch SuccessorIdentity(successorIdentity) {
+	case IdentityLive:
+		if !systemdManaged || mainpidHandoverDone {
+			return HardExitOverlap
+		}
+		return HardExitPark
+	case IdentityDead, IdentityNone: // the registry mirror decides
+		if newerLiveGeneration {
+			return HardExitOverlap
+		}
+		return HardExitRequested
+	default: // unknown or unrecognized: never guessed about
+		return HardExitPark
+	}
+}
+
+// ResolveRunnerHardExit is the twin of the Python runner resolver
+// (gateway/overlap_restart.py::resolve_hard_exit_action): the
+// evidence-selection rules that turn a draining runner's synchronous state
+// into the inputs of ResolveHardExitAction. The Python half gathers the
+// evidence (reading /proc, probing the registry mirror, attempting the
+// systemd MAINPID transfer — never the wedged event loop); this states
+// WHICH evidence may decide:
+//
+//   - no started successor (or its PID unknown) → identity none; the
+//     registry mirror decides alone (a newer live generation may carry the
+//     line the never-spawned successor would have).
+//   - dead → the mirror decides alone, for the same reason.
+//   - live or unknown → the runner's own successor state is the only
+//     evidence: the mirror is not even read. No mirror answer can change
+//     the action (live either hands over or parks on the transfer, unknown
+//     parks), so a stale mirror must not be able to flip either.
+//
+// transferSucceeded is the managed-live path's combined outcome: the MAINPID
+// transfer landed AND a second identity read still said live (the re-check
+// that keeps a successor which died during the transfer from authorizing
+// exit 76). It is honored only for a live identity — the resolver attempts
+// the transfer for nothing else, so no other identity can arrive with a
+// handover receipt.
+func ResolveRunnerHardExit(
+	successorStarted bool, identity string, mirrorNewerLive, systemdManaged, transferSucceeded bool,
+) HardExitAction {
+	if !successorStarted {
+		return ResolveHardExitAction(string(IdentityNone), mirrorNewerLive, false, false)
+	}
+	if SuccessorIdentity(identity) == IdentityDead {
+		return ResolveHardExitAction(string(IdentityDead), mirrorNewerLive, false, false)
+	}
+	handover := transferSucceeded && SuccessorIdentity(identity) == IdentityLive
+	return ResolveHardExitAction(identity, false, systemdManaged, handover)
+}
+
+// HardExitCode maps a resolved hard-exit action to the code the backstop
+// must exit with. It is the twin of the Python watchdog helper
+// (_planned_hard_exit_code in gateway/shutdown_watchdog.py): "overlap"
+// carries the handover exit regardless of what the backstop was armed with
+// (arming happens before the drain, when no successor state is known);
+// "requested" keeps the armed code; "park" does not exit at all.
+//
+// The returned ok=false means PARK: the caller (a watchdog thread) must not
+// exit the process — both armed codes order a unit restart that kills the
+// live successor's cgroup, so the backstop waits and re-plans instead.
+func HardExitCode(action HardExitAction, armedExitCode int) (code int, ok bool) {
+	switch action {
+	case HardExitOverlap:
+		return OverlapRestartExitCode, true
+	case HardExitRequested:
+		return armedExitCode, true
+	default: // park (and any unrecognized action: never guess an exit)
+		return 0, false
+	}
+}
+
 // Decide derives the transport plan for one restart request.
 //
 // supervised mirrors is_gateway_supervisor_process (a manager with a

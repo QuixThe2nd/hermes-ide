@@ -769,6 +769,88 @@ def handover_systemd_overlap_successor(runner: Any, planned_exit_code: Optional[
         time.sleep(0.2)
 
 
+# Hard-exit actions for the teardown backstops (Go twin: ResolveHardExitAction
+# in internal/restartplan). A backstop that fires on a draining predecessor
+# must not pick its exit code from its own arm-time default: the supervisor
+# reads the code as a unit-level instruction (RestartForceExitStatus=75,
+# KillMode=mixed) and kills the whole cgroup — successor included.
+HARD_EXIT_REQUESTED = "requested"  # no live successor: the armed code stands
+HARD_EXIT_OVERLAP = "overlap"      # verified live successor: exit 76 (handover done/unneeded)
+HARD_EXIT_PARK = "park"            # cannot prove either way: do not exit at all
+
+
+def hard_exit_action(
+    successor_identity: str,
+    newer_live_generation: bool,
+    *,
+    systemd_managed: bool = False,
+    mainpid_handover_done: bool = False,
+) -> str:
+    """Map successor evidence to the action a hard-exit backstop must take.
+
+    ``successor_identity`` is the ``_overlap_successor_identity_state`` answer
+    ("live"/"dead"/"unknown"/"none"; anything unrecognized is treated as
+    unknown). A live successor owns the restart line: exit through the
+    overlap code once the MAINPID transfer is done (or was never needed — an
+    unmanaged successor), and park while a managed transfer is still failing,
+    because both armed codes tell the supervisor it may tear the unit down.
+    An unfingerprintable successor is never guessed about: park is the only
+    action that cannot kill it or duplicate it. Dead or absent, the registry
+    mirror still decides: a NEWER live generation forbids a
+    supervisor-restart exit for the same reason a live successor does.
+    """
+    if successor_identity == "live":
+        if not systemd_managed or mainpid_handover_done:
+            return HARD_EXIT_OVERLAP
+        return HARD_EXIT_PARK
+    if successor_identity in ("dead", "none"):
+        return HARD_EXIT_OVERLAP if newer_live_generation else HARD_EXIT_REQUESTED
+    return HARD_EXIT_PARK  # unknown or unrecognized: never guessed about
+
+
+def _newer_live_generation() -> bool:
+    """Registry-mirror probe; a failed read adds no evidence either way."""
+    try:
+        return newest_live_other_pid() is not None
+    except Exception:
+        logger.debug("Newer-live-generation probe failed during hard-exit planning",
+                     exc_info=True)
+        return False
+
+
+def resolve_hard_exit_action(runner: Any) -> str:
+    """Resolve the hard-exit action for THIS runner; safe from a watchdog thread.
+
+    Reads only synchronous evidence — /proc identity, the registry mirror,
+    systemd notify — never the (possibly wedged) event loop. Performs the
+    MAINPID transfer for a managed live successor so the returned overlap
+    action is always safe to act on at once; a failing transfer parks, and the
+    backstop's re-plan loop retries it. The planned-exit path
+    (``handover_systemd_overlap_successor``) makes the same decision at
+    teardown time; this is its backstop twin for when teardown never returns.
+    """
+    successor_pid = int(getattr(runner, "_overlap_restart_successor_pid", 0) or 0)
+    started = getattr(runner, "_overlap_restart_successor_started", False) is True
+    managed = getattr(runner, "_overlap_successor_systemd_managed", False) is True
+    if started and successor_pid > 0:
+        identity = _overlap_successor_identity_state(runner, successor_pid)
+        if identity == "dead":
+            return hard_exit_action("dead", _newer_live_generation())
+        handover_done = False
+        if identity == "live" and managed:
+            from gateway.systemd_notify import handover_main_pid
+
+            if handover_main_pid(successor_pid):
+                # Close the check/notify race (as in handover_systemd_overlap_successor):
+                # a successor that died during the transfer must not authorize 76.
+                identity = _overlap_successor_identity_state(runner, successor_pid)
+                handover_done = identity == "live"
+        return hard_exit_action(
+            identity, False, systemd_managed=managed, mainpid_handover_done=handover_done,
+        )
+    return hard_exit_action("none", _newer_live_generation())
+
+
 async def spawn_successor(runner: Any, *, via_service: bool) -> Optional[int]:
     """Start one successor for this gateway process, before its drain wait.
 

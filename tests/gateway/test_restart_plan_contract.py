@@ -4,7 +4,11 @@
 ``gateway/restart.py::restart_transport_plan`` (the function the runtime
 executes) must decide identically: the transport flags of a restart derive
 from live host conditions only — never from which door (user vs update
-signal) triggered it. The twin is pinned against the RUNNING Go
+signal) triggered it. The same table carries the planned-exit rows
+(``planned_restart_exit_code``) and the watchdog hard-exit rows
+(``gateway/overlap_restart.py::hard_exit_action``): what a hard-exit
+backstop on a draining predecessor must do so it can never kill a live
+overlap successor's cgroup. The twin is pinned against the RUNNING Go
 implementation, not merely the shared table: when a Go toolchain is
 available the real ``cmd/restartplan`` binary decides every shared-table
 record (testdata/restart_cases.json) and the Python output must match.
@@ -22,6 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
+from gateway.overlap_restart import hard_exit_action
 from gateway.restart import (
     planned_restart_exit_code,
     resolve_planned_restart_exit_code,
@@ -34,6 +39,12 @@ _TABLE = _REPO / "internal" / "restartplan" / "testdata" / "restart_cases.json"
 
 def _shared_cases():
     return json.loads(_TABLE.read_text(encoding="utf-8"))["cases"]
+
+
+# The runner-resolved rows (op "hard_exit_runner") need the runner double and
+# live status patches; tests/gateway/test_shutdown_watchdog_overlap_exit.py
+# drives them through the real resolver (resolve_hard_exit_action).
+_PURE_DECISION_ROWS = [c for c in _shared_cases() if c["op"] != "hard_exit_runner"]
 
 
 def _decide(case) -> dict:
@@ -84,18 +95,43 @@ def go_restartplan(tmp_path_factory) -> str | None:
     return str(binary)
 
 
+def _hard_exit_action(case):
+    return hard_exit_action(
+        case["successor_identity"],
+        case.get("newer_live_generation", False),
+        systemd_managed=case.get("systemd_managed", False),
+        mainpid_handover_done=case.get("mainpid_handover_done", False),
+    )
+
+def _hard_exit_code(case):
+    """Drive the runtime watchdog mapping; None ↔ the Go twin's exited=false (park)."""
+    from gateway.shutdown_watchdog import _planned_hard_exit_code
+
+    return _planned_hard_exit_code(
+        lambda: case["action"], case["armed_exit_code"], lambda timeout: True)
+
 def _python_answer(case):
     if case["op"] == "decide":
         return _decide(case)
+    if case["op"] == "hard_exit":
+        return _hard_exit_action(case)
+    if case["op"] == "hard_exit_code":
+        return _hard_exit_code(case)
     return _exit_code(case)
 
 def _expected(case):
     if case.get("expect_probe_error"):
         return "probe_error"
-    return case["expect"] if case["op"] == "decide" else case["expect_exit_code"]
+    if case["op"] == "decide":
+        return case["expect"]
+    if case["op"] in ("hard_exit", "hard_exit_runner"):
+        return case["expect_action"]
+    if case["op"] == "hard_exit_code":
+        return case["expect_code"] if case["expect_exited"] else None
+    return case["expect_exit_code"]
 
 
-@pytest.mark.parametrize("case", _shared_cases(), ids=lambda c: c["name"])
+@pytest.mark.parametrize("case", _PURE_DECISION_ROWS, ids=lambda c: c["name"])
 def test_python_decides_the_shared_table(case):
     assert _python_answer(case) == _expected(case)
 
@@ -114,7 +150,15 @@ def test_go_binary_decides_the_shared_table(case, go_restartplan):
         return
     assert run.returncode == 0, run.stderr
     answer = json.loads(run.stdout)
-    if case["op"] == "exit_code":
+    if case["op"] in ("hard_exit", "hard_exit_runner"):
+        # {"action": "..."} ↔ the Python action string.
+        assert answer == {"action": _expected(case)}
+    elif case["op"] == "hard_exit_code":
+        # {"code": N, "exited": bool} ↔ the Python None-or-int answer.
+        want = _expected(case)
+        assert answer["exited"] == (want is not None)
+        assert (answer["code"] if answer["exited"] else None) == want
+    elif case["op"] == "exit_code":
         # {"code": N, "special": bool} ↔ the Python None-or-int answer.
         want = _expected(case)
         assert answer["special"] == (want is not None)

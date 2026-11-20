@@ -8724,11 +8724,18 @@ class GatewayRunner(
                 }
 
             if not os.environ.get("PYTEST_CURRENT_TEST"):
+                from gateway.overlap_restart import resolve_hard_exit_action
+
                 arm_shutdown_watchdog(
                     resolve_shutdown_watchdog_delay(self._restart_drain_timeout),
                     done_event=_watchdog_done,
                     snapshot_fn=_shutdown_watchdog_snapshot,
                     exit_code=1,
+                    # The armed 1 orders a failure restart: under KillMode=mixed that
+                    # kills the cgroup — a live overlap successor included. The plan
+                    # reroutes the hard exit through the overlap handover (76/park).
+                    overlap_exit_plan=lambda: resolve_hard_exit_action(self),
+                    loop=getattr(self, "_gateway_loop", None),
                 )
 
             try:
@@ -8769,11 +8776,22 @@ class GatewayRunner(
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
-            await self._notify_active_sessions_of_shutdown()
+            # Bounded: both doors ride hub RPCs whose hub-side handlers park
+            # platform REST calls in rate-limit sleeps for minutes (channel
+            # rename/edit is exactly that class) — an unbounded await here
+            # held stop() past the shutdown watchdog (2026-11-20 overlap kill).
+            from gateway.run_shutdown import bounded_head_rpc_await
+
+            await bounded_head_rpc_await(
+                self, self._notify_active_sessions_of_shutdown(),
+                "Shutdown notify of active sessions",
+            )
             try:
                 from gateway.restart_channel_rename import rename_on_shutdown
 
-                await rename_on_shutdown(self)
+                await bounded_head_rpc_await(
+                    self, rename_on_shutdown(self), "Shutdown channel rename",
+                )
             except Exception:
                 logger.debug(
                     "restart-channel-rename shutdown hook failed", exc_info=True
