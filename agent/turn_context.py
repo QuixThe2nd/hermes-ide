@@ -27,43 +27,19 @@ from agent.model_metadata import estimate_messages_tokens_rough, estimate_reques
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
+# Sha-gated injection cards (memory, session context) share the per-session
+# registry and the never-raises emitter in this leaf module.
+from agent.context_injection_cards import (
+    emit_card,
+    event_card,
+    remember_session_card_sha,
+    session_card_sha,
+    session_card_unseen,
+    session_inventory_card,
+)
 from agent.turn_timing import timed_phase
 
-logger = logging.getLogger(__name__)
-
-# ── Session memory-card state ──
-# The api_server builds a fresh AIAgent for every turn, so a hash held only on
-# the instance can never gate the memory card there: prompt-prefix
-# reconstruction repopulates ``_last_memory_blocks`` on each new instance while
-# ``_memory_card_state`` is always absent, and unchanged memory would be
-# re-announced every turn.  Remember the last announced hash per session id in
-# process scope instead (the gateway process outlives its per-turn agents);
-# agents without a session id keep the instance-only behaviour.  Bounded FIFO —
-# an evicted long-idle session simply re-announces once, like a restart.
-_MEMORY_CARD_STATE: Dict[str, str] = {}
-_MEMORY_CARD_STATE_LOCK = threading.Lock()
-_MEMORY_CARD_STATE_MAX = 1024
-
-
-def _session_memory_card_sha(session_id: Any) -> Optional[str]:
-    """Last hash the memory card announced for *session_id* (None if unseen)."""
-    if not isinstance(session_id, str) or not session_id.strip():
-        return None
-    with _MEMORY_CARD_STATE_LOCK:
-        return _MEMORY_CARD_STATE.get(session_id.strip())
-
-
-def _remember_session_memory_card_sha(session_id: Any, sha: str) -> None:
-    """Record an announced hash for *session_id* (no-op for session-less agents)."""
-    if not isinstance(session_id, str):
-        return
-    key = session_id.strip()
-    if not key:
-        return
-    with _MEMORY_CARD_STATE_LOCK:
-        _MEMORY_CARD_STATE[key] = sha
-        while len(_MEMORY_CARD_STATE) > _MEMORY_CARD_STATE_MAX:
-            _MEMORY_CARD_STATE.pop(next(iter(_MEMORY_CARD_STATE)))
+logger = logging.getLogger("run_agent")
 
 
 def _str_attr(agent: Any, name: str) -> str:
@@ -1299,13 +1275,13 @@ def build_turn_context(
                 _mem_sha = hashlib.sha256(_mem_content.encode("utf-8")).hexdigest()
                 if (
                     getattr(agent, "_memory_card_state", None) != _mem_sha
-                    and _session_memory_card_sha(getattr(agent, "session_id", None)) != _mem_sha
+                    and session_card_sha(getattr(agent, "session_id", None)) != _mem_sha
                 ):
                     # Record BEFORE the callback so a broken presenter cannot
                     # retry the card next turn (it is a view of a fact that
                     # already happened).
                     agent._memory_card_state = _mem_sha
-                    _remember_session_memory_card_sha(getattr(agent, "session_id", None), _mem_sha)
+                    remember_session_card_sha(getattr(agent, "session_id", None), _mem_sha)
                     # Counted heading metadata, resolved like the card below. Incognito sessions
                     # report no discrete count — "N memories recalled" over an incognito turn
                     # would leak that recall happened at all.
@@ -1328,6 +1304,47 @@ def build_turn_context(
         except Exception:
             # Display plumbing must never block the model call.
             logger.debug("memory card progress callback failed", exc_info=True)
+
+    # ── Session-context card ──
+    # The system prompt's non-memory sections (identity, guidance, skills
+    # index, project context files, workspace snapshot, platform hints, …)
+    # are invisible to every other card: they neither diverge the user
+    # message (diff card below) nor belong to memory (card above). Emit ONE
+    # inventory card per distinct prompt shape, sha-gated exactly like the
+    # memory card: the first turn and the first turn after the shape changes
+    # (skills reload, config change) each fire once; steady-state turns stay
+    # silent. The per-request ephemeral session context and the tool-schema
+    # count ride the same card — they are injected on every call but change
+    # with the same shape, so the same gate honestly covers them. Restore
+    # paths that reconstruct the prefix from stored bytes record no manifest
+    # (system_prompt.build_system_prompt_parts) and the card stays silent
+    # there. Same API-path gate as the cards around it: MoA and
+    # codex_app_server bypass the api_messages build, so claiming an
+    # injection there would be a lie.
+    if (
+        not _moa_turn
+        and not continue_interrupted_turn
+        and getattr(agent, "api_mode", None) != "codex_app_server"
+        and callable(_progress_callback)
+    ):
+        try:
+            _sections = getattr(agent, "_system_prompt_section_manifest", None) or []
+            _session_card, _session_sha = session_inventory_card(
+                _sections,
+                ephemeral=bool(getattr(agent, "ephemeral_system_prompt", None)),
+                tool_count=len(getattr(agent, "tools", None) or []),
+            )
+            if _session_card["content"] and (
+                getattr(agent, "_session_card_state", None) != _session_sha
+                and session_card_unseen(
+                    getattr(agent, "session_id", None), _session_sha
+                )
+            ):
+                agent._session_card_state = _session_sha
+                emit_card(agent, _session_card)
+        except Exception:
+            # Display plumbing must never block the model call.
+            logger.debug("session context card progress callback failed", exc_info=True)
 
     # ── Injection observability ──
     # Two injection families can make the API-bound user message diverge from
@@ -1454,6 +1471,19 @@ def build_turn_context(
                         None,
                         _payload,
                     )
+            # A message the user did not type themselves — a standing-goal
+            # continuation or a skill slash-command body — is injected AS the
+            # user message: no divergence, so the diff card above cannot see
+            # it. The anchored classifier names the assembling subsystem
+            # instead (meta carries the invoked skill's name for the
+            # heading). Fires independently of the diff card: a goal turn
+            # with a memory prefetch cards both facts. Lazy import — the
+            # label contract lives in the gateway package.
+            from gateway.context_injection_labels import classify_user_message_injection
+
+            _cls_kind, _cls_detail = classify_user_message_injection(_clean)
+            if _cls_kind:
+                emit_card(agent, event_card(_cls_kind, _clean, _cls_detail))
         except Exception:
             # Display plumbing must never block the model call.
             logger.debug("context injection progress callback failed", exc_info=True)

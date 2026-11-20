@@ -30,7 +30,6 @@ from gateway.session import SessionSource
 _KIND_LABELS = [
     ("message_id", "📎 Injecting message id"),
     ("restart", "🔁 Injecting restart notice"),
-    ("voice", "🎙️ Injecting voice status"),
     ("session_reset", "🆕 Injecting session reset"),
     ("intro", "👋 Injecting intro"),
     ("surface_switch", "🔀 Injecting surface switch"),
@@ -346,7 +345,154 @@ def test_headings_match_the_shared_contract_table():
     for case in table["cases"]:
         lines = context_injection_heading_lines(
             case.get("kinds"),
-            memory_sourced=case["memory_sourced"],
+            memory_sourced=case.get("memory_sourced", False),
             recalled_count=case.get("recalled_count"),
+            meta=case.get("meta"),
         )
         assert lines == case["expect_lines"], case["name"]
+
+
+def _optional(key, value):
+    """Detector output in the binary's ``{key, found/changed}`` shape."""
+    flag = "found" if key == "stub" else "changed"
+    return {key: value or "", flag: value is not None}
+
+
+def _python_twin(section, case):
+    """Render one shared-table case through the Python twins."""
+    from agent.context_injection_cards import (
+        event_card,
+        new_compaction_summary,
+        session_inventory_card,
+        spilled_stub_from_result,
+    )
+    from gateway.context_injection_labels import (
+        classify_user_message_injection,
+        context_injection_heading_lines,
+    )
+
+    if section == "cases":
+        return context_injection_heading_lines(
+            case.get("kinds"), memory_sourced=case.get("memory_sourced", False),
+            recalled_count=case.get("recalled_count"), meta=case.get("meta"),
+        )
+    if section == "classifier_cases":
+        kind, detail = classify_user_message_injection(case["text"])
+        return {"kind": kind or "", "detail": detail}
+    if section == "session_card_cases":
+        card, sha = session_inventory_card(
+            [(row["kind"], row.get("detail", "")) for row in case["sections"]],
+            ephemeral=case["ephemeral"], tool_count=case["tool_count"],
+        )
+        return {"card": card, "sha": sha}
+    if section == "event_card_cases":
+        if case["op"] == "assembled":
+            return event_card(case["kind"], case["content"], case["detail"])
+        return event_card(case["op"], case[_EVENT_FIELDS[case["op"]]])
+    if section == "compaction_cases":
+        return _optional("summary", new_compaction_summary(case["before"], case["after"]))
+    result = {"content": case["parts"]} if case["op"] == "parts" else case["text"]
+    return _optional("stub", spilled_stub_from_result(result))
+
+
+_EVENT_FIELDS = {
+    "steer": "text", "spillover": "stub", "subdirectory": "hints", "compaction": "summary",
+}
+
+# Per table section: (case → cmd/injectionlabels request, case → expected output).
+_CONTRACT_SECTIONS = {
+    "cases": (
+        lambda c: {"op": "heading", "kinds": c.get("kinds"),
+                   "memory_sourced": c.get("memory_sourced", False),
+                   "recalled_count": c.get("recalled_count"), "meta": c.get("meta")},
+        lambda c: c["expect_lines"],
+    ),
+    "classifier_cases": (
+        lambda c: {"op": "classify", "text": c["text"]},
+        lambda c: {"kind": c["expect_kind"], "detail": c["expect_detail"]},
+    ),
+    "session_card_cases": (
+        lambda c: {"op": "session_card", "sections": c["sections"],
+                   "ephemeral": c["ephemeral"], "tool_count": c["tool_count"]},
+        lambda c: {"card": c["expect_card"], "sha": c["expect_sha"]},
+    ),
+    "event_card_cases": (
+        lambda c: {**c, "op": "assembled_card" if c["op"] == "assembled" else f"{c['op']}_card"},
+        lambda c: c["expect"],
+    ),
+    "compaction_cases": (
+        lambda c: {"op": "compaction_summary", "before": c["before"], "after": c["after"]},
+        lambda c: _optional("summary", c["expect_summary"]),
+    ),
+    "spillover_cases": (
+        lambda c: {"op": "spilled_stub", c["op"] if c["op"] == "parts" else "text":
+                   c["parts" if c["op"] == "parts" else "text"]},
+        lambda c: _optional("stub", c["expect_stub"]),
+    ),
+}
+
+
+def _labels_table():
+    return json.loads(_LABELS_TABLE.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="session")
+def go_injectionlabels(tmp_path_factory):
+    """cmd/injectionlabels built once per session; None without a Go toolchain."""
+    import shutil
+    import subprocess
+
+    if shutil.which("go") is None:
+        return None
+    binary = tmp_path_factory.mktemp("injectionlabels", numbered=True) / "injectionlabels"
+    build = subprocess.run(
+        ["go", "build", "-o", str(binary), "./cmd/injectionlabels"],
+        cwd=_REPO / "internal" / "injectionlabels",
+        capture_output=True, text=True, timeout=300,
+    )
+    if build.returncode != 0:
+        pytest.fail(f"go build cmd/injectionlabels failed:\n{build.stderr}")
+    return str(binary)
+
+
+@pytest.mark.parametrize(
+    "section,case",
+    [(section, case) for section in _CONTRACT_SECTIONS for case in _labels_table()[section]],
+    ids=lambda v: v["name"] if isinstance(v, dict) else v,
+)
+def test_python_twin_and_go_binary_match_the_shared_contract_table(
+    section, case, go_injectionlabels
+):
+    """Every shared-table case renders identically through the Python twins
+    (the runtime renderers) and the RUNNING Go binary (the canonical twin):
+    headings, classifier, session inventory + sha, event payloads, and the
+    compaction / spillover detectors."""
+    import subprocess
+
+    to_request, expected = _CONTRACT_SECTIONS[section]
+    assert _python_twin(section, case) == expected(case)
+    if go_injectionlabels is None:
+        pytest.skip("no Go toolchain")
+    run = subprocess.run(
+        [go_injectionlabels], input=json.dumps(to_request(case)),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == expected(case)
+
+
+def test_summary_anchors_are_the_producers_own_constants():
+    """The table's compaction prefixes and persisted-output tag (which the
+    Go twin's anchors must equal) are the Python producers' own constants."""
+    from agent.context_compressor import (
+        _HISTORICAL_SUMMARY_PREFIXES,
+        LEGACY_SUMMARY_PREFIX,
+        SUMMARY_PREFIX,
+    )
+    from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+
+    table = _labels_table()
+    assert table["summary_prefixes"] == [
+        SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES,
+    ]
+    assert table["persisted_output_tag"] == PERSISTED_OUTPUT_TAG

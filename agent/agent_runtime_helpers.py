@@ -3392,6 +3392,11 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+    # The steer row is context the user did not type as a turn: card it like
+    # every other injection (display plumbing only, never blocks the turn).
+    from agent.context_injection_cards import emit_card, event_card
+
+    emit_card(agent, event_card("steer", steer_text))
     # The marker just landed on a real tool result — the steer is now in the
     # model's context. Notify one-shot listeners (e.g. the gateway's "steer
     # delivered" ack). The no-tool-result put-back path above stays silent:

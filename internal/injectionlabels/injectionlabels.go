@@ -2,8 +2,11 @@
 // heading-label contract in gateway/context_injection_labels.py: the label
 // table that maps an injected segment's *kind* to the sentence-cased heading
 // the progress card renders, the generic heading for everything the display
-// layer cannot classify, and the memory heading with its optional discrete
-// recall count.
+// layer cannot classify, the memory heading with its optional discrete
+// recall count, the meta suffix that names WHAT a kind carried (the skill's
+// name, the goal's title), and the anchored classifier for user messages
+// that were assembled rather than typed (standing-goal continuations, skill
+// invocations).
 //
 // This is the canonical statement of the contract; the Python module is what
 // the runtime renders with (executed by tests, not imported at runtime —
@@ -24,12 +27,17 @@
 //     rather than a table label.
 //   - A legacy payload (no kinds) derives from memory-sourced alone, exactly
 //     as the pre-kinds formatter did.
+//   - A kind with a non-empty meta detail renders "label (detail)"; the
+//     detail never changes the label bytes themselves. Memory ignores meta
+//     (its count already speaks), and meta on an unclassifiable kind is
+//     dropped with the label.
 //   - Duplicate OUTPUT lines render once, whatever kinds produced them.
 package injectionlabels
 
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // GenericLabel is the heading for every kind the display layer cannot
@@ -43,16 +51,34 @@ const KindMemory = "memory"
 
 // KindLabels maps a known injection kind to its heading line. Mirrors
 // CONTEXT_INJECTION_KIND_LABELS; a kind absent from the table renders
-// GenericLabel.
+// GenericLabel. The kinds split by surface:
+//
+//   - gateway envelope (message_id, restart, session_reset, intro,
+//     surface_switch, plugin, process) — bytes added around the clean user
+//     message;
+//   - session — the once-per-session inventory of what the system prompt
+//     carries (identity, context files, skills index, workspace, …);
+//   - goal / skill — the current user message was assembled by the
+//     standing-goal loop or a skill slash command, not typed by the user;
+//   - compaction — a conversation summary replaced pruned history;
+//   - steer — a mid-turn user steering row landed after a tool result;
+//   - subdirectory / spillover — context appended inside a tool result
+//     (directory AGENTS.md hints, persisted-output stubs).
 var KindLabels = map[string]string{
 	"message_id":     "📎 Injecting message id",
 	"restart":        "🔁 Injecting restart notice",
-	"voice":          "🎙️ Injecting voice status",
 	"session_reset":  "🆕 Injecting session reset",
 	"intro":          "👋 Injecting intro",
 	"surface_switch": "🔀 Injecting surface switch",
 	"plugin":         "🧩 Injecting plugin context",
 	"process":        "🖥️ Injecting process info",
+	"session":        "🗺️ Injecting session context",
+	"goal":           "🎯 Injecting standing goal",
+	"skill":          "📚 Injecting skill",
+	"compaction":     "🗜️ Injecting conversation summary",
+	"steer":          "🧭 Injecting steering update",
+	"subdirectory":   "🗂️ Injecting directory context",
+	"spillover":      "📦 Injecting persisted output",
 }
 
 // MemoryHeading renders the memory heading. A positive recalledCount is
@@ -60,13 +86,24 @@ var KindLabels = map[string]string{
 // else — zero, negative, or unknown — renders the plain form, mirroring the
 // Python twin's guarded int check (bools and junk shapes never count).
 func MemoryHeading(recalledCount int) string {
-	if recalledCount > 0 {
-		if recalledCount == 1 {
-			return "🧠 Injecting 1 memory"
-		}
+	switch {
+	case recalledCount == 1:
+		return "🧠 Injecting 1 memory"
+	case recalledCount > 1:
 		return fmt.Sprintf("🧠 Injecting %d memories", recalledCount)
+	default:
+		return "🧠 Injecting memory"
 	}
-	return "🧠 Injecting memory"
+}
+
+// FormatHeading renders one table label with its optional meta detail:
+// "label (detail)". Blank detail renders the bare label, so a producer
+// without a name never renders empty parentheses.
+func FormatHeading(label, detail string) string {
+	if detail == "" {
+		return label
+	}
+	return label + " (" + detail + ")"
 }
 
 // HeadingLines renders the ordered heading lines for an injection payload's
@@ -75,11 +112,13 @@ func MemoryHeading(recalledCount int) string {
 //
 //   - nil/empty kinds is the legacy shape: the memory heading when the
 //     payload was memory-sourced, else the generic label.
-//   - the memory kind keeps its dedicated (optionally counted) heading.
-//   - known kinds render their table label; unknown or blank kinds render
-//     the generic label.
+//   - the memory kind keeps its dedicated (optionally counted) heading;
+//     meta never applies to it.
+//   - known kinds render their table label, suffixed with the kind's meta
+//     detail when one was carried; unknown or blank kinds render the
+//     generic label (their meta is dropped with the label).
 //   - duplicate output lines render once.
-func HeadingLines(kinds []string, memorySourced bool, recalledCount int) []string {
+func HeadingLines(kinds []string, memorySourced bool, recalledCount int, meta map[string]string) []string {
 	if len(kinds) == 0 {
 		if memorySourced {
 			return []string{MemoryHeading(recalledCount)}
@@ -94,7 +133,7 @@ func HeadingLines(kinds []string, memorySourced bool, recalledCount int) []strin
 			line = MemoryHeading(recalledCount)
 		case kind != "":
 			if label, ok := KindLabels[kind]; ok {
-				line = label
+				line = FormatHeading(label, meta[kind])
 			} else {
 				line = GenericLabel
 			}
@@ -106,4 +145,33 @@ func HeadingLines(kinds []string, memorySourced bool, recalledCount int) []strin
 		}
 	}
 	return lines
+}
+
+// Anchors for ClassifyUserMessage — the exact bytes the goal loop and the
+// skill-command builder emit, mirrored from hermes_cli/goals.py
+// (CONTINUATION_PROMPT_TEMPLATE and friends) and agent/skill_commands.py
+// (build_skill_invocation_message). Prefix/substring anchors, not a parser:
+// the note bytes are load-bearing prompt scaffolding and stable by
+// contract.
+const (
+	goalContinuationPrefix = "[Continuing toward your standing goal"
+	skillInvocationOpen    = `[IMPORTANT: The user has invoked the "`
+)
+
+// ClassifyUserMessage anchors a clean user message to the subsystem that
+// assembled it. Returns ("goal", ""), ("skill", "<skill name>"), or ("", "")
+// for a message the user typed themselves. Goal beats skill ordering: the
+// goal-continuation templates never embed the skill note, so the prefix
+// check is unambiguous. Mirrors classify_user_message_injection.
+func ClassifyUserMessage(text string) (kind, detail string) {
+	if strings.HasPrefix(text, goalContinuationPrefix) {
+		return "goal", ""
+	}
+	if i := strings.Index(text, skillInvocationOpen); i >= 0 {
+		rest := text[i+len(skillInvocationOpen):]
+		if j := strings.IndexByte(rest, '"'); j > 0 {
+			return "skill", rest[:j]
+		}
+	}
+	return "", ""
 }

@@ -15,19 +15,25 @@ back as plain 2-lists, so both shapes classify.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 # Injection kinds the display layer knows a specific heading for. Anything
 # else (or ``None``) renders the generic heading.
 CONTEXT_INJECTION_KIND_LABELS = {
     "message_id": "📎 Injecting message id",
     "restart": "🔁 Injecting restart notice",
-    "voice": "🎙️ Injecting voice status",
     "session_reset": "🆕 Injecting session reset",
     "intro": "👋 Injecting intro",
     "surface_switch": "🔀 Injecting surface switch",
     "plugin": "🧩 Injecting plugin context",
     "process": "🖥️ Injecting process info",
+    "session": "🗺️ Injecting session context",
+    "goal": "🎯 Injecting standing goal",
+    "skill": "📚 Injecting skill",
+    "compaction": "🗜️ Injecting conversation summary",
+    "steer": "🧭 Injecting steering update",
+    "subdirectory": "🗂️ Injecting directory context",
+    "spillover": "📦 Injecting persisted output",
 }
 
 CONTEXT_INJECTION_GENERIC_LABEL = "🧠 Injecting context"
@@ -51,33 +57,86 @@ def _memory_heading(recalled_count: Any) -> str:
     return "🧠 Injecting memory"
 
 
+def _format_heading(label: str, detail: Any) -> str:
+    """One table label with its optional meta detail: ``label (detail)``.
+
+    Blank detail renders the bare label, so a producer without a name never
+    renders empty parentheses. Mirrors ``FormatHeading`` in the Go twin.
+    """
+    return f"{label} ({detail})" if isinstance(detail, str) and detail else label
+
+
 def context_injection_heading_lines(
     kinds: Optional[Sequence[Optional[str]]],
     *,
     memory_sourced: bool,
     recalled_count: Any = None,
+    meta: Optional[Mapping[str, str]] = None,
 ) -> List[str]:
     """Ordered heading lines for an injection payload's kinds.
 
     ``kinds`` empty/None is the legacy shape: derive from ``memory_sourced``
     exactly as the pre-kinds formatter did. Unknown or ``None`` kinds render
     the generic heading; duplicate OUTPUT lines render once.
+
+    ``meta`` optionally maps a kind to the detail naming WHAT it carried (the
+    skill's name); the kind's label renders suffixed ``(detail)``. Memory
+    ignores meta (its recall count already speaks), and meta on an
+    unclassifiable kind drops with the label.
     """
     if not kinds:
         return [_memory_heading(recalled_count)] if memory_sourced else [
             CONTEXT_INJECTION_GENERIC_LABEL
         ]
+    meta = meta if isinstance(meta, Mapping) else {}
     lines: List[str] = []
     for kind in kinds:
         if kind == KIND_MEMORY:
             line = _memory_heading(recalled_count)
         elif isinstance(kind, str) and kind:
-            line = CONTEXT_INJECTION_KIND_LABELS.get(kind, CONTEXT_INJECTION_GENERIC_LABEL)
+            label = CONTEXT_INJECTION_KIND_LABELS.get(kind)
+            if label is not None:
+                line = _format_heading(label, meta.get(kind))
+            else:
+                # Unknown kind: unclassifiable bytes never get a specific
+                # label they may not deserve, and its meta drops with it.
+                line = CONTEXT_INJECTION_GENERIC_LABEL
         else:
             line = CONTEXT_INJECTION_GENERIC_LABEL
         if line not in lines:
             lines.append(line)
     return lines
+
+
+# Anchors for classify_user_message_injection — the exact bytes the goal loop
+# and the skill-command builder emit (hermes_cli/goals.py CONTINUATION_PROMPT_*
+# templates; agent/skill_commands.py build_skill_invocation_message).
+# Prefix/substring anchors, not a parser: the scaffolding bytes are stable by
+# contract. Mirrors ClassifyUserMessage in the Go twin.
+_GOAL_CONTINUATION_PREFIX = "[Continuing toward your standing goal"
+_SKILL_INVOCATION_OPEN = '[IMPORTANT: The user has invoked the "'
+
+
+def classify_user_message_injection(text: Any) -> Tuple[Optional[str], str]:
+    """Anchor a clean user message to the subsystem that assembled it.
+
+    Returns ``("goal", "")`` for standing-goal continuations,
+    ``("skill", "<skill name>")`` for skill slash-command bodies, and
+    ``(None, "")`` for a message the user typed themselves. Goal beats
+    skill: the goal-continuation templates never embed the skill note, so
+    the prefix check is unambiguous.
+    """
+    if not isinstance(text, str) or not text:
+        return (None, "")
+    if text.startswith(_GOAL_CONTINUATION_PREFIX):
+        return ("goal", "")
+    open_at = text.find(_SKILL_INVOCATION_OPEN)
+    if open_at >= 0:
+        rest = text[open_at + len(_SKILL_INVOCATION_OPEN):]
+        close_at = rest.find('"')
+        if close_at > 0:
+            return ("skill", rest[:close_at])
+    return (None, "")
 
 
 def triggering_message_id_kind(content: Any, message_id: Any) -> Optional[str]:

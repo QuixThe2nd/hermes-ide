@@ -56,6 +56,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     extract_persisted_path,
 )
+from agent.context_injection_cards import emit_card, event_card, spilled_stub_from_result
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
@@ -1029,6 +1030,8 @@ def _commit_tool_result(
             env=get_active_env(effective_task_id),
             config=budget,
         )
+    # An oversized result that spilled to disk left the model a stub.
+    _spilled_stub = spilled_stub_from_result(persisted_result)
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -1038,6 +1041,15 @@ def _commit_tool_result(
             _append_subdir_hint_to_multimodal(persisted_result, subdir_hints)
         else:
             persisted_result += subdir_hints
+
+    # Injection cards: an oversized result that spilled to disk (the model
+    # reads a stub, not the bytes) and a directory AGENTS.md hint appended on
+    # first touch are both context the model received beyond the tool's own
+    # output. Display plumbing only — never blocks the tool round.
+    if _spilled_stub:
+        emit_card(agent, event_card("spillover", _spilled_stub))
+    if subdir_hints:
+        emit_card(agent, event_card("subdirectory", subdir_hints))
 
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.

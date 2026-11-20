@@ -3,12 +3,18 @@
   "kind_labels": {
     "message_id": "📎 Injecting message id",
     "restart": "🔁 Injecting restart notice",
-    "voice": "🎙️ Injecting voice status",
     "session_reset": "🆕 Injecting session reset",
     "intro": "👋 Injecting intro",
     "surface_switch": "🔀 Injecting surface switch",
     "plugin": "🧩 Injecting plugin context",
-    "process": "🖥️ Injecting process info"
+    "process": "🖥️ Injecting process info",
+    "session": "🗺️ Injecting session context",
+    "goal": "🎯 Injecting standing goal",
+    "skill": "📚 Injecting skill",
+    "compaction": "🗜️ Injecting conversation summary",
+    "steer": "🧭 Injecting steering update",
+    "subdirectory": "🗂️ Injecting directory context",
+    "spillover": "📦 Injecting persisted output"
   },
   "memory": {
     "plain": "🧠 Injecting memory",
@@ -19,76 +25,860 @@
     {
       "name": "legacy_payload_without_kinds_renders_generic",
       "memory_sourced": false,
-      "expect_lines": ["🧠 Injecting context"]
+      "expect_lines": [
+        "🧠 Injecting context"
+      ]
     },
     {
       "name": "legacy_memory_sourced_payload_renders_memory_heading",
       "memory_sourced": true,
-      "expect_lines": ["🧠 Injecting memory"]
+      "expect_lines": [
+        "🧠 Injecting memory"
+      ]
     },
     {
       "name": "unknown_kind_renders_generic_heading",
-      "kinds": ["mystery"],
+      "kinds": [
+        "mystery"
+      ],
       "memory_sourced": false,
-      "expect_lines": ["🧠 Injecting context"]
+      "expect_lines": [
+        "🧠 Injecting context"
+      ]
     },
     {
       "name": "blank_kind_renders_generic_heading",
-      "kinds": [""],
+      "kinds": [
+        ""
+      ],
       "memory_sourced": false,
-      "expect_lines": ["🧠 Injecting context"]
+      "expect_lines": [
+        "🧠 Injecting context"
+      ]
     },
     {
       "name": "memory_kind_plain_heading",
-      "kinds": ["memory"],
+      "kinds": [
+        "memory"
+      ],
       "memory_sourced": true,
-      "expect_lines": ["🧠 Injecting memory"]
+      "expect_lines": [
+        "🧠 Injecting memory"
+      ]
     },
     {
       "name": "memory_kind_count_one_singular",
-      "kinds": ["memory"],
+      "kinds": [
+        "memory"
+      ],
       "memory_sourced": true,
       "recalled_count": 1,
-      "expect_lines": ["🧠 Injecting 1 memory"]
+      "expect_lines": [
+        "🧠 Injecting 1 memory"
+      ]
     },
     {
       "name": "memory_kind_count_many_plural",
-      "kinds": ["memory"],
+      "kinds": [
+        "memory"
+      ],
       "memory_sourced": true,
       "recalled_count": 3,
-      "expect_lines": ["🧠 Injecting 3 memories"]
+      "expect_lines": [
+        "🧠 Injecting 3 memories"
+      ]
     },
     {
       "name": "memory_kind_count_zero_renders_plain",
-      "kinds": ["memory"],
+      "kinds": [
+        "memory"
+      ],
       "memory_sourced": true,
       "recalled_count": 0,
-      "expect_lines": ["🧠 Injecting memory"]
+      "expect_lines": [
+        "🧠 Injecting memory"
+      ]
     },
     {
       "name": "mixed_kinds_render_one_line_each_in_payload_order",
-      "kinds": ["plugin", "surface_switch"],
+      "kinds": [
+        "plugin",
+        "surface_switch"
+      ],
       "memory_sourced": false,
-      "expect_lines": ["🧩 Injecting plugin context", "🔀 Injecting surface switch"]
+      "expect_lines": [
+        "🧩 Injecting plugin context",
+        "🔀 Injecting surface switch"
+      ]
     },
     {
       "name": "duplicate_kinds_render_one_line",
-      "kinds": ["restart", "restart"],
+      "kinds": [
+        "restart",
+        "restart"
+      ],
       "memory_sourced": false,
-      "expect_lines": ["🔁 Injecting restart notice"]
+      "expect_lines": [
+        "🔁 Injecting restart notice"
+      ]
     },
     {
       "name": "distinct_unknown_kinds_dedupe_to_one_generic_line",
-      "kinds": ["mystery", "puzzle"],
+      "kinds": [
+        "mystery",
+        "puzzle"
+      ],
       "memory_sourced": false,
-      "expect_lines": ["🧠 Injecting context"]
+      "expect_lines": [
+        "🧠 Injecting context"
+      ]
     },
     {
       "name": "memory_heading_counts_even_without_the_memory_kind_tag",
       "kinds": [],
       "memory_sourced": true,
       "recalled_count": 3,
-      "expect_lines": ["🧠 Injecting 3 memories"]
+      "expect_lines": [
+        "🧠 Injecting 3 memories"
+      ]
+    },
+    {
+      "name": "skill_with_name_meta",
+      "kinds": [
+        "skill"
+      ],
+      "meta": {
+        "skill": "research"
+      },
+      "expect_lines": [
+        "📚 Injecting skill (research)"
+      ]
+    },
+    {
+      "name": "skill_without_meta_renders_bare_label",
+      "kinds": [
+        "skill"
+      ],
+      "expect_lines": [
+        "📚 Injecting skill"
+      ]
+    },
+    {
+      "name": "blank_meta_renders_bare_label",
+      "kinds": [
+        "skill"
+      ],
+      "meta": {
+        "skill": ""
+      },
+      "expect_lines": [
+        "📚 Injecting skill"
+      ]
+    },
+    {
+      "name": "meta_on_unknown_kind_is_dropped_with_label",
+      "kinds": [
+        "mystery"
+      ],
+      "meta": {
+        "mystery": "x"
+      },
+      "expect_lines": [
+        "🧠 Injecting context"
+      ]
+    },
+    {
+      "name": "meta_never_applies_to_memory_heading",
+      "kinds": [
+        "memory"
+      ],
+      "memory_sourced": true,
+      "meta": {
+        "memory": "hindsight"
+      },
+      "expect_lines": [
+        "🧠 Injecting memory"
+      ]
+    },
+    {
+      "name": "meta_and_count_render_together",
+      "kinds": [
+        "memory",
+        "skill"
+      ],
+      "memory_sourced": true,
+      "recalled_count": 3,
+      "meta": {
+        "skill": "dev-lanes"
+      },
+      "expect_lines": [
+        "🧠 Injecting 3 memories",
+        "📚 Injecting skill (dev-lanes)"
+      ]
+    },
+    {
+      "name": "duplicate_rendered_meta_line_renders_once",
+      "kinds": [
+        "skill",
+        "skill"
+      ],
+      "meta": {
+        "skill": "research"
+      },
+      "expect_lines": [
+        "📚 Injecting skill (research)"
+      ]
+    },
+    {
+      "name": "session_kind_renders_label",
+      "kinds": [
+        "session"
+      ],
+      "expect_lines": [
+        "🗺️ Injecting session context"
+      ]
+    },
+    {
+      "name": "goal_kind_renders_label",
+      "kinds": [
+        "goal"
+      ],
+      "expect_lines": [
+        "🎯 Injecting standing goal"
+      ]
+    },
+    {
+      "name": "compaction_kind_renders_label",
+      "kinds": [
+        "compaction"
+      ],
+      "expect_lines": [
+        "🗜️ Injecting conversation summary"
+      ]
+    },
+    {
+      "name": "steer_kind_renders_label",
+      "kinds": [
+        "steer"
+      ],
+      "expect_lines": [
+        "🧭 Injecting steering update"
+      ]
+    },
+    {
+      "name": "subdirectory_kind_renders_label",
+      "kinds": [
+        "subdirectory"
+      ],
+      "expect_lines": [
+        "🗂️ Injecting directory context"
+      ]
+    },
+    {
+      "name": "spillover_kind_renders_label",
+      "kinds": [
+        "spillover"
+      ],
+      "expect_lines": [
+        "📦 Injecting persisted output"
+      ]
     }
+  ],
+  "classifier_cases": [
+    {
+      "name": "goal_continuation_prefix",
+      "text": "[Continuing toward your standing goal]\nGoal: ship it",
+      "expect_kind": "goal",
+      "expect_detail": ""
+    },
+    {
+      "name": "goal_continuation_with_contract",
+      "text": "[Continuing toward your standing goal]\nGoal: x\n\nCompletion contract:",
+      "expect_kind": "goal",
+      "expect_detail": ""
+    },
+    {
+      "name": "goal_gate_failed_template",
+      "text": "[Continuing toward your standing goal — a quality gate failed]\nGoal: x",
+      "expect_kind": "goal",
+      "expect_detail": ""
+    },
+    {
+      "name": "skill_invocation_names_the_skill",
+      "text": "prefix\n[IMPORTANT: The user has invoked the \"research\" skill, indicating",
+      "expect_kind": "skill",
+      "expect_detail": "research"
+    },
+    {
+      "name": "plain_typed_message_classifies_nothing",
+      "text": "what changed since yesterday?",
+      "expect_kind": "",
+      "expect_detail": ""
+    },
+    {
+      "name": "mention_of_goal_word_is_not_a_continuation",
+      "text": "[Continuing toward your standing-goals list]",
+      "expect_kind": "",
+      "expect_detail": ""
+    },
+    {
+      "name": "malformed_skill_note_without_closing_quote_classifies_nothing",
+      "text": "[IMPORTANT: The user has invoked the \"research skill",
+      "expect_kind": "",
+      "expect_detail": ""
+    },
+    {
+      "name": "empty_text_classifies_nothing",
+      "text": "",
+      "expect_kind": "",
+      "expect_detail": ""
+    }
+  ],
+  "session_card_cases": [
+    {
+      "name": "manifest_only_renders_one_line_per_section",
+      "sections": [
+        {
+          "kind": "identity",
+          "detail": "soul"
+        },
+        {
+          "kind": "context_files",
+          "detail": ""
+        },
+        {
+          "kind": "timestamp",
+          "detail": ""
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "identity (soul)\ncontext_files\ntimestamp",
+      "expect_sha": "2c717380492f7076adf82b971cc478a61b4b22d197ae45ae0782558d97e7afc7",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (soul)\ncontext_files\ntimestamp",
+        "injected_chars": 39,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "blank_detail_renders_bare_kind",
+      "sections": [
+        {
+          "kind": "identity",
+          "detail": "default"
+        },
+        {
+          "kind": "skills_index",
+          "detail": ""
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "identity (default)\nskills_index",
+      "expect_sha": "ac228d299d9ad70d4fe5f1550f5d4bd59ea4900a6ec8cd15c7be2d2ab707c134",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (default)\nskills_index",
+        "injected_chars": 31,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "counted_sections_carry_their_count",
+      "sections": [
+        {
+          "kind": "guidance",
+          "detail": "3"
+        },
+        {
+          "kind": "auto_skills",
+          "detail": "2"
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "guidance (3)\nauto_skills (2)",
+      "expect_sha": "513d36403f5bda3660929d0550e6e205c556c82938f17e35d8e413a035f0c1bf",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "guidance (3)\nauto_skills (2)",
+        "injected_chars": 28,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "ephemeral_and_tool_rows_ride_the_card",
+      "sections": [
+        {
+          "kind": "identity",
+          "detail": "soul"
+        }
+      ],
+      "ephemeral": true,
+      "tool_count": 2,
+      "expect_content": "identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas",
+      "expect_sha": "137b7b80c6a68270b47af7c0d101895d71ab0e3836da77804186ef0d7ff7a203",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas",
+        "injected_chars": 71,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "one_tool_schema_is_not_pluralized",
+      "sections": [
+        {
+          "kind": "identity",
+          "detail": "soul"
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 1,
+      "expect_content": "identity (soul)\n1 tool schemas",
+      "expect_sha": "10c5dbe050690e232263513653b9cd866067b792dbe2c4945443e53853e0357f",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (soul)\n1 tool schemas",
+        "injected_chars": 30,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "shape_change_alters_the_sha_a",
+      "sections": [
+        {
+          "kind": "identity",
+          "detail": "default"
+        },
+        {
+          "kind": "workspace",
+          "detail": ""
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "identity (default)\nworkspace",
+      "expect_sha": "a881367a95f740270465f703281952503aefde60d198fbafb55f13c17b258496",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (default)\nworkspace",
+        "injected_chars": 28,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "shape_change_alters_the_sha_b",
+      "sections": [
+        {
+          "kind": "identity",
+          "detail": "default"
+        },
+        {
+          "kind": "workspace",
+          "detail": ""
+        },
+        {
+          "kind": "skills_index",
+          "detail": ""
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "identity (default)\nworkspace\nskills_index",
+      "expect_sha": "9170c4cbc87cefa0a890e399396707a299b6af84679e3e680e4240cdd31c36cc",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "identity (default)\nworkspace\nskills_index",
+        "injected_chars": 41,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "empty_composition_is_blank",
+      "sections": [],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "",
+      "expect_sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "",
+        "injected_chars": 0,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "tool_row_without_manifest",
+      "sections": [],
+      "ephemeral": false,
+      "tool_count": 7,
+      "expect_content": "7 tool schemas",
+      "expect_sha": "0578b32419afc0d1cb789dc131913670904f0455272ffa3f7356e1f7e91cb97e",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "7 tool schemas",
+        "injected_chars": 14,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "ephemeral_alone_reopens_the_shape",
+      "sections": [],
+      "ephemeral": true,
+      "tool_count": 0,
+      "expect_content": "session context (ephemeral, per-request)",
+      "expect_sha": "87778375e917aff71046256e2dd2c42109e41bef7937981dc8561623205c4765",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "session context (ephemeral, per-request)",
+        "injected_chars": 40,
+        "sources": [
+          "session"
+        ]
+      }
+    }
+  ],
+  "event_card_cases": [
+    {
+      "name": "steer_row_sources_the_user",
+      "op": "steer",
+      "text": "turn left at the tests",
+      "expect": {
+        "kinds": [
+          "steer"
+        ],
+        "content": "turn left at the tests",
+        "injected_chars": 22,
+        "sources": [
+          "user"
+        ]
+      }
+    },
+    {
+      "name": "spillover_stub_sources_the_tool_result",
+      "op": "spillover",
+      "stub": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
+      "expect": {
+        "kinds": [
+          "spillover"
+        ],
+        "content": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
+        "injected_chars": 86,
+        "sources": [
+          "tool_result"
+        ]
+      }
+    },
+    {
+      "name": "subdirectory_hints_source_the_tool_result",
+      "op": "subdirectory",
+      "hints": "[Subdirectory context discovered: pkg/AGENTS.md]",
+      "expect": {
+        "kinds": [
+          "subdirectory"
+        ],
+        "content": "[Subdirectory context discovered: pkg/AGENTS.md]",
+        "injected_chars": 48,
+        "sources": [
+          "tool_result"
+        ]
+      }
+    },
+    {
+      "name": "compaction_summary_sources_the_session",
+      "op": "compaction",
+      "summary": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nthe story so far",
+      "expect": {
+        "kinds": [
+          "compaction"
+        ],
+        "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nthe story so far",
+        "injected_chars": 1971,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "assembled_goal_carries_no_meta",
+      "op": "assembled",
+      "kind": "goal",
+      "detail": "",
+      "expect": {
+        "kinds": [
+          "goal"
+        ],
+        "content": "[Continuing toward your standing goal]\nGoal: ship it",
+        "injected_chars": 52,
+        "sources": [
+          "session"
+        ]
+      },
+      "content": "[Continuing toward your standing goal]\nGoal: ship it"
+    },
+    {
+      "name": "assembled_skill_names_the_skill",
+      "op": "assembled",
+      "kind": "skill",
+      "detail": "research",
+      "expect": {
+        "kinds": [
+          "skill"
+        ],
+        "content": "[IMPORTANT: The user has invoked the \"research\" skill",
+        "injected_chars": 53,
+        "sources": [
+          "session"
+        ],
+        "meta": {
+          "skill": "research"
+        }
+      },
+      "content": "[IMPORTANT: The user has invoked the \"research\" skill"
+    }
+  ],
+  "compaction_cases": [
+    {
+      "name": "new_summary_row_is_extracted",
+      "before": [
+        {
+          "role": "user",
+          "content": "old turn"
+        }
+      ],
+      "after": [
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nthe story so far"
+        }
+      ],
+      "expect_summary": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nthe story so far"
+    },
+    {
+      "name": "skip_path_same_list_stays_silent",
+      "before": [
+        {
+          "role": "user",
+          "content": "old turn"
+        },
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nkept summary"
+        }
+      ],
+      "after": [
+        {
+          "role": "user",
+          "content": "old turn"
+        },
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nkept summary"
+        }
+      ],
+      "expect_summary": null
+    },
+    {
+      "name": "byte_identical_preserved_summary_stays_silent",
+      "before": [
+        {
+          "role": "user",
+          "content": "old turn"
+        },
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nkept summary"
+        }
+      ],
+      "after": [
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nkept summary"
+        }
+      ],
+      "expect_summary": null
+    },
+    {
+      "name": "result_without_summary_rows_stays_silent",
+      "before": [
+        {
+          "role": "user",
+          "content": "old"
+        }
+      ],
+      "after": [
+        {
+          "role": "user",
+          "content": "pruned history"
+        }
+      ],
+      "expect_summary": null
+    },
+    {
+      "name": "metadata_flag_classifies_without_prefix",
+      "before": [
+        {
+          "role": "user",
+          "content": "old"
+        }
+      ],
+      "after": [
+        {
+          "role": "user",
+          "content": "summary text",
+          "_compressed_summary": true
+        }
+      ],
+      "expect_summary": "summary text"
+    },
+    {
+      "name": "legacy_prefix_still_classifies",
+      "before": [],
+      "after": [
+        {
+          "role": "user",
+          "content": "[CONTEXT SUMMARY]: legacy summary body"
+        }
+      ],
+      "expect_summary": "[CONTEXT SUMMARY]: legacy summary body"
+    },
+    {
+      "name": "first_new_summary_row_wins",
+      "before": [
+        {
+          "role": "user",
+          "content": "old"
+        },
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nkept summary"
+        }
+      ],
+      "after": [
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nthe story so far"
+        },
+        {
+          "role": "user",
+          "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nsecond"
+        }
+      ],
+      "expect_summary": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:\nthe story so far"
+    },
+    {
+      "name": "absent_content_metadata_row_reports_empty",
+      "before": [],
+      "after": [
+        {
+          "role": "user",
+          "content": null,
+          "_compressed_summary": true
+        }
+      ],
+      "expect_summary": ""
+    }
+  ],
+  "spillover_cases": [
+    {
+      "name": "string_stub_detected",
+      "op": "string",
+      "text": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
+      "expect_stub": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
+    },
+    {
+      "name": "plain_string_is_not_a_stub",
+      "op": "string",
+      "text": "small body",
+      "expect_stub": null
+    },
+    {
+      "name": "multimodal_part_stub_detected",
+      "op": "parts",
+      "parts": [
+        {
+          "type": "text",
+          "text": "yyyyyyyy"
+        },
+        {
+          "type": "text",
+          "text": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
+        }
+      ],
+      "expect_stub": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
+    },
+    {
+      "name": "multimodal_without_stub_stays_silent",
+      "op": "parts",
+      "parts": [
+        {
+          "type": "text",
+          "text": "clean"
+        }
+      ],
+      "expect_stub": null
+    },
+    {
+      "name": "empty_text_part_never_matches",
+      "op": "parts",
+      "parts": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "expect_stub": null
+    }
+  ],
+  "persisted_output_tag": "<persisted-output>",
+  "summary_prefixes": [
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
+    "[CONTEXT SUMMARY]:",
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' / '## Historical In-Progress State' / '## Historical Pending User Asks' / '## Historical Remaining Work' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' / '## Historical In-Progress State' / '## Historical Pending User Asks' / '## Historical Remaining Work' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If the latest user message is consistent with the '## Active Task' section, you may use the summary as background. If the latest user message contradicts, supersedes, changes topic from, or in any way diverges from '## Active Task' / '## In Progress' / '## Pending User Asks' / '## Remaining Work', the latest message WINS — discard those stale items entirely and do not 'wrap up the old task first'. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:"
   ]
 }
