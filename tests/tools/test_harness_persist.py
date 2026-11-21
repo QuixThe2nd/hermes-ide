@@ -66,3 +66,25 @@ def test_detached_harness_survives_caller_unit_stop():
         if receipt.exists():
             _stop(receipt.read_text().splitlines()[0])
         _stop(caller)
+
+
+def test_systemd_run_failure_redacts_setenv_values(monkeypatch, tmp_path):
+    """A failing systemd-run must not leak --setenv secrets into the error text."""
+    import tools.harness_persist as harness_persist
+
+    secret = "sk-test-secret-value-123"
+
+    def _failing_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd, output="", stderr="Access denied")
+
+    monkeypatch.setattr(harness_persist.subprocess, "run", _failing_run)
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        harness_persist.launch_detached_service(
+            ["/bin/true"], cwd=str(tmp_path),
+            env={"ANTHROPIC_API_KEY": secret, "PATH": "/usr/bin:/bin"},
+            stdout_path=tmp_path / "out", stderr_path=tmp_path / "err",
+        )
+    text = str(excinfo.value)
+    assert secret not in text
+    assert "ANTHROPIC_API_KEY=<redacted>" in text
+    assert "--setenv=PATH=<redacted>" in text
