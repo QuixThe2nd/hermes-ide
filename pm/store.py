@@ -16,8 +16,6 @@ _UA = {"User-Agent": "hermes-pm"}
 
 
 ALL_TARGETS = (
-    "win32-x64",
-    "win32-arm64",
     "linux-x64",
     "linux-arm64",
     "darwin-x64",
@@ -26,41 +24,7 @@ ALL_TARGETS = (
 
 
 def _native_machine() -> str:
-    """The MACHINE's architecture, not the interpreter's. An x64 python on
-    Windows-on-ARM reports AMD64 — staging a payload for the wrong target.
-    IsWow64Process2 reports the real machine regardless of emulation."""
-    if sys.platform.startswith("win"):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            k32.GetCurrentProcess.restype = wintypes.HANDLE
-            k32.IsWow64Process2.argtypes = [
-                wintypes.HANDLE,
-                ctypes.POINTER(ctypes.c_ushort),
-                ctypes.POINTER(ctypes.c_ushort),
-            ]
-            k32.IsWow64Process2.restype = wintypes.BOOL
-            process_machine = ctypes.c_ushort()
-            native_machine = ctypes.c_ushort()
-            if k32.IsWow64Process2(
-                k32.GetCurrentProcess(),
-                ctypes.byref(process_machine),
-                ctypes.byref(native_machine),
-            ):
-                if native_machine.value == 0xAA64:
-                    return "arm64"
-                if native_machine.value == 0x8664:
-                    return "x86_64"
-        except Exception:
-            pass
-        # Pre-IsWow64Process2 hosts: WOW64 exposes the real machine here.
-        wow = os.environ.get("PROCESSOR_ARCHITEW6432", "")
-        if wow.upper() == "ARM64":
-            return "arm64"
-        if wow.upper() == "AMD64":
-            return "x86_64"
+    """The MACHINE's architecture, not the interpreter's."""
     return platform.machine().lower()
 
 
@@ -72,8 +36,6 @@ def current_target() -> str:
         arch = "x64"
     else:
         raise RuntimeError(f"unsupported architecture: {platform.machine()}")
-    if sys.platform.startswith("win"):
-        return f"win32-{arch}"
     if sys.platform == "darwin":
         return f"darwin-{arch}"
     return f"linux-{arch}"
@@ -281,8 +243,7 @@ class Store:
             shutil.rmtree(path, ignore_errors=True)
 
     def publish(self, staged: Path, name: str) -> Path:
-        """Atomic rename into place, retried for Windows file-lock holds
-        (Defender, indexers). A concurrent winner's entry is kept."""
+        """Atomic rename into place, retried. A concurrent winner's entry is kept."""
         target = self.entry(name)
         delay = 0.5
         for _ in range(5):

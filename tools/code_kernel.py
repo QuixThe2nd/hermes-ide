@@ -35,7 +35,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_IS_WINDOWS = sys.platform == "win32"
 
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
@@ -85,12 +84,11 @@ _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {spill_cap}
-_PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 _PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
 
 
 def _start_parent_death_pipe_watchdog():
-    """POSIX twin of the Windows handle watchdog: exit when the parent dies.
+    """Exit when the parent dies.
 
     The host holds the only write end of an inherited pipe; a blocking read
     returns EOF the instant the host exits by ANY means (SIGKILL, OOM, crash),
@@ -102,7 +100,7 @@ def _start_parent_death_pipe_watchdog():
     global _PARENT_DEATH_FD
     raw_fd = _PARENT_DEATH_FD
     _PARENT_DEATH_FD = ""
-    if sys.platform == "win32" or not raw_fd:
+    if not raw_fd:
         return
     try:
         fd = int(raw_fd)
@@ -121,57 +119,6 @@ def _start_parent_death_pipe_watchdog():
     threading.Thread(target=_wait, name="hermes-parent-watchdog", daemon=True).start()
 
 
-def _start_parent_process_watchdog():
-    """Exit when the exact Windows parent process object is signaled.
-
-    The inherited SYNCHRONIZE handle names a process object, not a reusable
-    PID. Missing or invalid handles fail open so watchdog setup can never kill
-    an otherwise healthy kernel.
-    """
-    global _PARENT_PROCESS_HANDLE
-    raw_handle = _PARENT_PROCESS_HANDLE
-    _PARENT_PROCESS_HANDLE = ""
-    if sys.platform != "win32" or not raw_handle:
-        return
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        handle = int(raw_handle)
-        if handle <= 0:
-            return
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel32.WaitForSingleObject.restype = wintypes.DWORD
-        kernel32.SetHandleInformation.argtypes = [
-            wintypes.HANDLE,
-            wintypes.DWORD,
-            wintypes.DWORD,
-        ]
-        kernel32.SetHandleInformation.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        # This process needs the handle, but user code spawned by a cell must
-        # not pass it any further. If Windows refuses to clear inheritance,
-        # disable the watchdog rather than leak the handle into cell children.
-        if not kernel32.SetHandleInformation(handle, 0x00000001, 0):
-            kernel32.CloseHandle(handle)
-            return
-    except (ImportError, OSError, TypeError, ValueError):
-        return
-
-    def _wait():
-        try:
-            result = kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
-        finally:
-            kernel32.CloseHandle(handle)
-        if result == 0x00000000:  # WAIT_OBJECT_0: the parent exited
-            os._exit(0)
-
-    threading.Thread(target=_wait, name="hermes-parent-watchdog", daemon=True).start()
-
-
-_start_parent_process_watchdog()
 _start_parent_death_pipe_watchdog()
 
 _real_stdout = sys.stdout
@@ -565,52 +512,17 @@ def _stderr_reader(kernel: SessionKernel) -> None:
 
 
 def _bind_rpc_socket(kernel: SessionKernel) -> str:
-    """Bind the tool-RPC listener: loopback TCP on Windows, 0600 UDS elsewhere."""
-    if _IS_WINDOWS:
-        kernel.sock_path = None
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.bind(("127.0.0.1", 0))
-        host, port = server_sock.getsockname()[:2]
-        rpc_endpoint = f"tcp://{host}:{port}"
-    else:
-        from hermes_constants import socket_safe_tmpdir
-        sock_tmpdir = socket_safe_tmpdir()
-        rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(kernel.sock_path)
-        os.chmod(kernel.sock_path, 0o600)
+    """Bind the tool-RPC listener: 0600 UDS."""
+    from hermes_constants import socket_safe_tmpdir
+    sock_tmpdir = socket_safe_tmpdir()
+    rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server_sock.bind(kernel.sock_path)
+    os.chmod(kernel.sock_path, 0o600)
     server_sock.listen(1)
     kernel.server_sock = server_sock
     return rpc_endpoint
 
-
-def _parent_process_handle(child_env: Dict[str, str]):
-    """Windows: open an inheritable SYNCHRONIZE handle to this process for the kernel's parent-death
-    watchdog. Returns (handle, CloseHandle, startupinfo) or (None, None, None); fails open."""
-    handle = close = startupinfo = None
-    try:
-        import ctypes
-        from ctypes import wintypes
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.GetCurrentProcessId.argtypes = []
-        kernel32.GetCurrentProcessId.restype = wintypes.DWORD
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        close = kernel32.CloseHandle
-        # SYNCHRONIZE; inherited only by the explicitly allow-listed child.
-        handle = kernel32.OpenProcess(0x00100000, True, kernel32.GetCurrentProcessId())
-        if handle:
-            child_env["HERMES_KERNEL_PARENT_PROCESS_HANDLE"] = str(int(handle))
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.lpAttributeList = {"handle_list": [int(handle)]}
-    except (AttributeError, ImportError, OSError, TypeError, ValueError):
-        if handle and close is not None:
-            close(handle)
-        child_env.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", None)
-        handle = close = startupinfo = None
-    return handle, close, startupinfo
 
 
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
@@ -631,27 +543,20 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     child_env["HERMES_KERNEL_SPILL_DIR"] = kernel.tmpdir
     # Generated client reconnects after the RPC server's 300s idle timeout between cells.
     child_env["HERMES_RPC_PERSISTENT"] = "1"
-    # Parent-death watchdog plumbing: Windows inherits a SYNCHRONIZE handle to this process; POSIX
-    # inherits the read end of a pipe whose only write end we hold (EOF == host gone, any cause).
-    parent_handle, close_handle, startupinfo = _parent_process_handle(child_env) if _IS_WINDOWS else (None, None, None)
-    death_r: Optional[int] = None
-    pass_fds: Tuple[int, ...] = ()
-    if not _IS_WINDOWS:
-        death_r, kernel.death_pipe_w = os.pipe()
-        child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
-        pass_fds = (death_r,)
+    # Parent-death watchdog plumbing: the child inherits the read end of a pipe
+    # whose only write end we hold (EOF == host gone, any cause).
+    death_r, kernel.death_pipe_w = os.pipe()
+    child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
+    pass_fds = (death_r,)
     try:
         kernel.proc = subprocess.Popen(
             [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
             # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
             cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-            close_fds=True, pass_fds=pass_fds, startupinfo=startupinfo,
+            close_fds=True, pass_fds=pass_fds,
         )
     finally:
-        if parent_handle and close_handle is not None:
-            close_handle(parent_handle)
         if death_r is not None:
             os.close(death_r)
     # Deliberately NOT propagate_context_to_thread: that would freeze the spawning cell's

@@ -99,7 +99,7 @@ def _hermes_bin_dir() -> Path:
 
 def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
     """Managed ``<hermes_home>/bin/bws`` first, then PATH, then optional auto-install."""
-    managed = _hermes_bin_dir() / _platform_binary_name()
+    managed = _hermes_bin_dir() / "bws"
     if managed.exists() and os.access(managed, os.X_OK):
         return managed
     system = shutil.which("bws")
@@ -113,10 +113,6 @@ def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
     return None
 
 
-def _platform_binary_name() -> str:
-    return "bws.exe" if platform.system() == "Windows" else "bws"
-
-
 def _platform_asset_name() -> str:
     """Map (uname, arch, libc) → upstream asset filename (Rust target-triple style)."""
     system = platform.system()
@@ -125,8 +121,6 @@ def _platform_asset_name() -> str:
 
     if system == "Darwin":  # universal binary covers Intel + Apple Silicon
         return f"bws-macos-universal-{_BWS_VERSION}.zip"
-    if system == "Windows":
-        return f"bws-{arch}-pc-windows-msvc-{_BWS_VERSION}.zip"
     if system == "Linux":
         # glibc default; musl only if ldd says so (a wrong guess surfaces as a loader error).
         libc = "gnu"
@@ -147,7 +141,7 @@ def install_bws(*, force: bool = False) -> Path:
     (the auto-install path catches; the setup wizard shows the error)."""
     bin_dir = _hermes_bin_dir()
     bin_dir.mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
+    target = bin_dir / "bws"
     if target.exists() and not force:
         return target
 
@@ -167,7 +161,7 @@ def install_bws(*, force: bool = False) -> Path:
             raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
 
         with zipfile.ZipFile(zip_path) as zf:
-            member = _pick_zip_member(zf, _platform_binary_name())
+            member = _pick_zip_member(zf, "bws")
             extracted = _safe_extract_member(zf, member, tmp)
 
         # Stage in the final directory so the rename can't cross filesystems.
@@ -240,8 +234,7 @@ def _b64e(raw: bytes) -> str:
 
 
 def _derive_encrypted_cache_key(access_token: str, salt: bytes) -> bytes:
-    """HKDF the local cache key from the bootstrap BWS token. cryptography is imported
-    lazily: eagerly mapping ``_rust.pyd`` on Windows blocks the updater replacing it."""
+    """HKDF the local cache key from the bootstrap BWS token."""
     # Keep the native cryptography extension lazy. Most CLI commands import this module while building
     # argparse, even though only encrypted-cache reads/writes need it. See #73381.
     from cryptography.hazmat.primitives import hashes

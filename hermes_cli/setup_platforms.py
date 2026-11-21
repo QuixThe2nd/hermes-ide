@@ -143,9 +143,6 @@ def _restart_running_gateway(any_messaging: bool, supports_systemd: bool) -> Non
             systemd_restart()
         elif _platform.system() == "Darwin":
             launchd_restart()
-        elif _platform.system() == "Windows":
-            from hermes_cli import gateway_windows
-            gateway_windows.restart()
     except UserSystemdUnavailableError as e:
         print_error("  Restart failed — user systemd not reachable:")
         for line in str(e).splitlines():

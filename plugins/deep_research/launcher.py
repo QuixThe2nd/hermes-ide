@@ -20,8 +20,7 @@ system service
     job survives a gateway restart, and it needs no user session.
 
 fallback
-    A detached ``Popen`` (``start_new_session=True`` on POSIX,
-    ``windows_detach_popen_kwargs()`` on Windows). Honest reduced durability:
+    A detached ``Popen`` with ``start_new_session=True``. Honest reduced durability:
     it survives gateway *process* exit, but not a cgroup-wide supervisor stop
     (exactly what kills it under the root gateway service described above).
     The downgrade and its reason are recorded in ``status.json``.
@@ -198,7 +197,7 @@ def manager_reachable(scope: str, *, runner: Optional[Runner] = None) -> bool:
     """
     if scope not in MANAGER_SCOPES:
         return False
-    if sys.platform == "win32" or not hasattr(os, "getuid"):
+    if not hasattr(os, "getuid"):
         return False
     if shutil.which("systemd-run") is None or shutil.which("systemctl") is None:
         return False
@@ -220,7 +219,7 @@ def candidate_scopes(*, root: Optional[bool] = None) -> List[str]:
     unit's cgroup cleanup on restart.
     """
     if root is None:
-        root = hasattr(os, "getuid") and os.getuid() == 0  # windows-footgun: ok — guarded probe
+        root = hasattr(os, "getuid") and os.getuid() == 0
     scopes = [MANAGER_SCOPE_USER]
     if root:
         scopes.append(MANAGER_SCOPE_SYSTEM)
@@ -378,7 +377,6 @@ def fallback_launch(
     reason: Optional[str] = None,
 ) -> LaunchResult:
     """Detached runner spawn for hosts without a usable transient service."""
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
     child_env = dict(os.environ if env is None else env)
     child_env["HERMES_HOME"] = str(hermes_home)
@@ -399,7 +397,7 @@ def fallback_launch(
             stdout=fd,
             stderr=subprocess.STDOUT,
             env=child_env,
-            **windows_detach_popen_kwargs(),
+            start_new_session=True,
         )
     finally:
         # The child holds its own dup of the descriptor; drop ours immediately.
@@ -527,7 +525,7 @@ def runner_alive(status: Dict[str, Any], *, runner: Runner = default_runner) -> 
 def pid_start_time(pid: int) -> Optional[int]:
     """Linux boot-relative start time of ``pid`` — the PID-reuse guard."""
     try:
-        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:  # windows-footgun: ok — POSIX guard below
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
             fields = handle.read().rsplit(") ", 1)[-1].split()
         return int(fields[19])
     except (OSError, ValueError, IndexError):
@@ -540,7 +538,7 @@ def _pid_alive(pid: int, *, expected_start: Any = None) -> bool:
         if current is None or current != expected_start:
             return False  # dead, or the number was recycled onto another process
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — liveness probe inside a POSIX-only branch
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -585,7 +583,7 @@ def _kill_tree(pid: int, *, expected_start: Any = None) -> bool:
     try:
         import signal
 
-        os.kill(pid, signal.SIGTERM)  # windows-footgun: ok — fallback path with psutil absent
+        os.kill(pid, signal.SIGTERM)
         return True
     except (OSError, ProcessLookupError):
         return False

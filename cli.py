@@ -1757,19 +1757,13 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
             parsed = urlparse(token)
             if parsed.scheme == "file":
                 expanded = unquote(parsed.path or "")
-                if parsed.netloc and os.name == "nt":
-                    expanded = f"//{parsed.netloc}{expanded}"
-                elif os.name == "nt" and len(expanded) >= 3 and expanded[0] == "/" and expanded[1].isalpha() and expanded[2] == ":":
-                    # file:///C:/... parses to path "/C:/..." — drop the leading slash
-                    # so it resolves as a drive-letter path.
-                    expanded = expanded[1:]
         except Exception:
             expanded = token
     expanded = os.path.expandvars(os.path.expanduser(expanded))
-    if os.name != "nt":
-        normalized = expanded.replace("\\", "/")
-        if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
-            expanded = f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
+    # A dropped Windows drive path (C:/...) maps to its WSL mount on Linux.
+    normalized = expanded.replace("\\", "/")
+    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
+        expanded = f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
     path = Path(expanded)
     if not path.is_absolute():
         base_dir = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
@@ -2080,9 +2074,8 @@ def _preserve_ctrl_enter_newline() -> bool:
     """
     env = os.environ
     if (
-        sys.platform == "win32"
-        or any(env.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "WT_SESSION",
-                                    "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR"))
+        any(env.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "WT_SESSION",
+                                "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR"))
         or env.get("TERM", "").lower() == "xterm-ghostty" or env.get("TERM_PROGRAM", "").lower() == "ghostty"
         or "microsoft" in env.get("WSL_DISTRO_NAME", "").lower()
     ):
@@ -2101,14 +2094,14 @@ def _preserve_ctrl_enter_newline() -> bool:
 def _bind_prompt_submit_keys(kb, handler, *, multiline_shortcuts_enabled: Optional[bool] = None) -> None:
     """Enter always submits; c-j submits only with multiline shortcuts off AND where Ctrl+Enter isn't c-j.
 
-    Even when the setting is disabled, environments where Ctrl+Enter is known to arrive as c-j (Windows,
-    WSL, SSH, Windows Terminal, Ghostty) keep c-j reserved for newline; otherwise Ctrl+Enter submits instead
+    Even when the setting is disabled, environments where Ctrl+Enter is known to arrive as c-j (WSL,
+    SSH, Windows Terminal, Ghostty) keep c-j reserved for newline; otherwise Ctrl+Enter submits instead
     of composing. See _preserve_ctrl_enter_newline() and issue #22379.
     """
     if multiline_shortcuts_enabled is None:
         multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled()
     kb.add("enter")(handler)
-    if sys.platform != "win32" and not multiline_shortcuts_enabled and not _preserve_ctrl_enter_newline():
+    if not multiline_shortcuts_enabled and not _preserve_ctrl_enter_newline():
         kb.add("c-j")(handler)
 
 
@@ -2119,14 +2112,13 @@ def _disable_prompt_toolkit_cpr_warning(app) -> None:
 
 
 def _terminal_may_leak_cpr() -> bool:
-    """Suppress prompt_toolkit CPR queries (delayed replies leak into input); Windows keeps pt's default.
+    """CPR is always suppressed: delayed replies leak into input on every terminal we ship on.
 
     Delayed CPR replies (``ESC[<row>;<col>R`` / visible ``^[[<row>;<col>R``) leak into the status line and
     can freeze input when the reply is slow (#13870 on SSH/slow PTYs). The same race hits local POSIX TTYs
     under heavy subagent / status-line load — see ``tests/hermes_cli/test_cpr_local_leak.py``.
     """
-    return os.environ.get("PROMPT_TOOLKIT_NO_CPR", "") == "1" or sys.platform != "win32"
-
+    return True
 
 def _build_cpr_disabled_output(stdout):
     """Vt100_Output with ``enable_cpr=False`` (``from_pty()`` doesn't expose it), or None on failure.
@@ -2155,8 +2147,8 @@ def _build_cpr_disabled_output(stdout):
 
 
 def _select_classic_cli_pt_output(stdout):
-    """CPR-disabled ``Vt100_Output`` when CPR may leak, else None (Application keeps pt's default)."""
-    return _build_cpr_disabled_output(stdout) if _terminal_may_leak_cpr() else None
+    """CPR-disabled ``Vt100_Output``; ``Application`` never keeps prompt_toolkit's CPR-enabled default."""
+    return _build_cpr_disabled_output(stdout)
 
 
 def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
@@ -3237,11 +3229,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
             # the env is sanitized because this process holds every API key.
             from tools.environments.local import build_subprocess_env
-            from hermes_cli._subprocess_compat import windows_hide_flags
             result = subprocess.run(
                 exec_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=build_subprocess_env(),
-                creationflags=windows_hide_flags(),  # no console flash on Windows (#56747)
             )
             # See #56747.
             output = result.stdout.strip() or result.stderr.strip()
@@ -3684,18 +3674,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         )
 
     def _tui_install_signal_handlers(self):
-        """SIGTERM/SIGHUP -> graceful shutdown; Windows absorbs SIGINT (see body)."""
+        """SIGTERM/SIGHUP -> graceful shutdown. Never call agent.interrupt() here (fake user message)."""
         try:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, self._tui_signal_handler)
             if hasattr(_signal, 'SIGHUP'):
                 _signal.signal(_signal.SIGHUP, self._tui_signal_handler)
-
-            # Windows: absorb SIGINT. Win32 delivers spurious CTRL_C_EVENT when children spawn
-            # from background threads, which would unwind app.run() mid-turn. Real Ctrl+C is
-            # bound by prompt_toolkit. Never call agent.interrupt() here (fake user message).
-            if sys.platform == "win32":
-                _signal.signal(_signal.SIGINT, lambda signum, frame: None)
         except Exception:
             pass  # restricted environments
 
@@ -4359,11 +4343,6 @@ def main(
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
-    # UTF-8 stdio on Windows before any print (Rich box-drawing would UnicodeEncodeError on cp1252).
-    with suppress(Exception):
-        from hermes_cli.stdio import configure_windows_stdio
-        configure_windows_stdio()
-
     os.environ["HERMES_INTERACTIVE"] = "1"  # terminal_tool: interactive sudo prompts with timeout
     # The banner names affected plugins; the raw per-name compat warnings would only duplicate it on stderr.
     with suppress(Exception):

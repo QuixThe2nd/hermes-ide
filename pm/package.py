@@ -72,13 +72,9 @@ class Package:
     # How the lockfile `version` field labels this package for `pm update`:
     #   "semver" — one shared version across targets (node 26.7.0, uv 0.12.3).
     #   "minor"  — the version label is major.minor; each target's exact
-    #              patch lives in ITS artifact urls (ffmpeg's posix vs win32
-    #              builds have no shared release cadence).
+    #              patch lives in ITS artifact urls (builds with no shared
+    #              release cadence across targets).
     version_style: str = "semver"
-    # Targets where this package's binary is the x64 build run under
-    # Windows ARM64 built-in emulation (no native arm64 artifact exists).
-    # The arch guard accepts the x64 PE on these targets.
-    emulated_arch_targets: frozenset[str] = frozenset()
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)
@@ -148,7 +144,7 @@ class Package:
         """'' when the binary is present and arch-plausible on target."""
         if not binary.is_file():
             return _missing_reason(binary, entry)
-        if machine_matches_binary(binary, target) is False and target not in self.emulated_arch_targets:
+        if machine_matches_binary(binary, target) is False:
             return f"{binary.name} is not a {target} binary"
         return ""
 

@@ -437,7 +437,7 @@ def _run_npm_watching_for_engine_failure(
 
 
 def _missing_web_build_tool(output: str) -> str | None:
-    """The build tool a failed ``npm run build`` could not resolve (dash/bash/cmd.exe phrasings)."""
+    """The build tool a failed ``npm run build`` could not resolve."""
     lowered = output.lower()
     for tool in ("tsc", "vite"):
         phrases = (f"{tool}: not found", f"{tool}: command not found", f"'{tool}' is not recognized")
@@ -452,11 +452,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     checked inside :func:`_do_build_web_ui` after the lock is held."""
     if not (web_dir / "package.json").exists():
         return True
-    try:
-        import fcntl
-    except ImportError:
-        # Windows: no flock — fall through to the unserialized build.
-        return _do_build_web_ui(web_dir, fatal=fatal)
+    import fcntl
     project_root = _web_project_root(web_dir)
     try:
         lock_file = open(project_root / ".web_ui_build.lock", "a", encoding="utf-8")

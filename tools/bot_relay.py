@@ -394,7 +394,7 @@ def _hermes_cli() -> str:
     installed script), a ``shutil.which`` lookup runs next — it honors whatever PATH the process does have —
     before falling back to the bare name, preserving today's behavior for interactive shells.
     """
-    sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    sibling = Path(sys.executable or "").parent / "hermes"
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 

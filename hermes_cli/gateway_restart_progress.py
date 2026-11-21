@@ -114,7 +114,7 @@ def request_gateway_restart(
     if not hasattr(signal, "SIGUSR1") or old_pid <= 0:
         return RestartOutcome(accepted=False)
     try:
-        os.kill(old_pid, signal.SIGUSR1)  # windows-footgun: ok — guarded POSIX compatibility fallback
+        os.kill(old_pid, signal.SIGUSR1)
     except ProcessLookupError:
         return RestartOutcome(accepted=True, attached=True)
     except (PermissionError, OSError):

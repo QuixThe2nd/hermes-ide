@@ -8,7 +8,6 @@ edits to the agent process cwd, e.g. the main repo during a worktree session).
 
 import os
 import posixpath
-import sys
 from pathlib import Path, PurePosixPath
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
@@ -135,28 +134,17 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
 
 
 def _host_text(text: str, container_paths: bool) -> str:
-    """Expand ``~``; on host backends also translate Git Bash ``/c/Users/...`` drive
-    paths before Path sees them. Container/WSL Linux paths are never rewritten."""
-    if not container_paths:
-        from tools.environments.local import _msys_to_windows_path
-
-        text = _msys_to_windows_path(text)
+    """Expand ``~``. Container/WSL Linux paths are never rewritten."""
     return _expand_tilde(text)
 
 
 def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
     """Return *text* as an absolute, normalized path, joining it onto ``base()`` when
-    relative. Container: pure-posix, no host deref. Host: resolve() (win32: ntpath normpath)."""
+    relative. Container: pure-posix, no host deref. Host: resolve()."""
     if container_paths:
         if not posixpath.isabs(text):
             text = posixpath.join(str(base()), text)
         return _normalize_without_host_deref(text)
-    if sys.platform == "win32":
-        import ntpath
-
-        if not ntpath.isabs(text):
-            text = ntpath.join(str(base()), text)
-        return Path(ntpath.normpath(text))
     p = Path(text)
     if not p.is_absolute():
         p = Path(base()) / p

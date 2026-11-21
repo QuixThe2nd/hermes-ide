@@ -122,10 +122,7 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
 def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     """Run one profile restart without inheriting the updater's process state."""
     kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "env": _child_environment(profile)}
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    else:
-        kwargs["start_new_session"] = True
+    kwargs["start_new_session"] = True
     argv = [sys.executable, "-m", "hermes_cli.main", "-p", profile, "gateway", "restart"]
     return _succeeded(_run_quiet(run, argv, timeout=_PROFILE_RESTART_TIMEOUT, **kwargs))
 

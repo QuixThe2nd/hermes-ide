@@ -8,21 +8,14 @@ Usage:
     hermes <cmd> --help        # Per-command help
 """
 
-# hermes_bootstrap must be the very first import — it sets up UTF-8 stdio on
-# Windows (no-op on POSIX). Guarded: after a ``git pull`` / interrupted
+# hermes_bootstrap must be the very first import — it sets up UTF-8 stdio.
+# Guarded: after a ``git pull`` / interrupted
 # ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
 # here would block ``hermes update``.
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
     pass
-
-# Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
-# imports — it shells out ``cmd /c ver`` and flashes a console when this
-# process is windowless (pythonw gateway, automation workers). No-op on POSIX.
-from hermes_cli._subprocess_compat import suppress_platform_ver_console
-
-suppress_platform_ver_console()
 
 import os
 import re
@@ -214,7 +207,7 @@ def _set_process_title() -> None:
 
     Order: opt-in ``setproctitle`` dep; ctypes ``prctl(PR_SET_NAME)`` (Linux,
     15-char limit); ``pthread_setname_np`` (macOS — lldb/top only, not ``ps
-    aux``); no-op on Windows (the .exe is already ``hermes.exe``). Never fatal.
+    aux``). Never fatal.
     """
     try:
         import setproctitle  # type: ignore[import-untyped]
@@ -539,37 +532,14 @@ try:
 except Exception:
     pass  # an unwritable home leaves the system temp dir in place; never block startup
 
-# Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
-# console script staged into the managed bin dir (outside the checkout, since
-# ``hermes update``'s autostash once swept ``<checkout>\bin`` copies off disk;
-# venv\Scripts must stay off PATH as it shadows the user's ``python``).
-# Re-staging at process start reaches already-broken installs via the desktop
-# app's ``python -m hermes_cli.main`` spawn. Gates fail toward inaction. Sits
-# AFTER the profile override on purpose — no hermes module may import before
-# profiles resolve; the helper anchors on the DEFAULT root, so profile
-# sessions heal the same shared dir.
-# That dir lives OUTSIDE the git checkout precisely because an earlier layout staged the copies at
-# ``<checkout>\bin``, where ``hermes update``'s autostash (``git stash push --include-untracked``) swept
-# them off disk; with the desktop updater's ``--keep-stash`` nothing restored them and ``hermes`` stopped
-# resolving in every new terminal (venv\Scripts itself must stay off PATH — it shadows the user's
-# ``python``, #83797). Costs a few stat calls when healthy; gates fail toward inaction so source checkouts
-# are untouched.
-if sys.platform == "win32":
-    try:
-        from hermes_cli import _install_repair as _install_repair_mod
-
-        _install_repair_mod.ensure_windows_bin_launchers(_bootstrap_root)
-    except Exception:
-        pass
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
-# ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
+# ``update`` must not resolve external secret sources (slow
 # helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
-# owns that argv check for every dotenv load in the process. See #73381.
 load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
@@ -663,22 +633,17 @@ from hermes_cli.main_provider_setup import (
     _remove_custom_provider,
 )
 from hermes_cli.main_install_repair import (
-    _cleanup_quarantined_exes,
     _recover_from_interrupted_install,
 )
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
-    ShimQuarantineError,
-    _UPDATE_REEXEC_ENV,
     _clear_lazy_refresh_incomplete_marker,
     _clear_marker_file,
     _clear_update_incomplete_marker,
     _install_python_dependencies_with_optional_fallback,
     _is_termux_env,
-    _is_windows,
     _is_windows_npm_path,
     _lazy_refresh_marker_path,
     _pytest_owns_live_checkout,
-    _reexec_dependency_sync_off_windows_shim,
     _repair_venv_via_import_probes,
     _resolve_install_target_python,
     _resolve_node_runtime_npm,
@@ -686,8 +651,6 @@ from hermes_cli.main_install_repair import (  # frozen updater surface: update_c
     _run_install_with_heartbeat,
     _run_package_only_install,
     _update_marker_path,
-    _venv_scripts_dir,
-    _verify_console_scripts_installed,
     _verify_core_dependencies_installed,
 )
 from hermes_cli.main_web_build import (
@@ -1321,11 +1284,7 @@ def _apply_in_dir(args) -> None:
     in_dir = getattr(args, "in_dir", None)
     if not in_dir:
         return
-    # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
-    # translate drive-root spellings to native Windows form. No-op elsewhere.
-    from tools.environments.local import _msys_to_windows_path
-
-    _target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
+    _target_dir = os.path.abspath(os.path.expanduser(in_dir))
     if not os.path.isdir(_target_dir):
         print(f"Error: --in directory not found: {in_dir}")
         sys.exit(1)
@@ -1921,26 +1880,24 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
         "_assess_parked_branch_switch",
         "_capture_active_lazy_features", "_capture_active_tool_dependencies",
-        "_cold_start_windows_gateway_after_update", "_detect_venv_python_processes", "_discard_stashed_changes",
-        "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
+        "_discard_stashed_changes",
+        "_fleet_probe_expected_runtimes",
         "_finish_dashboard_update_cleanup",
-        "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
-        "_ledger_reapable_backend_pids", "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
-        "_is_fork",
-        "_orphaned_desktop_backend_pids", "_park_stashed_changes",
-        "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
+        "_get_origin_url",
+        "_is_fork", "_npm_lockfile_changed",
+        "_park_stashed_changes",
+        "_print_parked_branch_kept_notice",
         "_print_parked_branch_skip_warning", "_reapply_plugin_python_dependencies",
         "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
-        "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
-        "_relaunch_stopped_serves", "_restore_stashed_changes",
-        "_resume_windows_gateways_after_update", "_run_logged_subprocess", "_run_pre_update_backup",
-        "_stash_local_changes_if_needed", "_stop_process_trees",
-        "_venv_launcher_ancestors",
-        "_wait_for_windows_update_gateway_exit", "_warn_orphaned_update_autostashes",
+        "_refresh_bootstrap_cache_scripts",
+        "_restore_stashed_changes",
+        "_run_logged_subprocess", "_run_pre_update_backup",
+        "_stash_local_changes_if_needed",
+        "_warn_orphaned_update_autostashes",
         "_write_update_incomplete_marker",
     ),
     "hermes_cli.dashboard_procs": (
-        "_detect_concurrent_hermes_instances", "_kill_stale_dashboard_processes",
+        "_kill_stale_dashboard_processes",
         "_respawn_dashboard_processes",
     ),
 }
@@ -2152,24 +2109,12 @@ def cmd_update(args):
         describe_holder,
     )
 
-    # A child spawned off hermes.exe: the parent still holds the shim (and the venv python)
-    # until it exits — nothing below may scan holders, pause gateways or rename shims before.
-    # Waiting BEFORE the lock matters: the parent's exit releases ITS marker, so a child that
-    # merely ran under the parent's claim would finish the install with no lock at all
-    # (#101600); once the parent is gone the child claims a marker of its own.
-    from hermes_cli.update_handoff import wait_for_shim_parent_exit
-
-    wait_for_shim_parent_exit()
-
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
-    # Exit code for the Windows hand-off child's hard exit (see finally); None
-    # = not SystemExit-shaped, so real exceptions keep their traceback.
-    _update_handoff_exit_code: int | None = None
     from hermes_cli.update_cmd import _cmd_update_impl
 
     try:
@@ -2180,9 +2125,6 @@ def cmd_update(args):
         # exit code (no-op if already finalized), then let the exit proceed.
         _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
         _finalize_update_receipt(_code, f"sys.exit({_code})")
-        _update_handoff_exit_code = (
-            _update_exit.code if isinstance(_update_exit.code, int) else 0
-        )
         raise
     except BaseException as _update_exc:
         _finalize_update_receipt(1, f"{type(_update_exc).__name__}: {_update_exc}")
@@ -2191,26 +2133,9 @@ def cmd_update(args):
         from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 
         _finalize_update_receipt(0, COMMAND_BOUNDARY_STOP_REASON)
-        _update_handoff_exit_code = 0
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)
-        # Windows hand-off child: a leftover non-daemon thread from the update
-        # tail would freeze the PowerShell window for minutes after the receipt
-        # is durable. Every durable step is done by now, so on the hand-off
-        # path only (marker env set solely by
-        # _reexec_dependency_sync_off_windows_shim) flush and exit hard.
-        # By this point every durable step is done (receipt finalized above, lock released, stdio restored),
-        # so on the hand-off path only, flush and exit hard instead of waiting for the interpreter to unwind
-        # — the same treatment #79040's cron workaround applies.
-        if _update_handoff_exit_code is not None and os.environ.get(_UPDATE_REEXEC_ENV) == "1":
-            logger.debug(
-                "Update hand-off child %s exiting via os._exit(%s)",
-                os.getpid(), _update_handoff_exit_code,
-            )
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(_update_handoff_exit_code)
 
 
 def _coalesce_session_name_args(argv: list) -> list:
@@ -2894,12 +2819,7 @@ def main():
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()
 
-    # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
-    try:
-        from hermes_cli.stdio import configure_windows_stdio
-        configure_windows_stdio()
-    except Exception:
-        pass
+
 
     # One TLS authority: trust the OS store process-wide before any outbound
     # call resolves a CA bundle (see agent/ssl_verify.py). Covers the CLI
@@ -2909,14 +2829,6 @@ def main():
         from agent.ssl_verify import install_truststore
 
         install_truststore()
-    except Exception:
-        pass
-
-    # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
-    # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
-    # there's nothing to clean. See ``_quarantine_running_hermes_exe``.
-    try:
-        _cleanup_quarantined_exes()
     except Exception:
         pass
 

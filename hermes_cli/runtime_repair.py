@@ -4,12 +4,9 @@ The Python backing a CHECKOUT install is shared by every Hermes profile
 because the checkout's ``venv`` is shared.  A vulnerable interpreter is
 never reinstalled in place: we provision a new immutable Python generation
 into the install's runtime dir and build and smoke-test a relocatable
-sibling venv from it.  POSIX installs cut over with same-filesystem
-directory renames — the old venv stays parked for synchronous rollback
-and is swept for cleanup once it is clearly stale.  Windows installs
-atomically repoint the live venv's ``pyvenv.cfg`` at the new generation
-instead, because any open handle under the venv (cwd, open file, sync
-client) makes Windows refuse the rename.
+sibling venv from it.  Installs cut over with same-filesystem directory
+renames — the old venv stays parked for synchronous rollback and is
+swept for cleanup once it is clearly stale.
 
 Sealed trees never reach this module — their interpreter is a build
 artifact (pm's ``sealed()`` payloads ship a staged python and refuse
@@ -75,12 +72,12 @@ def _runtime_dir(project_root: Path) -> Path:
 
 
 def _uv_binary_path() -> Path:
-    """Path of Hermes' own uv binary (``$HERMES_HOME/bin/uv[.exe]``); may not exist yet.
+    """Path of Hermes' own uv binary (``$HERMES_HOME/bin/uv``); may not exist yet.
 
     Only a lookup helper for :func:`resolve_uv`/:func:`pip_install_hint` — uv
     ACQUISITION is pm's business now (see the module docstring).
     """
-    return get_hermes_home() / "bin" / ("uv.exe" if platform.system() == "Windows" else "uv")
+    return get_hermes_home() / "bin" / "uv"
 
 
 def resolve_uv() -> Optional[str]:
@@ -262,12 +259,11 @@ def _reload_hermes_constants():
 
 
 def _venv_python(venv_dir: Path) -> Path:
-    windows = platform.system() == "Windows"
     try:
         from hermes_constants import venv_python_path
     except ImportError:
         venv_python_path = _reload_hermes_constants().venv_python_path
-    return venv_python_path(venv_dir, windows=windows)
+    return venv_python_path(venv_dir)
 
 
 def _remove_tree(path: Path, *, boundary: Path) -> None:
@@ -618,8 +614,7 @@ def _stage_candidate_venv(
     sync_env = dict(env)
     sync_env.pop("UV_NO_CONFIG", None)
     # stderr=STDOUT: uv writes progress to stderr. Legacy desktop
-    # hand-offs (pre scripts/desktop-update/windows.ps1, which drains
-    # both pipes) only drain the child's stdout while the child runs; a
+    # hand-offs only drain the child's stdout while the child runs; a
     # full stderr pipe (~64KB) blocks uv forever. Merging into stdout
     # keeps the output streaming through the pipe old hand-offs DO
     # drain. This module is imported lazily by update_cmd AFTER the git
@@ -722,87 +717,6 @@ def _cut_over_candidate(
         raise
 
 
-def _replace_file_atomically(path: Path, data: bytes) -> None:
-    """Replace *path* from a same-directory temporary file."""
-    token = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    temporary = path.with_name(f".{path.name}.runtime-{token}.tmp")
-    try:
-        with temporary.open("xb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _cut_over_windows_runtime_config(
-    candidate: Path,
-    *,
-    live: Path,
-    current: SQLiteRuntimeInfo,
-    candidate_info: SQLiteRuntimeInfo,
-) -> tuple[bool, bool, SQLiteRuntimeInfo | None, str]:
-    """Repoint a live Windows venv instead of renaming its directory.
-
-    Windows refuses to rename a directory while any handle is open inside it: a process whose
-    cwd is under the venv, an open file, an Explorer window, a sync client (OneDrive) or a
-    scanner. The updater cannot enumerate those holders, and the park rename in
-    ``_cut_over_candidate`` failed with ``WinError 5`` in the field on every retry (#93032).
-    Mapped executable images do NOT block the rename (proven live on windows-latest), so the
-    updater running from the venv was never the problem.
-
-    ``venv\\Scripts\\python.exe`` is a launcher that reads ``home`` from ``pyvenv.cfg`` on every
-    start, so atomically replacing that one file redirects every fresh process to the candidate
-    generation with no directory rename at all.
-
-    The live venv keeps its own ``site-packages``, so the candidate must stay on the same
-    ``major.minor`` line: compiled extensions built for one minor do not import under the next.
-
-    The second return value reports whether the live config still references the candidate
-    generation. Callers must preserve that generation if a failed smoke test could not restore
-    the original config.
-    """
-    if current.python_version[:2] != candidate_info.python_version[:2]:
-        return False, False, None, (
-            f"a Python {_dotted(candidate_info.python_version[:2])} runtime cannot be repointed "
-            f"under a {_dotted(current.python_version[:2])} venv's site-packages")
-    live_config = live / "pyvenv.cfg"
-    candidate_config = candidate / "pyvenv.cfg"
-    try:
-        original = live_config.read_bytes()
-        replacement = candidate_config.read_bytes()
-    except OSError as exc:
-        return False, False, None, f"could not read venv runtime config: {exc}"
-
-    try:
-        _replace_file_atomically(live_config, replacement)
-    except OSError as exc:
-        return False, False, None, f"could not repoint the existing venv: {exc}"
-
-    try:
-        healthy, detail, info = _smoke_candidate_venv(live)
-    except Exception as exc:
-        healthy, detail, info = False, f"candidate smoke raised: {exc}", None
-    if healthy:
-        return True, True, info, ""
-
-    try:
-        _replace_file_atomically(live_config, original)
-    except OSError as rollback_error:
-        return (
-            False,
-            True,
-            info,
-            "post-cutover smoke failed "
-            f"({detail}); runtime-config rollback failed ({rollback_error})",
-        )
-    return False, False, info, f"post-cutover smoke failed: {detail}"
-
-
 def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
     """Acquire an OS-held install lock that is released on process exit."""
     runtime_root.mkdir(parents=True, exist_ok=True)
@@ -821,16 +735,9 @@ def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
 
 
 def _flock(fd: int, *, acquire: bool) -> None:
-    """Non-blocking exclusive lock (or unlock) on *fd*, portable across msvcrt/fcntl."""
-    if os.name == "nt":
-        import msvcrt
-        if acquire and os.fstat(fd).st_size == 0:
-            os.write(fd, b"\0")
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
+    """Non-blocking exclusive lock (or unlock) on *fd*."""
+    import fcntl
+    fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
 
 
 def _release_repair_lock(lock: _RepairLock) -> None:
@@ -841,89 +748,6 @@ def _release_repair_lock(lock: _RepairLock) -> None:
         with contextlib.suppress(OSError):
             os.close(lock.fd)
 
-
-def _windows_runtime_holders() -> tuple[bool, str]:
-    if platform.system() != "Windows":
-        return False, ""
-    try:
-        from hermes_cli.update_cmd_windows import _detect_venv_python_processes
-        holders = _detect_venv_python_processes()
-    except Exception as exc:
-        return True, f"could not verify Windows venv holders: {exc}"
-    if holders:
-        pids = ", ".join(str(item[0]) for item in holders[:6])
-        return True, f"other Hermes processes still hold the venv (PID {pids})"
-    return False, ""
-
-
-def _windows_runtime_self_lock(live: Path) -> tuple[bool, str]:
-    """Detect the one holder the generic scan above is blind to: THIS process.
-
-    ``_detect_venv_python_processes`` excludes the calling process and its
-    ancestors on purpose — a CLI ``hermes update`` itself runs from the
-    venv python — which is correct for the dependency-sync path, where only
-    a *loaded* ``.pyd`` image blocks the rewrite and a fresh child process
-    dodges it.  For the whole-venv park rename that exemption is fatal:
-    Windows keeps the image of any executable a running process was started
-    from mapped until that process exits, so a directory containing the
-    updater's own ``python.exe`` (or a waiting ``hermes.exe`` launcher
-    ancestor) can never be renamed from inside the updater.  The retry loop
-    in ``_cut_over_candidate`` cannot help against that — the lock is
-    structural, not transient (#93032).
-
-    No-op off Windows: POSIX renames work fine while this process maps
-    files from the renamed tree (open FDs and mmaps keep inodes alive).
-    """
-    if platform.system() != "Windows":
-        return False, ""
-    try:
-        live_res = str(live.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        live_res = str(live).lower().rstrip(os.sep) + os.sep
-
-    def _under_live(path_value: str | None) -> bool:
-        if not path_value:
-            return False
-        try:
-            resolved = str(Path(path_value).resolve()).lower()
-        except (OSError, ValueError):
-            resolved = str(path_value).lower()
-        return resolved.startswith(live_res)
-
-    try:
-        exe = sys.executable
-    except Exception:
-        exe = None
-    if _under_live(exe):
-        return True, (
-            f"the updater itself runs from the live venv it must replace "
-            f"({exe}); Windows cannot rename a directory while a process "
-            "executes from inside it"
-        )
-    # Belt-and-braces: the venv\Scripts\hermes.exe launcher stays mapped
-    # while it waits for this child, so an ancestor started from the venv
-    # blocks the rename too.
-    try:
-        import psutil
-
-        try:
-            parents = psutil.Process().parents()
-        except Exception:
-            parents = []
-        for anc in parents:
-            try:
-                anc_exe = anc.exe()
-            except Exception:
-                continue
-            if _under_live(anc_exe):
-                return True, (
-                    f"ancestor process PID {anc.pid} runs from the live venv "
-                    f"({anc_exe}); Windows cannot rename a directory while a "
-                    "process executes from inside it"
-                )
-    except Exception:
-        pass
-    return False, ""
 
 
 def _default_live_venv(root: Path) -> Path:
@@ -997,10 +821,8 @@ def repair_vulnerable_runtime(
 ) -> RuntimeRepairResult:
     """Replace a vulnerable install venv without mutating it in place.
 
-    Every failure before cutover leaves the live venv untouched. POSIX cuts over with
-    directory renames and restores the parked venv synchronously on failure; Windows repoints
-    the live venv's ``pyvenv.cfg`` instead (any open handle under the venv makes a directory
-    rename fail there — #93032) and restores the original config on a failed smoke.
+    Every failure before cutover leaves the live venv untouched. Cutover uses
+    directory renames and restores the parked venv synchronously on failure.
 
     uv is resolved internally — the pinned binary via ``pm`` (its version
     lives in ``pm/lock.json``; the bytes live in the pm store).  There is
@@ -1043,39 +865,6 @@ def repair_vulnerable_runtime(
             "safe",
             sqlite_before=current.sqlite_version_string,
             sqlite_after=current.sqlite_version_string,
-        )
-
-    blocked, detail = _windows_runtime_holders()
-    if blocked:
-        print(f"  ⚠ SQLite runtime repair deferred: {detail}")
-        return RuntimeRepairResult(
-            "skipped",
-            detail,
-            sqlite_before=current.sqlite_version_string,
-        )
-
-    self_locked, self_detail = _windows_runtime_self_lock(live)
-    if self_locked:
-        # Structural, not transient: this process maps the live venv's own
-        # executable, so the park rename fails the same way on every run and
-        # no number of retries converges. Defer BEFORE provisioning — a
-        # candidate staged for a cutover that can never run only leaks an
-        # incomplete generation (#93032).
-        print(f"  ⚠ SQLite runtime repair deferred: {self_detail}.")
-        print(
-            "    Retrying `hermes update` from inside this venv cannot help: "
-            "the mapped executable is released only when this process exits."
-        )
-        print(
-            "    To complete the repair, run the updater from an interpreter "
-            "that lives outside this venv, e.g.:"
-        )
-        print(f"      cd {root}")
-        print("      <system Python> -m hermes_cli.main update")
-        return RuntimeRepairResult(
-            "skipped",
-            self_detail,
-            sqlite_before=current.sqlite_version_string,
         )
 
     runtime_root = _runtime_dir(root)
@@ -1151,23 +940,15 @@ def repair_vulnerable_runtime(
             )
 
         backup: Path | None = None
-        generation_in_use = False
-        if platform.system() == "Windows":
-            cut_over, generation_in_use, final_info, cutover_detail = (
-                _cut_over_windows_runtime_config(
-                    candidate, live=live, current=current, candidate_info=candidate_info)
-            )
-        else:
-            cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
-                candidate,
-                project_root=root,
-                live=live,
-            )
+        cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
+            candidate,
+            project_root=root,
+            live=live,
+        )
         if not cut_over:
             if backup is None:
                 _remove_tree(candidate, boundary=runtime_root)
-                if not generation_in_use:
-                    _remove_tree(generation, boundary=managed_python_install_dir(root))
+                _remove_tree(generation, boundary=managed_python_install_dir(root))
             return RuntimeRepairResult(
                 "failed",
                 cutover_detail,
@@ -1189,10 +970,6 @@ def repair_vulnerable_runtime(
         )
         if backup is not None and backup.exists():
             _remove_tree(backup, boundary=root)
-        elif backup is None:
-            # Windows: the live venv now points at the generation; the
-            # staging venv is spent.
-            _remove_tree(candidate, boundary=runtime_root)
         return RuntimeRepairResult(
             "repaired",
             sqlite_before=current.sqlite_version_string,

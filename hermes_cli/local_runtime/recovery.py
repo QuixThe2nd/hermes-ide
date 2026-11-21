@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from pathlib import Path
 
 import psutil
@@ -51,16 +50,13 @@ def recorded_process(state: dict):
         if (not proc.is_running() or proc.create_time() != created
                 or Path(proc.exe()) != Path(exe)):
             return None
-        # Windows retains the original parent PID; POSIX reparents orphans.
-        if os.name == "nt" and proc.ppid() != owner_pid:
-            return None
         parent = proc.parent()
         if parent is not None:
             if parent.pid == owner_pid:
                 if parent.create_time() != owner_created:
                     return None
-            elif os.name == "nt" or not _owner_is_dead(state):
-                return None  # POSIX may reparent a router whose recorded owner exited.
+            elif not _owner_is_dead(state):
+                return None  # the recorded owner may have exited while the router lives on.
         return proc
     except (KeyError, TypeError, ValueError, OverflowError, OSError, psutil.Error):
         return None
@@ -81,50 +77,6 @@ def _owner_is_dead(state: dict) -> bool:
         return False
 
 
-def _legacy_orphan_process(state: dict):
-    """Older state lacks birth times: require the exact installed binary and launch arguments."""
-    from urllib.parse import urlsplit
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.local_runtime.supervisor import state_path
-
-    # A damaged new record must not fall back to weaker legacy evidence.
-    if os.name != "nt" or is_modern(state):
-        return None
-    try:
-        if not _valid_pid(state["pid"]):
-            return None
-        proc = psutil.Process(state["pid"])
-        root = state_path().parent
-        exe = Path(proc.exe())
-        relative = exe.relative_to(root)
-        if len(relative.parts) != 3 or exe.name.lower() != "llama-server.exe":
-            return None
-        if proc.parent() is not None or proc.ppid() <= 0:
-            return None
-        if proc.create_time() > state_path().stat().st_mtime:
-            return None  # the PID was reused after this record was written
-        url = urlsplit(state["base_url"])
-        if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or not state["api_key"]:
-            return None
-        argv = proc.cmdline()
-
-        def value(flag):
-            if argv.count(flag) != 1:
-                return None
-            index = argv.index(flag) + 1
-            return argv[index] if index < len(argv) else None
-
-        if (value("--host") != "127.0.0.1" or value("--port") != str(url.port)
-                or value("--api-key") != state["api_key"]):
-            return None
-        preset, directory = value("--models-preset"), value("--models-dir")
-        if not ((preset and Path(preset) == root / "presets.ini" and directory is None)
-                or (directory and Path(directory) == models_dir() and preset is None)):
-            return None
-        return proc
-    except (KeyError, TypeError, ValueError, OSError, psutil.Error):
-        return None
-
 
 def stop_recorded_orphan() -> bool:
     """Explicit user stop only. Refuse uncertain identity or a living recorded owner."""
@@ -141,13 +93,12 @@ def stop_recorded_orphan() -> bool:
     try:
         if not psutil.pid_exists(state["pid"]):
             return True  # keep the dead record; endpoint resolution rejects it
-        if is_modern(state):
-            proc = recorded_process(state)
-            if proc is None or not _owner_is_dead(state):
-                return False
-        else:
-            proc = _legacy_orphan_process(state)
-        if proc is None or read_state() != state or not proc.is_running():
+        if not is_modern(state):
+            return False  # legacy records without birth times are never identity-verifiable
+        proc = recorded_process(state)
+        if proc is None or not _owner_is_dead(state):
+            return False
+        if read_state() != state or not proc.is_running():
             return False
         # Retain the psutil incarnation object: destructive methods guard PID reuse.
         LlamaServerSupervisor._terminate_tree(proc, verified_root=True)

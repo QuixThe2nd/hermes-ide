@@ -152,7 +152,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # split_command_line, not shlex: shlex eats Windows path backslashes.
-from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
+from hermes_cli._subprocess_compat import kill_process_tree, split_command_line
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
@@ -430,9 +430,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     if not argv:
         return failed("empty command")
     t0 = time.monotonic()
-    # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
-    # / taskkill /T). Hooks that finish in time keep detached helpers alive.
-    popen_kwargs: Dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    # Own process group so a timed-out hook's descendants are reaped with it.
+    # Hooks that finish in time keep detached helpers alive.
+    popen_kwargs: Dict[str, Any] = {"process_group": 0}
     # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
@@ -623,7 +623,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
         if fcntl is None:  # pragma: no cover — non-POSIX fallback
             stack.enter_context(_allowlist_write_lock)
         else:
-            lock_fh = stack.enter_context(open(p.with_suffix(p.suffix + ".lock"), "a+", encoding="utf-8"))  # windows-footgun: ok (write/append mode, not a read)
+            lock_fh = stack.enter_context(open(p.with_suffix(p.suffix + ".lock"), "a+", encoding="utf-8"))
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
             stack.callback(_flock_unlock, lock_fh)
         data = load_allowlist()

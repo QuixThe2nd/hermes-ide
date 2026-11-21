@@ -32,60 +32,6 @@ LAZY_REFRESH_REPAIR_PACKAGES: dict[str, str] = {
     "rich": "rich", "cryptography": "cryptography", "jwt": "PyJWT",
 }
 
-# ``hermes update`` renames the live ``hermes*.exe`` shims aside (``hermes.exe.old.<unix-ms>``) so
-# uv can write replacements. Putting them BACK is the safety-critical direction: losing that rename
-# leaves no ``hermes`` on PATH, and the command that would repair it IS ``hermes update``. The
-# updater, the early-recovery installer and the startup orphan sweep all restore through this one
-# stdlib-only helper so the retry ladder and the recovery wording cannot drift apart again.
-# --- Windows entry-point shim quarantine ----------------------------------- They used to be separate
-# one-shot renames with swallowed errors; the two that had messages had already drifted apart. The logic
-# lives here, in the one stdlib-only module all of them can import, so the ladder and the recovery wording
-# stay in lockstep. See #75584.
-QUARANTINE_RESTORE_BACKOFF_MS: tuple[int, ...] = (0, 100, 250, 500, 1000)
-
-
-def restore_quarantined_shims(
-    moved: list[tuple[Path, Path]], *, stream=None,
-    backoff_ms: tuple[int, ...] = QUARANTINE_RESTORE_BACKOFF_MS,
-) -> list[tuple[Path, Path]]:
-    """Rename quarantined shims back, retrying a lock instead of giving up.
-
-    A pair is not a failure when ``original`` already exists or ``quarantined`` has gone: the
-    installer wrote a fresh shim, or a concurrent sweep won the race. Both are silent, so two
-    processes sweeping the same orphan cannot produce a spurious error.
-    """
-    if stream is None:
-        stream = sys.stderr
-    failed: list[tuple[Path, Path]] = []
-    for original, quarantined in moved:
-        last_exc: OSError | None = None
-        for delay_ms in backoff_ms:
-            try:
-                if os.path.exists(original) or not os.path.exists(quarantined):
-                    last_exc = None
-                    break
-                if delay_ms:
-                    time.sleep(delay_ms / 1000.0)
-                os.rename(quarantined, original)
-                last_exc = None
-                break
-            except OSError as exc:
-                last_exc = exc
-        if last_exc is None:
-            continue
-        failed.append((original, quarantined))
-        name = os.path.basename(str(original))
-        stem = name[:-4] if name.lower().endswith(".exe") else name
-        print(
-            f"  ✖ FAILED to restore {name} "
-            f"({last_exc.__class__.__name__}) — it is still quarantined "
-            f"as {os.path.basename(str(quarantined))}.\n"
-            f"    `{stem}` will NOT be on PATH until it is put back. Run this, "
-            f"then re-run the update:\n"
-            f'      move "{quarantined}" "{original}"',
-            file=stream,
-        )
-    return failed
 
 
 # Set only when this process successfully finishes a deferred core install for an ``update``
@@ -99,8 +45,7 @@ def _should_skip_external_secret_sources() -> bool:
     """True inside any ``hermes update`` process (and its import probes).
 
     Every dotenv load in the process — ``hermes_cli.main``, ``run_agent``, ``cli`` — consults
-    this, so the updater never resolves external secret sources: on Windows they map
-    ``cryptography._rust.pyd`` into the process replacing that venv, and everywhere a slow
+    this, so the updater never resolves external secret sources: a slow
     ``op``/``bws``/command helper (up to 120s per source) would run inside the updater's
     120s critical-module import probe and be reported as an import-health timeout.
     Profile flags are stripped before ``hermes_cli.main`` loads dotenv, so ``argv[1]`` is
@@ -154,37 +99,12 @@ def _run_ensurepip(root: Path) -> None:
 
 
 def _pid_is_running(pid: int) -> bool:
-    """Best-effort stdlib-only process liveness probe.
-
-    ``os.kill(pid, 0)`` is not a no-op on Windows, so use the Win32 process handle API there. An
-    access-denied result counts as live: racing an elevated updater is worse than postponing
-    recovery for one launch.
-    """
+    """Best-effort stdlib-only process liveness probe. An access-denied result counts as live:
+    racing an elevated updater is worse than postponing recovery for one launch."""
     if pid <= 0:
         return False
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            synchronize = 0x00100000
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-            kernel32.OpenProcess.restype = ctypes.c_void_p
-            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-            kernel32.WaitForSingleObject.restype = ctypes.c_ulong
-            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-            kernel32.CloseHandle.restype = ctypes.c_int
-            handle = kernel32.OpenProcess(synchronize, False, pid)
-            if not handle:
-                return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
-            try:
-                return kernel32.WaitForSingleObject(handle, 0) == 258
-            finally:
-                kernel32.CloseHandle(handle)
-        except Exception:
-            return True
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — Windows returns above
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -278,9 +198,9 @@ def _find_uv_binary() -> str | None:
 
     uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so the stdlib ``pip``
     fallback refuses to touch them; the only sanctioned installer is then uv itself, which Hermes
-    vendors (``~/.hermes/bin/uv.exe``) or the user has on PATH.
+    vendors (``~/.hermes/bin/uv``) or the user has on PATH.
     """
-    exe = "uv.exe" if sys.platform == "win32" else "uv"
+    exe = "uv"
     for sub in ((".hermes", "bin"), (".local", "bin"), (".cargo", "bin")):
         path = Path.home().joinpath(*sub, exe)
         if path.is_file():
@@ -382,8 +302,8 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
             return
 
         # Pending core install: complete it NOW, before any native extension is imported, so the
-        # WHOLE dependency set is replaced while nothing pins venv .pyd files yet (deferring to
-        # main()'s post-import recovery re-locks it on Windows). A live marker owner is another
+        # WHOLE dependency set is replaced while nothing pins venv native extensions yet (deferring to
+        # main()'s post-import recovery re-locks it). A live marker owner is another
         # updater inside the marker-to-install window — never race it. A dead owner MUST be
         # recovered even when this launch is itself `hermes update`: CLI and Desktop retries keep
         # that argv, and skipping solely on argv recreates the self-lock loop.
@@ -467,10 +387,9 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
     Returns ``True`` only after the install succeeds.
 
     ``recover_if_needed`` invokes this when ``.update-incomplete`` exists — a prior ``hermes update`` (or
-    the self-lock preflight, #83569) left the dependency sync deliberately unfinished. Completing it here
-    matters on Windows: the deferral exists precisely because the process that wrote the marker had a native
-    venv extension mapped; this process, running before ``hermes_cli.main``'s third-party imports, maps
-    nothing yet, so the installer can replace ``.pyd`` files without hitting the lock.
+    the self-lock preflight, #83569) left the dependency sync deliberately unfinished. This
+    process, running before ``hermes_cli.main``'s third-party imports, maps nothing yet, so
+    the installer can replace native extension files without hitting the lock.
     """
     try:
         from hermes_cli import _install_repair as ir

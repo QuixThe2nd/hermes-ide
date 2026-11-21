@@ -22,7 +22,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -535,7 +534,7 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
 
     proc = subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, creationflags=windows_hide_flags())
+        env=env)
     streams: dict = {}
 
     def _drain() -> None:

@@ -61,7 +61,7 @@ def _command_basename(command: Any) -> str:
     if not text:
         return ""
     try:
-        parts = shlex.split(text, posix=(os.name != "nt"))
+        parts = shlex.split(text)
     except ValueError:
         parts = text.split()
     first = parts[0] if parts else text

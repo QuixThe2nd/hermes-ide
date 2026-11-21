@@ -59,6 +59,34 @@ def store_root(project_root: Path) -> Path:
     return get_default_hermes_root() / "tools"
 
 
+def resolve_store_python(repo_root: Path) -> Path | None:
+    """The interpreter the store installed from the ``python`` package
+    (facts.json entry first, newest ``python-*`` entry as fallback), or
+    None when `hermes pm install` has not materialized one yet."""
+    runtime = store_root(repo_root)
+    rel = "bin/python3"
+
+    facts = runtime / "facts.json"
+    if facts.is_file():
+        try:
+            packages = json.loads(facts.read_text(encoding="utf-8-sig")).get(
+                "packages", {}
+            )
+            entry = (packages.get("python") or {}).get("entry")
+        except (OSError, ValueError):
+            entry = None
+        if entry:
+            candidate = runtime / entry / rel
+            if candidate.is_file():
+                return candidate
+
+    for entry_dir in sorted(runtime.glob("python-*"), key=lambda p: p.name):
+        candidate = entry_dir / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def selected_venv(project_root: Path) -> Path:
     """Use the committed environment, or the original install before first sync.
 
@@ -91,8 +119,7 @@ def selected_venv(project_root: Path) -> Path:
 def site_packages(venv: Path) -> Path:
     import sys
 
-    return venv / ("Lib/site-packages" if os.name == "nt" else
-                   f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+    return venv / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
 
 
 def activate_dependencies(project_root: Path) -> None:

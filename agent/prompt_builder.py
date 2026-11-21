@@ -763,40 +763,6 @@ def _plugin_backend_is_remote(backend: str) -> bool:
                 and _plugin_backend_attr(backend, "is_remote", False))
 
 
-def _windows_marketing_version() -> str:
-    """"10"/"11" (``platform.release()`` says 10 for both; 11 is build >= 22000).
-
-    ``platform.release()`` reports the kernel version, which is ``10`` for BOTH Windows 10 and Windows 11 —
-    the prompt then claims "Windows (10)" on Windows 11 hosts and misleads the model about the OS (#51755).
-    Windows 11 is distinguished by build number: >= 22000 is 11. Falls back to ``platform.release()`` on any
-    lookup failure.
-    """
-    try:
-        return "11" if sys.getwindowsversion().build >= 22000 else "10"  # type: ignore[attr-defined]
-    except Exception:
-        import platform
-        return platform.release()
-
-
-_WINDOWS_BASH_SHELL_HINT = (
-    "Shell: on this Windows host your `terminal` tool runs commands through bash (git-bash / MSYS), NOT PowerShell or "
-    "cmd.exe. Use POSIX shell syntax (`ls`, `$HOME`, `&&`, `|`, single-quoted strings) inside terminal calls. "
-    "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
-    "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
-    "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
-    # no-tmp: ok — illustrates the MSYS path that FAILS for native Windows tools
-    "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
-    "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
-    # no-tmp: ok — tells the model what NOT to use
-    "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
-    "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
-    "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
-    "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
-    "non-interactive path (flags, `--with-token`, config files, an OAuth device flow polled with curl), prefer it over "
-    "driving prompts."
-)
-
-
 def _tenv_read(name: str, default: str = "") -> str:
     """Scope-aware TERMINAL_* read: the multiplexing gateway's per-turn scope carries
     the active profile's settings (raw os.getenv could read a previous profile's value).
@@ -889,7 +855,6 @@ def _local_host_hints() -> list[str]:
 
     host = (
         "WSL (Windows Subsystem for Linux)" if is_wsl()
-        else f"Windows ({_windows_marketing_version()})" if sys.platform == "win32"
         else f"macOS ({platform.mac_ver()[0] or platform.release()})" if sys.platform == "darwin"
         else f"{platform.system()} ({platform.release()})"
     )
@@ -905,14 +870,7 @@ def _local_host_hints() -> list[str]:
                           "and probes there, never under the system temp dir; entries are pruned after 72h)")
     except OSError:
         pass
-    if not (sys.platform == "win32" and not is_wsl()):
-        return ["\n".join(host_lines)]
-    host_lines.append(
-        "Note: on Windows, the machine hostname (e.g. from `hostname` or uname) is NOT the username. "
-        "Use the 'User home directory' above to construct paths under C:\\Users\\<user>\\, never the hostname."
-    )
-    # Windows-local terminal runs bash, not PowerShell — without this the model issues PowerShell syntax.
-    return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
+    return ["\n".join(host_lines)]
 
 
 def _remote_backend_hint(backend: str) -> str:

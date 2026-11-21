@@ -191,12 +191,9 @@ def cmd_doctor(args) -> int:
     return 1 if bad else 0
 
 
-def _venv_site_packages(venv_dir: Path, win: bool) -> Optional[Path]:
+def _venv_site_packages(venv_dir: Path) -> Optional[Path]:
     """The site-packages dir uv sync fills inside the venv (the venv stays
     a dependency target; it is never where `python` resolves)."""
-    if win:
-        candidate = venv_dir / "Lib" / "site-packages"
-        return candidate if candidate.is_dir() else None
     for candidate in sorted(venv_dir.glob("lib/python3.*/site-packages")):
         if candidate.is_dir():
             return candidate
@@ -230,8 +227,7 @@ def _develop_env(names: list[str]) -> Optional[dict]:
     env = env_for(*names, base_env=dict(os.environ))
     repo = paths.repo_root()
     venv_dir = repo / (".venv" if (repo / ".venv").is_dir() else "venv")
-    win = target.startswith("win32")
-    venv_bin = venv_dir / ("Scripts" if win else "bin")
+    venv_bin = venv_dir / "bin"
     env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONHOME", None)
     # The venv bin dir must never be where `python` resolves.
@@ -239,7 +235,7 @@ def _develop_env(names: list[str]) -> Optional[dict]:
         p for p in env.get("PATH", "").split(os.pathsep) if p and Path(p) != venv_bin
     ]
     env["PATH"] = os.pathsep.join([str(python_bin.parent), *path_entries])
-    site = _venv_site_packages(venv_dir, win)
+    site = _venv_site_packages(venv_dir)
     ours = str(repo) + (os.pathsep + str(site) if site else "")
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = ours + (os.pathsep + existing if existing else "")
@@ -285,20 +281,14 @@ def cmd_develop(args) -> int:
 
     from pm import paths
 
-    win = current_target().startswith("win32")
     if args.print_env:
         changed = {k: v for k, v in env.items() if os.environ.get(k) != v}
         for key, value in sorted(changed.items()):
-            if win and os.environ.get("SHELL") is None:
-                print(f'$env:{key} = "{value}"')
-            else:
-                escaped = value.replace("'", "'\\''")
-                print(f"export {key}='{escaped}'")
+            escaped = value.replace("'", "'\\''")
+            print(f"export {key}='{escaped}'")
         return 0
 
-    shell = os.environ.get("SHELL") or os.environ.get("COMSPEC") or (
-        "cmd.exe" if win else "/bin/sh"
-    )
+    shell = os.environ.get("SHELL") or os.environ.get("COMSPEC") or "/bin/sh"
     print(f"pm develop: entering {shell} (exit to leave)")
     return subprocess.call([shell], env=env, cwd=paths.repo_root())
 
@@ -691,16 +681,14 @@ def _arch_guard(store_dir: Path) -> list[str]:
         if binary is None or not binary.is_file():
             continue
         verdict = machine_matches_binary(binary, target)
-        # A package that declares this target as emulated (x64 binary run
-        # under Windows ARM64 built-in emulation) is fine with the x64 PE.
-        if verdict is False and target not in package.emulated_arch_targets:
+        if verdict is False:
             problems.append(f"{name}: {binary.name} is not a {target} binary")
     return problems
 
 
 def main(argv=None) -> int:
-    # Windows consoles default to cp1252; pm prints ✓/✗. Never let the
-    # status glyphs crash the command reporting them. line_buffering:
+    # pm prints ✓/✗; never let the status glyphs crash the command
+    # reporting them on a non-UTF-8 stream. line_buffering:
     # pm output must stream live in a piped (CI) log, not sit in a block
     # buffer and flush only at exit.
     for stream in (sys.stdout, sys.stderr):
@@ -746,7 +734,7 @@ def main(argv=None) -> int:
     p.add_argument("names", nargs="*", help="packages to check/update (default: all with a latest source)")
     p.add_argument("--check", action="store_true",
                    help="dry-run: print what would change, write nothing (exit 1 if updates exist)")
-    p.add_argument("--target", help="resolve for a different target instead of this machine (e.g. win32-arm64)")
+    p.add_argument("--target", help="resolve for a different target instead of this machine (e.g. linux-arm64)")
     p.add_argument("--uv", action="store_true", help="also refresh uv.lock + venv (uv update + sync)")
     p.add_argument("--npm", action="store_true", help="also refresh package-lock.json (npm update)")
     p.set_defaults(func=cmd_update)

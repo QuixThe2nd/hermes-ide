@@ -1,10 +1,8 @@
-"""Process identity: spawn tags, the machine-wide spawn ledger, and the Windows job-object self-attach.
+"""Process identity: spawn tags and the machine-wide spawn ledger.
 
-Three layers make every long-lived Hermes process positively identifiable, so reapers (``hermes
+Two layers make every long-lived Hermes process positively identifiable, so reapers (``hermes
 update``, Desktop startup sweeps) never guess lineage from PPID archaeology or cmdline matching:
-1. spawn tags (``HERMES_SPAWN`` env stamped by the spawner); 2. a ``(pid, create_time)`` ledger;
-3. Windows job-object self-attach with ``KILL_ON_JOB_CLOSE`` so the whole child tree dies with the
-root — no launcher→worker chains left holding ``.pyd`` locks.
+1. spawn tags (``HERMES_SPAWN`` env stamped by the spawner); 2. a ``(pid, create_time)`` ledger.
 """
 
 from __future__ import annotations
@@ -13,7 +11,7 @@ import hashlib
 import json
 import logging
 import os
-import platform
+import shlex
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -32,11 +30,7 @@ LEDGER_FILENAME = "spawn-ledger.json"
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
 REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper"})
 
-_IS_WINDOWS = platform.system() == "Windows"
 
-# Module-global job handle: must live exactly as long as this process so the
-# kernel closes it (and kills the job) when we die. Never close it manually.
-_JOB_HANDLE = None
 _LEDGER_LOCK = threading.Lock()
 
 
@@ -373,65 +367,72 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
     return reaped
 
 
-# Layer 3 — Windows job-object self-attach
+# Argv classification -------------------------------------------------------
+
+_HOLDER_VALUE_FLAGS_FALLBACK = frozenset({
+    "--profile", "-p", "--config", "--model", "-m", "--provider", "--reasoning", "--toolsets", "-t",
+    "--skills", "-s", "--continue", "-c", "--resume", "-r", "--oneshot", "-z", "--in", "--usage-file",
+})
+_holder_value_flags_cache: frozenset | None = None
 
 
-def attach_self_to_kill_on_close_job() -> bool:
-    """Place this process in a job that dies (whole tree) when we die. Windows-only, idempotent.
+def _holder_value_flags() -> frozenset:
+    """Top-level CLI flags that consume a value, from the REAL parser (nargs != 0); cached per process.
 
-    ``BREAKAWAY_OK`` keeps children spawned with ``CREATE_BREAKAWAY_FROM_JOB`` (gateway relaunch
-    during update, detached watchers) escaping exactly as before.
+    Derived so the holder classifier can't drift from argparse (a handwritten subset misparsed ``--reasoning high
+    serve``). Pre-argparse profile selectors are added explicitly (stripped before argparse sees argv). Falls back
+    to a static snapshot when the parser can't import — the updater must classify holders even on a broken tree.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0) so the holder classifier can
+    never drift from the argparse surface (#91869 review: a handwritten subset misparsed ``--reasoning high
+    serve`` as subcommand ``high`` and ``-m dashboard serve`` as ``dashboard`` — recreating the wrong-hint
+    class).
     """
-    global _JOB_HANDLE
-    if not _IS_WINDOWS or _JOB_HANDLE is not None:
-        return _JOB_HANDLE is not None
+    global _holder_value_flags_cache
+    if _holder_value_flags_cache is not None:
+        return _holder_value_flags_cache
+    flags: set[str] = {"--profile", "-p", "--config"}
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800
-        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000
-        JobObjectExtendedLimitInformation = 9
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [(n, ctypes.c_ulonglong) for n in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER), ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
-                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.POINTER(wintypes.ULONG)), ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ("IoInfo", IO_COUNTERS),
-                *((n, ctypes.c_size_t) for n in (
-                    "ProcessMemoryLimit", "JobMemoryLimit", "PeakProcessMemoryUsed", "PeakJobMemoryUsed")),
-            ]
-
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return False
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        info.BasicLimitInformation.LimitFlags = (
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
-        )
-        ok = kernel32.SetInformationJobObject(job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info))
-        if not ok or not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
-            kernel32.CloseHandle(job)
-            return False
-        _JOB_HANDLE = job  # keep alive for the life of the process — never close
-        logger.debug("attached to kill-on-close job object")
-        return True
+        from hermes_cli._parser import build_top_level_parser  # noqa: PLC0415
+        for action in build_top_level_parser()[0]._actions:
+            if action.option_strings and action.nargs != 0:
+                flags.update(action.option_strings)
+        _holder_value_flags_cache = frozenset(flags)
     except Exception:
-        logger.debug("job object self-attach failed", exc_info=True)
-        return False
+        _holder_value_flags_cache = _HOLDER_VALUE_FLAGS_FALLBACK
+    return _holder_value_flags_cache
+
+
+def _hermes_holder_subcommand(cmdline: str) -> str | None:
+    """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
+
+    Token-based, never substring (``chat --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
+    ``hermes`` entry token, return the first following token that isn't a flag or a flag's value.
+
+    Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
+    #90778.
+    """
+    try:
+        tokens = shlex.split(cmdline, posix=False)
+    except Exception:
+        tokens = cmdline.split()
+
+    def _is_entry(i: int, token: str) -> bool:
+        low = token.lower().strip('"')
+        return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
+            low.rsplit("/", 1)[-1] == "hermes")
+
+    entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
+    if entry_idx is None:
+        return None
+    value_flags = _holder_value_flags()
+    i = entry_idx + 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in value_flags or token.split("=", 1)[0] in value_flags:
+            i += 1 if "=" in token else 2  # --flag value consumes two tokens; --flag=value one.
+        elif token.startswith("-"):
+            i += 1
+        else:
+            return token.lower()
+    return None

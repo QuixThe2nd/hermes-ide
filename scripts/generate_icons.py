@@ -2,8 +2,8 @@
 """Generate the website icons from a single master SVG.
 
 Usage (from repo root):
-    .venv/Scripts/python.exe scripts/generate_icons.py           # write
-    .venv/Scripts/python.exe scripts/generate_icons.py --check   # verify only
+    .venv/bin/python scripts/generate_icons.py           # write
+    .venv/bin/python scripts/generate_icons.py --check   # verify only
 
 Master:  assets/icon-master.svg
     A 1024x1024 SVG. The background must be a WHITE ROUNDED SQUARE
@@ -196,7 +196,7 @@ def cmd_check() -> int:
     for line in drifted:
         print(f"  - {line}")
     print(
-        "\nFix: run `.venv/Scripts/python.exe scripts/generate_icons.py` "
+        "\nFix: run `.venv/bin/python scripts/generate_icons.py` "
         "and commit the regenerated files."
     )
     return 1

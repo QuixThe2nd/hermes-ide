@@ -54,16 +54,6 @@ _PLATFORM_USAGE = ("Usage: /platform <list|pause|resume> [name]\n"
                    "  /platform pause <name> — stop retrying a failing platform\n"
                    "  /platform resume <name> — re-queue a paused platform")
 
-_WINDOWS_UPDATE_HELPER = """
-import os, subprocess, sys
-output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
-env = dict(os.environ, PYTHONUNBUFFERED="1")
-with open(output_path, "wb") as f:
-    rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
-with open(exit_code_path, "w", encoding="utf-8") as f:
-    f.write(str(rc))
-""".strip()
-
 
 def _nested_dict(root: dict, *keys: str) -> dict:
     """Walk/create ``root[k1][k2]...`` as dicts, replacing any non-dict value on the path."""
@@ -87,18 +77,9 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
     setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
     enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
-    stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
-    this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
-    update must replace it), redirects both outputs to one file and writes the exit code."""
+    stream output live."""
     import shutil
     import subprocess
-    if sys.platform == "win32":
-        from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
-        subprocess.Popen(
-            [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
-             sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
-        return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
     update_cmd = (
         f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"

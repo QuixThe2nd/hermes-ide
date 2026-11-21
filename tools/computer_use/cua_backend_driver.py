@@ -81,16 +81,11 @@ def _wsl_windows_path_to_posix(path: str) -> str:
 def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     """Candidate commands in resolution order. ``override`` / a non-empty ``HERMES_CUA_DRIVER_CMD`` is authoritative
     (if wrong, report the driver missing rather than silently picking another binary). Otherwise PATH, then
-    canonical installer locations — Finder/Dock-launched apps inherit a narrow PATH without ``~/.local/bin``;
-    fresh Windows sessions inherit a stale one."""
+    canonical installer locations — Finder/Dock-launched apps inherit a narrow PATH without ``~/.local/bin``."""
     configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
     if configured:
         return [configured]
     home = os.path.expanduser("~")
-    if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
-        return [_CUA_DRIVER_DEFAULT_CMD, os.path.join(local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"),
-                os.path.join(home, ".local", "bin", "cua-driver.exe"), os.path.join(home, ".local", "bin", "cua-driver")]
     return [_CUA_DRIVER_DEFAULT_CMD, os.path.join(home, ".local", "bin", "cua-driver"),
             os.path.join(home, ".cargo", "bin", "cua-driver"), "/opt/homebrew/bin/cua-driver", "/usr/local/bin/cua-driver"]
 
@@ -107,8 +102,7 @@ def cua_driver_binary_available() -> bool:
     return resolve_cua_driver_cmd() is not None
 
 def cua_driver_install_hint() -> str:
-    installer = (f"  irm {_UPSTREAM_SCRIPTS}/install.ps1 | iex" if sys.platform == "win32"
-                 else f'  /bin/bash -c "$(curl -fsSL {_UPSTREAM_SCRIPTS}/install.sh)"')
+    installer = f'  /bin/bash -c "$(curl -fsSL {_UPSTREAM_SCRIPTS}/install.sh)"'
     return ("cua-driver is not installed. Install with one of:\n  hermes computer-use install\n"
             f"Or run the upstream installer directly:\n{installer}\n"
             "Or run `hermes tools` and enable the Computer Use toolset to install it automatically.")
@@ -185,7 +179,7 @@ def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str
     reason = "cua-driver is not installed"
     if resolved:
         try:
-            result = _cb()._run_driver(resolved, "manifest", timeout=15.0 if sys.platform == "win32" else 5.0)
+            result = _cb()._run_driver(resolved, "manifest", timeout=5.0)
         except (OSError, subprocess.SubprocessError) as exc:
             result, reason = None, f"manifest check failed: {exc}"
         if result is not None and result.returncode != 0:
@@ -200,13 +194,12 @@ def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict
     """cua-driver's native ``check-update`` verb compares the installed binary against the latest GitHub release
     (cached ~20h); we prefer it over a hardcoded floor. Returns the ``check-update --json`` payload (``{current_version, latest_version, update_available, ...}``),
     or ``None`` when the binary is missing, the driver predates the verb, the GitHub check failed (``error`` set)
-    or the output didn't parse. Never raises. ``timeout`` defaults to 8s on POSIX / 25s on Windows: first spawn of
-    the exe routinely eats seconds in Defender scanning, and callers treat ``None`` as indeterminate (the upgrade
-    path used to fall through to a full reinstall on a false timeout).
+    or the output didn't parse. Never raises. ``timeout`` defaults to 8s; callers treat ``None`` as
+    indeterminate (the upgrade path used to fall through to a full reinstall on a false timeout).
 
     See #1734.
     """
-    timeout = (25.0 if sys.platform == "win32" else 8.0) if timeout is None else timeout
+    timeout = 8.0 if timeout is None else timeout
     driver_cmd = resolve_cua_driver_cmd()
     data = _driver_json(driver_cmd, "check-update", "--json", timeout=timeout, require_ok=False) if driver_cmd else None
     return None if data is None or data.get("error") else data

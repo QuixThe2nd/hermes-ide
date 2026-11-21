@@ -14,7 +14,6 @@ import difflib
 import json
 import logging
 import os
-import platform
 import re
 import shutil
 import stat
@@ -134,7 +133,7 @@ def get_active_config_parse_failure() -> Optional[str]:
         return None
 
 
-_IS_WINDOWS = platform.system() == "Windows"
+
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Env var names that influence how the next subprocess executes — never writable through
@@ -173,18 +172,13 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
 
 
-def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
-    """Name used for env policy comparisons: Windows env names are case-insensitive, POSIX not.
-    The override keeps both semantics testable on any host."""
-    windows = _IS_WINDOWS if is_windows is None else is_windows
-    return key.upper() if windows else key
 
 
 def validate_env_var_name_for_write(key: str) -> None:
     """Validate an env name before a generic persistence write (exposed for batch callers)."""
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    if _env_var_policy_name(key) in _ENV_VAR_NAME_DENYLIST:
+    if key in _ENV_VAR_NAME_DENYLIST:
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
             "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
@@ -533,16 +527,13 @@ def get_project_root() -> Path:
 
 
 def _resolve_hermes_uid_gid() -> tuple[Optional[int], Optional[int]]:
-    """Read HERMES_UID / HERMES_GID (set by Docker deployments); (None, None) if unset/invalid/Windows.
+    """Read HERMES_UID / HERMES_GID (set by Docker deployments); (None, None) if unset/invalid.
     The entrypoint chowns HERMES_HOME once, but subdirs created at runtime (``profiles/<name>/``)
     need the same chown or they land root:root and block later uid-mapped workers.
 
     Docker containers running Hermes commonly set these to map the in-container user to a host user so
     volume-mounted state files end up with the right ownership. See #34107.
     """
-    if sys.platform == "win32":
-        return None, None
-
     def _env_int(name: str) -> Optional[int]:
         try:
             return int(os.environ.get(name, "").strip() or None)
@@ -2588,7 +2579,7 @@ def _quote_env_value(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = None) -> bool:
+def _env_line_defines_key(line: str, key: str) -> bool:
     """True when a .env line assigns ``key`` — plain, ``export``-prefixed, or ``KEY = value``.
     Must match exactly the shapes ``load_env()`` parses; otherwise a hand-added line is invisible
     to save (duplicate appended) and remove (line survives -> the value resurrects on next load).
@@ -2605,9 +2596,7 @@ def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = N
     # load_env() strips whitespace around the parsed name, so `KEY = value` IS a live assignment. The
     # writers must match the same shape, or a hand-edited spaced line is invisible to save (duplicate
     # appended) and remove (line survives -> value resurrects on next load). #67488.
-    return _env_var_policy_name(
-        assigned_key.strip(), is_windows=is_windows
-    ) == _env_var_policy_name(key, is_windows=is_windows)
+    return assigned_key.strip() == key
 
 
 def _publish_env_value(key: str, value: Optional[str]) -> None:
@@ -3053,10 +3042,7 @@ def edit_config():
         save_config(DEFAULT_CONFIG, strip_defaults=False)
         print(f"Created {config_path}")
 
-    # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless
-    # servers are more likely to have.
-    candidates = (['notepad', 'code', 'vim', 'vi', 'nano'] if sys.platform == "win32"
-                  else ['nano', 'vim', 'vi', 'code', 'notepad'])
+    candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
     editor = os.getenv('EDITOR') or os.getenv('VISUAL') or next(
         (cmd for cmd in candidates if shutil.which(cmd)), None)
     if not editor:

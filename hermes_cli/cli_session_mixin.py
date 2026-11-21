@@ -902,7 +902,7 @@ class CLISessionMixin:
             stream.flush()
         except Exception:
             try:
-                os.system("cls" if os.name == "nt" else "clear")
+                os.system("clear")
             except Exception:
                 pass
 

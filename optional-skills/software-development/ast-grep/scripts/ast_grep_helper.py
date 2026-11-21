@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ast-grep-helper: a thin LLM-friendly wrapper around `sg` (ast-grep).
 
-Single-file Python 3 stdlib. No deps. Works on macOS, Linux, Windows, WSL.
+Single-file Python 3 stdlib. No deps. Works on macOS, Linux, WSL.
 
 WHAT IT ADDS over plain `sg`:
   1. Binary auto-resolution: cached -> @ast-grep/cli -> PATH -> Homebrew -> error with install hint
@@ -10,7 +10,6 @@ WHAT IT ADDS over plain `sg`:
   3. Two-pass replace: ast-grep silently ignores --update-all when --json is set, so we run
      a JSON pass to collect matches, then a separate --update-all pass to mutate files
   4. Stable JSON output: parses sg --json=compact, salvages truncated output, normalizes shape
-  5. Cross-OS path handling: works the same on POSIX and Windows (uses pathlib + shutil)
 
 USAGE
     ast_grep_helper.py search PATTERN [PATH...] [--lang LANG] [--globs GLOB ...] [-C N]
@@ -142,9 +141,7 @@ def skill_root() -> Path:
 
 def cached_binary() -> Optional[Path]:
     """Look in <skill_root>/bin/ for a previously downloaded binary."""
-    binname = "sg.exe" if os.name == "nt" else "sg"
-    altname = "ast-grep.exe" if os.name == "nt" else "ast-grep"
-    for name in (binname, altname):
+    for name in ("sg", "ast-grep"):
         p = skill_root() / "bin" / name
         if p.is_file() and os.access(p, os.X_OK):
             return p
@@ -215,12 +212,7 @@ def omo_env_binary() -> Optional[Path]:
 
 
 def omo_runtime_slug() -> str:
-    if sys.platform.startswith("win"):
-        os_slug = "win32"
-    elif sys.platform == "darwin":
-        os_slug = "darwin"
-    else:
-        os_slug = "linux"
+    os_slug = "darwin" if sys.platform == "darwin" else "linux"
 
     machine = platform.machine().lower()
     arch_slug = "arm64" if machine in {"arm64", "aarch64"} else "x64"
@@ -228,14 +220,13 @@ def omo_runtime_slug() -> str:
 
 
 def omo_runtime_binary() -> Optional[Path]:
-    binary_name = "sg.exe" if sys.platform.startswith("win") else "sg"
     slug = omo_runtime_slug()
     candidates: list[Path] = []
 
     codex_home = os.environ.get("CODEX_HOME")
     if codex_home:
-        candidates.append(Path(codex_home) / "runtime" / "ast-grep" / slug / binary_name)
-    candidates.append(Path.home() / ".omo" / "runtime" / "ast-grep" / slug / binary_name)
+        candidates.append(Path(codex_home) / "runtime" / "ast-grep" / slug / "sg")
+    candidates.append(Path.home() / ".omo" / "runtime" / "ast-grep" / slug / "sg")
 
     for path in candidates:
         if path.is_file() and os.access(path, os.X_OK):
@@ -268,14 +259,12 @@ def require_binary() -> Path:
     err("")
     err("Install via one of:")
     err(f"  bash {skill_root()}/install.sh           # POSIX (auto-detects best method)")
-    err(f"  pwsh {skill_root()}/install.ps1          # Windows")
     err("")
     err("Or manually:")
     err("  brew install ast-grep                      # macOS / linuxbrew")
     err("  npm install -g @ast-grep/cli               # any OS with Node")
     err("  cargo install ast-grep --locked            # any OS with Rust")
     err("  pip install ast-grep-cli                   # any OS with Python")
-    err("  scoop install main/ast-grep                # Windows / Scoop")
     err("")
     err("See references/install.md for the full table.")
     sys.exit(3)
@@ -580,7 +569,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     binary = resolve_binary()
     if not binary:
         print("ast-grep binary: NOT FOUND")
-        print("  -> run: bash install.sh   (POSIX)  or   pwsh install.ps1   (Windows)")
+        print("  -> run: bash install.sh")
         return 1
     print(f"ast-grep binary: {binary}")
     proc = run_sg(binary, ["--version"], timeout=5)
@@ -594,13 +583,9 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 
 
 def cmd_install(_args: argparse.Namespace) -> int:
-    """Delegate to install.sh / install.ps1 in the skill root."""
-    if os.name == "nt":
-        installer = skill_root() / "install.ps1"
-        cmd = ["pwsh", "-File", str(installer)]
-    else:
-        installer = skill_root() / "install.sh"
-        cmd = ["bash", str(installer)]
+    """Delegate to install.sh in the skill root."""
+    installer = skill_root() / "install.sh"
+    cmd = ["bash", str(installer)]
     if not installer.is_file():
         err(f"installer not found: {installer}")
         return 1

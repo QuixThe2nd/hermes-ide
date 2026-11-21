@@ -1,4 +1,4 @@
-"""Cua-driver backend (macOS, Windows, Linux): MCP over stdio to `cua-driver`. The async `mcp` SDK runs on a
+"""Cua-driver backend (macOS, Linux): MCP over stdio to `cua-driver`. The async `mcp` SDK runs on a
 background loop (``cua_backend_session``); the same tool surface works on all three platforms, and per-host gaps
 (no DISPLAY, missing AT-SPI, TCC) surface via `hermes computer-use doctor` instead of failing silently. Install
 with `hermes computer-use install`. The macOS path uses private SkyLight SPIs that can break on OS updates.
@@ -18,7 +18,6 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
@@ -46,7 +45,7 @@ def _cua_no_overlay() -> bool:
     """Pass ``--no-overlay``? ``computer_use.no_overlay`` overrides; else off on macOS (cursor-overlay redraw
     loop can peg a core after a session), headless Linux / WSL2 / containers, and Linux X11 (the overlay is a
     fullscreen always-on-top all-workspaces window with no compositor-owned lifecycle, so an unclean session
-    end can leave it wedged over every app); on for Windows and Linux Wayland (compositor owns the surface).
+    end can leave it wedged over every app); on for Linux Wayland (compositor owns the surface).
 
     Explicit ``True`` / ``False`` overrides auto-detection. See #28152, #47032.
     """
@@ -138,9 +137,9 @@ def _run_quiet(argv: List[str], *, timeout: float, swallow: Any = (), **kw: Any)
         return None
 
 def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = ()) -> Any:
-    """Run a short cua-driver verb with the sanitized env and hidden window."""
+    """Run a short cua-driver verb with the sanitized env."""
     return _run_quiet([driver_cmd, *args], timeout=timeout, swallow=swallow, encoding="utf-8",
-                      errors="replace", creationflags=windows_hide_flags(), env=sanitized_cua_driver_env())
+                      errors="replace", env=sanitized_cua_driver_env())
 
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and
@@ -297,7 +296,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             logger.debug("cua-driver %s: %s", what, e)
 
     def is_available(self) -> bool:
-        return sys.platform in ("darwin", "win32", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
+        return sys.platform in ("darwin", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
 
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""

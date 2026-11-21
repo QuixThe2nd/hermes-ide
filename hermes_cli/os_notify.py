@@ -26,7 +26,6 @@ import subprocess
 import sys
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +139,6 @@ def _run_quiet(argv: list[str], *, timeout: float = _SUBPROCESS_TIMEOUT_SECONDS)
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
-            creationflags=windows_hide_flags(),
         )
     except Exception as exc:
         logger.debug("os_notify: command %r failed: %s", argv[:1], exc)
@@ -174,7 +172,6 @@ def _run_command_override(command: str, *, title: str, subtitle: str,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             check=False,
             env=env,
-            creationflags=windows_hide_flags(),
         )
     except Exception as exc:
         logger.debug("os_notify: command override failed: %s", exc)
@@ -185,16 +182,7 @@ def _notify_local(title: str, subtitle: str, body: str) -> None:
     if sys.platform == "darwin":
         _run_quiet(["osascript", "-e", _applescript(title, subtitle, body)])
         return
-    if sys.platform == "win32":
-        # A reliable Windows toast needs either the BurntToast PowerShell
-        # module or a Win32 NotifyIcon with its own message pump — too much
-        # machinery for a fire-and-forget finalizer. Windows users can set
-        # ``display.notify_on_complete_command`` instead.
-        logger.debug(
-            "os_notify: no built-in Windows dispatcher; set "
-            "display.notify_on_complete_command"
-        )
-        return
+
     # Linux / BSD: notify-send when a notification daemon is present.
     if shutil.which("notify-send"):
         _run_quiet(["notify-send", title, body])

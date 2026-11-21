@@ -1,8 +1,8 @@
 """Gateway control socket — the gateway-owned local coordination surface: a local-only socket answering
 versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
-answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
-boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
-file when the home path exceeds ``sun_path``); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
+answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem ACLs are the auth
+boundary. ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
+file when the home path exceeds ``sun_path``).
 Wire contract: ONE request per connection — one JSON line in, one out, then the server closes.
 Consumers PREFER the socket and fall back to the state-file/scan layer when it doesn't answer.
 """
@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 CONTROL_PROTOCOL_VERSION = 1
 _SOCKET_FILENAME = "gateway.sock"
 _POINTER_FILENAME = "gateway.sock.path"
-_IS_WINDOWS = sys.platform == "win32"
 _MAX_UNIX_PATH = 100  # sun_path limit is 104 on macOS/BSD, 108 on Linux; margin for the NUL
 # Single-line JSON in/out; bounded so a misbehaving peer can't balloon memory.
 _MAX_REQUEST_BYTES = 64 * 1024
@@ -40,11 +39,6 @@ def _home_hash(home: Path) -> str:
     return hashlib.sha256(os.path.normcase(str(Path(home).expanduser().resolve(strict=False))).encode("utf-8")).hexdigest()[:16]
 
 
-def windows_pipe_name(home: Path) -> str:
-    """Per-HERMES_HOME named pipe path (Windows transport)."""
-    return rf"\\.\pipe\hermes-gateway-{_home_hash(home)}"
-
-
 def _fits_sun_path(path: Path) -> bool:
     return len(str(path).encode("utf-8")) <= _MAX_UNIX_PATH
 
@@ -54,7 +48,7 @@ def _fallback_socket_path(home: Path) -> Path:
     then ``/tmp`` (POSIX); if nothing fits the tempdir candidate is returned anyway — bind fails
     non-fatally and consumers use the scan layer."""
     name = f"hermes-gw-{_home_hash(home)}.sock"
-    candidates = [Path(tempfile.gettempdir()) / name] + ([] if _IS_WINDOWS else [Path("/tmp") / name])  # no-tmp: ok — AF_UNIX 104-byte path limit needs the short /tmp candidate
+    candidates = [Path(tempfile.gettempdir()) / name, Path("/tmp") / name]  # no-tmp: ok — AF_UNIX 104-byte path limit needs the short /tmp candidate
     return next((c for c in candidates if _fits_sun_path(c)), candidates[0])
 
 
@@ -143,7 +137,6 @@ class GatewayControlServer:
             home = _get_process_hermes_home()
         self._home = Path(home)
         self._server: Optional[asyncio.AbstractServer] = None
-        self._pipe_server: Any = None  # Windows proactor pipe server
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
@@ -152,7 +145,7 @@ class GatewayControlServer:
     async def start(self) -> bool:
         """Bind and start serving. Returns True on success, False otherwise."""
         try:
-            return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
+            return await self._start_posix()
         except Exception as exc:
             logger.warning("Gateway control socket failed to start (non-fatal): %s", exc)
             return False
@@ -179,29 +172,13 @@ class GatewayControlServer:
         logger.info("Gateway control socket listening at %s", bind_path)
         return True
 
-    async def _start_windows(self) -> bool:
-        loop = asyncio.get_running_loop()
-        start_serving_pipe = getattr(loop, "start_serving_pipe", None)
-        if start_serving_pipe is None:
-            logger.debug("Event loop %s has no start_serving_pipe — control socket "
-                         "disabled (selector loop on Windows).", type(loop).__name__)
-            return False
-        pipe_name = windows_pipe_name(self._home)
-        servers = await start_serving_pipe(lambda: _PipeControlProtocol(self), pipe_name)
-        self._pipe_server = servers[0] if servers else None
-        logger.info("Gateway control pipe listening at %s", pipe_name)
-        return self._pipe_server is not None
-
     async def stop(self) -> None:
         """Stop serving and remove the socket/pointer files."""
         if self._server is not None:
             self._server.close()
             with contextlib.suppress(Exception):
                 await self._server.wait_closed()
-        if self._pipe_server is not None:
-            with contextlib.suppress(Exception):
-                self._pipe_server.close()
-        self._server = self._pipe_server = None
+        self._server = None
         self.cleanup_files()
 
     def cleanup_files(self) -> None:
@@ -261,27 +238,6 @@ class GatewayControlServer:
                 writer.close()
 
 
-class _PipeControlProtocol(asyncio.Protocol):
-    """One-shot request/response protocol for the Windows named pipe."""
-    def __init__(self, server: GatewayControlServer) -> None:
-        self._server = server
-        self._transport: Any = None
-        self._buffer = bytearray()
-
-    def connection_made(self, transport) -> None:  # pragma: no cover - windows
-        self._transport = transport
-
-    def data_received(self, data: bytes) -> None:  # pragma: no cover - windows
-        self._buffer.extend(data)
-        if len(self._buffer) > _MAX_REQUEST_BYTES:
-            self._transport.close()
-        elif b"\n" in self._buffer:
-            try:
-                self._transport.write(self._server.handle_request_line(bytes(self._buffer).partition(b"\n")[0]))
-            finally:
-                self._transport.close()
-
-
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
                           timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale
@@ -291,9 +247,8 @@ def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, A
     if params:
         payload["params"] = params
     request = json.dumps(payload).encode("utf-8") + b"\n"
-    query = _query_windows_pipe if _IS_WINDOWS else _query_unix_socket
     try:
-        raw = query(Path(home), request, timeout)
+        raw = _query_unix_socket(Path(home), request, timeout)
         response = json.loads(raw.decode("utf-8")) if raw else None
     except Exception:
         return None
@@ -325,28 +280,6 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
         sock.sendall(request)
         return _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
     return None
-
-
-def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
-    pipe_name = windows_pipe_name(home)
-    deadline = time.monotonic() + timeout
-    handle = None
-    while handle is None:
-        try:
-            handle = open(pipe_name, "r+b", buffering=0)
-        except FileNotFoundError:
-            return None
-        except OSError:
-            # Pipe busy (another client mid-handshake) — brief retry window.
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.05)
-    try:
-        handle.write(request)
-        return _read_response_line(lambda: handle.read(65536), deadline)
-    finally:
-        with contextlib.suppress(Exception):
-            handle.close()
 
 
 def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:

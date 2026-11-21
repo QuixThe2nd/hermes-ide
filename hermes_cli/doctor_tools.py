@@ -64,7 +64,7 @@ def _pm_package_for_command(command: str) -> str | None:
             package = registry.get_package(package_name)
             if isinstance(package, BinaryPackage):
                 rel = package._rel(target)
-                if rel and Path(rel).name.removesuffix(".exe").removesuffix(".cmd") == command:
+                if rel and Path(rel).name == command:
                     return package_name
     except Exception:
         return None
@@ -259,7 +259,6 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
     """
     import json
     try:
-        # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}

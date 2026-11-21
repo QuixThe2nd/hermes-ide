@@ -140,7 +140,7 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
     def stop(sig: int, fallback: Callable[[], None]) -> None:
         if pgid is not None:
-            killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (pgid only set when killpg exists)
+            killpg(pgid, sig)
         else:
             fallback()
 

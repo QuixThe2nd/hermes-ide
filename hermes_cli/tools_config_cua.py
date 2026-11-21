@@ -41,8 +41,6 @@ _CUA_BACKGROUND_UPDATE_TIMEOUT = 120
 # Upstream's LOCK_STALE_AFTER_SECONDS: the pre-clear never yanks a lock a live install still holds.
 _CUA_LOCK_STALE_AFTER = 600
 
-_CUA_INSTALL_PS1_URL = (
-    "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1")
 _CUA_INSTALL_SH_URL = (
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh")
 _CUA_MANUAL_README = "https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md"
@@ -70,20 +68,6 @@ def _print_output_tail(result: subprocess.CompletedProcess, printer=None) -> Non
     for line in (result.stderr or result.stdout or "").strip().splitlines()[-3:]:
         (printer or _print_info)(f"      {line[:200]}")
 
-
-def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
-    """Win32 creationflags that stop post-setup children flashing a console (0 on POSIX).
-    CREATE_NO_WINDOW hides console grandchildren (npm, pip, powershell) while keeping stdio
-    inheritable (unlike DETACHED_PROCESS). ``streams_to_console`` children are only hidden when our
-    own stdout is not a console, so live installer output is never swallowed."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    flags = windows_hide_flags()
-    try:
-        if flags and streams_to_console and sys.stdout is not None and sys.stdout.isatty():
-            return 0
-    except Exception:
-        pass
-    return flags or 0
 
 
 def _cua_driver_cmd() -> str:
@@ -138,16 +122,13 @@ def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
 
 def _cua_driver_install_ready() -> bool:
     """Return whether an existing driver needs no install-time repair."""
-    return bool(_cua_driver_contract_status().get("ready")) and (
-        sys.platform != "win32" or _cua_driver_autostart_registered_windows())
+    return bool(_cua_driver_contract_status().get("ready"))
 
 
 def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = True):
-    """Install Python packages: ``uv pip install`` (needs no pip in the venv), then ``python -m
-    pip``, then ``ensurepip --upgrade`` + retry — the Windows installer creates the venv via
-    ``uv venv``, which does NOT seed pip, so bare ``-m pip`` failed on fresh installs."""
+    """Install Python packages: ``uv pip install`` (needs no pip in the venv — ``uv venv`` does
+    NOT seed pip, so bare ``-m pip`` can fail on fresh installs), then ``python -m pip``."""
     venv_root = Path(sys.executable).parent.parent
-    install_flags = _post_setup_no_window_flags(streams_to_console=not capture_output)
 
     # Resolve uv and its target environment through PM, not ambient PATH.
     from pm.ensure import uv as pm_uv
@@ -155,7 +136,7 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     uv_bin, uv_env = pm_uv(realize=True, venv=venv_root)
     try:  # a failed uv run falls through to pip — it may have failed for a reason pip can handle
         result = uv_bin and _run_text([uv_bin, "pip", "install", *args], timeout=timeout,
-                                      capture_output=capture_output, creationflags=install_flags,
+                                      capture_output=capture_output,
                                       env=uv_env)
         if result and result.returncode == 0:
             return result
@@ -164,21 +145,19 @@ def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = 
     pip_cmd = [sys.executable, "-m", "pip"]
     try:
         # Probe for pip; bootstrap via ensurepip if missing (uv venv lacks it).
-        probe = _run_text(pip_cmd + ["--version"], timeout=15,
-                          creationflags=_post_setup_no_window_flags())
+        probe = _run_text(pip_cmd + ["--version"], timeout=15)
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         try:
             _run_text([sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                      timeout=120, check=True, creationflags=_post_setup_no_window_flags())
+                      timeout=120, check=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.
             return subprocess.CompletedProcess(
                 pip_cmd, returncode=1, stdout="",
                 stderr=f"pip not available and ensurepip failed: {e}")
-    return _run_text(pip_cmd + ["install", *args], capture_output=capture_output, timeout=timeout,
-                     creationflags=install_flags)
+    return _run_text(pip_cmd + ["install", *args], capture_output=capture_output, timeout=timeout)
 
 
 # No pre-install release/asset probe: cua-driver-rs releases are all prereleases, which GitHub's
@@ -200,8 +179,7 @@ def _cua_install_target_writable() -> bool:
 def _cua_driver_version(binary: str) -> Optional[str]:
     """``<binary> --version`` stdout (possibly ""), or None when the probe itself fails."""
     try:
-        return _run_text([binary, "--version"], timeout=5, env=_cua_driver_env(),
-                         creationflags=_post_setup_no_window_flags()).stdout.strip()
+        return _run_text([binary, "--version"], timeout=5, env=_cua_driver_env()).stdout.strip()
     except Exception:
         return None
 
@@ -228,9 +206,6 @@ def _confirmed_update_check(driver_cmd: str, require_confirmed_update: bool) -> 
         _print_success(f"    {driver_cmd} is already on the latest release "
                        f"({_state.get('current_version') or 'unknown'}).")
         return False, None
-    # Windows routine upgrades run unattended-safe (stdin closed, version pinned, ceiling
-    # _CUA_BACKGROUND_UPDATE_TIMEOUT, preflights skip in seconds); only contract repairs and fresh
-    # installs stay interactive-only, where upstream needs a human (autostart elevation/SmartScreen).
     # Pin to the release check-update confirmed: `latest_version` comes from the GitHub Releases API
     # so its assets exist, unlike the installer's baked version on `main` (bumped before assets are
     # published → 404s unpinned). Malformed values are ignored → unpinned fallback.
@@ -263,14 +238,13 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
     ``upgrade=False`` (toolset enable flow) keeps a compatible installation, repairs an
     old/incomplete one and installs when missing; ``upgrade=True`` always refreshes."""
     system = platform.system()
-    if system not in ("Darwin", "Windows", "Linux"):
+    if system not in ("Darwin", "Linux"):
         if not upgrade:  # silent under `hermes update`, which calls this for every user
             _print_warning(
                 "    Computer Use (cua-driver) is unsupported on this platform; skipping.")
         return False
-    is_windows, is_linux = system == "Windows", system == "Linux"
-    # install.ps1 is fetched via PowerShell's `irm`; macOS/Linux use curl | bash.
-    fetch_tool = "powershell" if is_windows else "curl"
+    is_linux = system == "Linux"
+    fetch_tool = "curl"
     driver_cmd, binary = _cua_driver_cmd(), _resolved_cua_driver_cmd()
     # An explicit override is authoritative even when broken: installing the standard driver
     # cannot repair the configured path and would mutate an unrelated installation.
@@ -302,9 +276,7 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         version = _cua_driver_version(binary)
         suffix = "" if version is None else f": {version or 'unknown version'}"
         _print_success(f"    {driver_cmd} already installed{suffix}.")
-        if is_windows and not _repair_cua_driver_autostart_windows(binary, verbose=False):
-            return _fail("    cua-driver is compatible, but Windows autostart repair failed.")
-        _print_cua_platform_notes(is_windows, is_linux, fresh_install=False)
+        _print_cua_platform_notes(is_linux, fresh_install=False)
         return True
     if repair_existing:
         _print_warning(f"    Found cua-driver {contract.get('version') or 'unknown version'}, but "
@@ -313,11 +285,6 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         if override:
             return _fail("    Update the binary selected by HERMES_CUA_DRIVER_CMD, or unset the "
                          f"override and run: {_UPGRADE_CMD}", warn=False)
-        if is_windows and require_confirmed_update:
-            return _fail("    Automatic Windows updates cannot safely run cua-driver's interactive "
-                         "repair installer.",
-                         f"    Repair it from an interactive terminal with: {_UPGRADE_CMD}",
-                         warn=False)
         _print_info("    Repairing it with the current upstream installer.")
 
     # upgrade=True path — refresh to the latest upstream release.
@@ -333,14 +300,6 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         proceed, confirmed_version = _confirmed_update_check(driver_cmd, require_confirmed_update)
         if not proceed:
             return True
-    if is_windows and require_confirmed_update and not binary:
-        # Missing binary (enabled but never installed, or wiped by a failed install): an automatic
-        # Windows update must never launch install.ps1, which can demand console/UAC consent the
-        # hidden updater cannot provide.
-        return _fail("    cua-driver is not installed; automatic Windows updates cannot safely run "
-                     "its interactive installer.",
-                     f"    Install it from an interactive terminal with: {_UPGRADE_CMD}",
-                     warn=False)
     before = (_cua_driver_version(binary) or "") if binary else ""  # best-effort before/after
     ok = _run_cua_driver_installer(
         label="Repairing" if repair_existing else "Refreshing", verbose=False,
@@ -351,7 +310,7 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
 
 
 def _cua_install_home() -> "Path":
-    """Package home shared by the upstream POSIX and Windows installers."""
+    """Package home of the upstream installer."""
     return Path(os.environ.get("CUA_DRIVER_RS_HOME") or str(Path.home() / ".cua-driver"))
 
 
@@ -360,60 +319,10 @@ def _cua_install_lock_dir() -> "Path":
     return _cua_install_home() / "packages" / ".install.lock.d"
 
 
-def _cua_windows_install_lock_file() -> "Path":
-    """Path of install.ps1's FileShare::None lock file."""
-    return _cua_install_home() / "install.lock"
-
-
-def _clear_stale_windows_cua_install_lock() -> None:
-    """Delete install.ps1's lock file only when no process still holds it.
-    install.ps1 locks with ``FileShare::None``; mirror it with a zero-share ``CreateFileW`` probe
-    and ``FILE_FLAG_DELETE_ON_CLOSE`` so an unlocked leftover is removed atomically, with no window
-    in which a new installer could acquire the file between probe and delete."""
-    lock_file = _cua_windows_install_lock_file()
-    try:
-        if not lock_file.is_file():
-            return
-        import ctypes as _ctypes
-        from ctypes import wintypes as _wintypes
-        # Win32 constants used by install.ps1's FileShare::None equivalent.
-        delete_access, generic_read, generic_write = 0x00010000, 0x80000000, 0x40000000
-        open_existing, file_attribute_normal, file_flag_delete_on_close = 3, 0x00000080, 0x04000000
-        kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
-        create_file, close_handle = kernel32.CreateFileW, kernel32.CloseHandle
-        dword = _wintypes.DWORD
-        create_file.argtypes = [_wintypes.LPCWSTR, dword, dword, _wintypes.LPVOID, dword, dword,
-                                _wintypes.HANDLE]
-        create_file.restype = _wintypes.HANDLE
-        close_handle.argtypes, close_handle.restype = [_wintypes.HANDLE], _wintypes.BOOL
-        handle = create_file(
-            str(lock_file), generic_read | generic_write | delete_access, 0,  # 0 = FileShare::None
-            None, open_existing, file_attribute_normal | file_flag_delete_on_close, None)
-        if handle == _wintypes.HANDLE(-1).value:
-            logger.debug("Windows cua install lock at %s is still held or cannot be removed "
-                         "(winerror %s)", lock_file, _ctypes.get_last_error())
-            return
-        if not close_handle(handle):
-            logger.debug("could not close Windows cua install lock probe at %s (winerror %s)",
-                         lock_file, _ctypes.get_last_error())
-            return
-        if lock_file.exists():
-            logger.debug("Windows cua install lock probe succeeded but %s remains", lock_file)
-            return
-        logger.info("Cleared stale Windows cua-driver install lock at %s", lock_file)
-        _print_info(f"    Cleared stale cua-driver install lock ({lock_file}).")
-    except Exception as e:
-        logger.debug("stale Windows cua install lock check failed: %s", e)
-
-
 def _clear_stale_cua_install_lock() -> None:
     """Best-effort: remove a stale installer lock left by a dead holder.
-    POSIX stamps the holder pid into ``~/.cua-driver/packages/.install.lock.d/info``; Windows holds
-    ``~/.cua-driver/install.lock`` open with ``FileShare::None``. Clear either artifact up front
-    only when its platform-specific liveness check proves that no install still holds it."""
-    if sys.platform == "win32":
-        _clear_stale_windows_cua_install_lock()
-        return
+    POSIX stamps the holder pid into ``~/.cua-driver/packages/.install.lock.d/info``; clear it
+    only when the liveness check proves that no install still holds it."""
     lock_dir = _cua_install_lock_dir()
     try:
         if not lock_dir.is_dir():
@@ -426,7 +335,7 @@ def _clear_stale_cua_install_lock() -> None:
             holder_pid = None
         if holder_pid is not None:
             try:
-                os.kill(holder_pid, 0)  # windows-footgun: ok — function early-returns on win32
+                os.kill(holder_pid, 0)
                 return  # holder alive → concurrent install running
             except ProcessLookupError:
                 pass  # dead holder → stale, clear below
@@ -456,18 +365,7 @@ def _cua_install_lock_held() -> bool:
     unreadable state reports not-held so a probe failure can never block an install. See #87703.
     """
     try:
-        if sys.platform != "win32":
-            return _cua_install_lock_dir().is_dir()
-        lock_file = _cua_windows_install_lock_file()
-        if not lock_file.is_file():
-            return False
-        # install.ps1 holds the file with FileShare::None — any open fails with a sharing
-        # violation while held. Surviving the stale-clear = held; confirm with an open probe.
-        try:
-            with open(lock_file, "r+b"):
-                return False  # opened fine → not held (racy leftover)
-        except OSError:  # sharing violation surfaces as PermissionError
-            return True
+        return _cua_install_lock_dir().is_dir()
     except Exception as e:
         logger.debug("cua install lock probe failed: %s", e)
         return False
@@ -491,65 +389,14 @@ def _cua_release_endpoint_reachable(timeout: float = 5.0) -> bool:
         return False
 
 
-def _ps_single_quote(value: str) -> str:
-    """Return a PowerShell single-quoted string literal."""
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _cua_driver_autostart_registered_windows() -> bool:
-    """Return whether the Windows cua-driver scheduled task is registered."""
-    if sys.platform != "win32":
-        return False
-    try:
-        return subprocess.run(["schtasks.exe", "/Query", "/TN", "cua-driver-serve"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=10).returncode == 0
-    except Exception:
-        return False
-
-
-def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:
-    """Best-effort repair for Windows installer autostart quoting failures.
-    Older install.ps1 builds interpolated the binary path into a PowerShell command string, which
-    split at the first space. If the scheduled task is missing, retry via Start-Process's
-    structured ``-FilePath`` / ``-ArgumentList`` parameters instead."""
-    if sys.platform != "win32" or _cua_driver_autostart_registered_windows():
-        return True
-    binary = shutil.which(driver_cmd)
-    if not binary:
-        return False
-    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
-    ps_cmd = (f"$exe = {_ps_single_quote(binary)}; "
-              "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
-              "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
-    _print_info("    Registering cua-driver auto-start..." if verbose
-                else "    Repairing cua-driver auto-start registration...")
-    try:
-        result = _run_text([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                           timeout=300, env=_cua_driver_env())
-    except subprocess.TimeoutExpired:
-        return _fail("    cua-driver autostart registration timed out.")
-    except Exception as exc:
-        return _fail(f"    cua-driver autostart registration failed: {exc}")
-    if result.returncode == 0:
-        return True
-    _print_warning("    cua-driver autostart registration failed.")
-    _print_output_tail(result)
-    _print_info("    From an elevated shell, run: cua-driver autostart enable")
-    return False
-
-
 def _remove_quietly(path: str) -> None:
     with contextlib.suppress(OSError):
         os.remove(path)
 
 
-def _print_cua_platform_notes(is_windows: bool, is_linux: bool, *, fresh_install: bool) -> None:
+def _print_cua_platform_notes(is_linux: bool, *, fresh_install: bool) -> None:
     """Host-specific follow-up notes after an install or a compatible-install check."""
-    if is_windows:
-        _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
-        _print_info("    Windows/SmartScreen may prompt the first time it runs.")
-    elif is_linux:
+    if is_linux:
         _print_warning("    Linux support is alpha.")
     else:
         _print_info("    IMPORTANT — grant macOS permissions now:" if fresh_install
@@ -560,41 +407,16 @@ def _print_cua_platform_notes(is_windows: bool, is_linux: bool, *, fresh_install
             _print_info("    Both must allow the terminal / Hermes process.")
 
 
-def _kill_installer_tree(proc, *, is_windows: bool) -> None:
+def _kill_installer_tree(proc) -> None:
     """Kill the installer and its descendants (best-effort)."""
     import signal as _signal
     try:
-        if not is_windows:
-            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok — POSIX only
-            return
-        # PowerShell may leave download/install helpers alive after its direct process is killed;
-        # they inherit stdout and can keep communicate() and install.lock wedged → kill leaf-up.
-        import psutil as _psutil
-        try:
-            parent = _psutil.Process(proc.pid)
-            descendants = parent.children(recursive=True)
-        except _psutil.NoSuchProcess:
-            return
-        except _psutil.Error as e:
-            logger.debug("could not enumerate cua-driver installer tree for pid %s: %s",
-                         proc.pid, e)
-            proc.kill()
-            return
-        for target, pid in [(c, c.pid) for c in reversed(descendants)] + [(parent, proc.pid)]:
-            try:
-                target.kill()
-            except _psutil.NoSuchProcess:
-                pass
-            except _psutil.Error as e:
-                what = "parent" if target is parent else "child"
-                logger.debug("could not kill cua-driver installer %s pid %s: %s", what, pid, e)
-                if target is parent:
-                    proc.kill()
+        os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
     except (OSError, ProcessLookupError):
         proc.kill()
 
 
-def _reap_after_timeout(proc, *, is_windows: bool) -> None:
+def _reap_after_timeout(proc) -> None:
     """Kill the installer tree, then drain its pipes under a deadline.
     An unbounded drain blocks on an EOF that only arrives when someone kills a surviving descendant
     by hand, so ``_CUA_INSTALLER_TIMEOUT`` would stop bounding anything.
@@ -604,7 +426,7 @@ def _reap_after_timeout(proc, *, is_windows: bool) -> None:
     either way, so the manual re-run hint still prints and the update unwinds. Losing the tail of a
     timed-out installer's log is the cheaper half of that trade. See #87703.
     """
-    _kill_installer_tree(proc, is_windows=is_windows)
+    _kill_installer_tree(proc)
     try:
         drained_out, _ = proc.communicate(timeout=_CUA_INSTALLER_DRAIN_GRACE)
         # Partial output names WHERE the installer was stuck (lock wait, consent prompt, download).
@@ -624,13 +446,8 @@ def _reap_after_timeout(proc, *, is_windows: bool) -> None:
         logger.debug("cua-driver installer drain failed: %s", e)
 
 
-def _cua_installer_command(is_windows: bool):
+def _cua_installer_command():
     """Return ``(install_cmd, manual_hint, script_path)``; all None if the POSIX download fails."""
-    if is_windows:
-        ps_oneliner = f"irm {_CUA_INSTALL_PS1_URL} | iex"  # mirrors cua_driver_install_hint()
-        return (["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_oneliner],
-                f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{ps_oneliner}"', None)
-
     # Download-then-exec instead of `bash -c "$(curl …)"`: no shell=True, no command substitution,
     # and the script lands in a mkstemp file (unpredictable name, 0600) rather than a fixed /tmp
     # path — avoiding both shell injection and a symlink/TOCTOU race. The manual hint stays the
@@ -651,7 +468,7 @@ def _cua_installer_command(is_windows: bool):
     return ["/bin/bash", script_path], manual_hint, script_path
 
 
-def _unattended_installer_preflight(install_cmd: list, is_windows: bool):
+def _unattended_installer_preflight(install_cmd: list):
     """Fail FAST on the two conditions that otherwise consume the whole unattended ceiling:
     (1) install lock held by a live process — upstream would poll it for up to
     LOCK_STALE_AFTER_SECONDS=600 before probing the holder (the 11-minute silent hang class);
@@ -667,33 +484,20 @@ def _unattended_installer_preflight(install_cmd: list, is_windows: bool):
         _print_info("    github.com is unreachable — skipping cua-driver refresh "
                     "(will retry on the next update).")
         return None
-    if is_windows:
-        # -NoAutoStart skips Register-CuaDriverAutostart — the ONLY branch of install.ps1 that
-        # self-elevates (UAC). Cost: an existing cua-driver-serve task keeps pointing at the
-        # previous binary until the next interactive upgrade. Scriptblock invocation (not `| iex`)
-        # is what lets us pass the parameter.
-        install_cmd = [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-            f"$sc = irm {_CUA_INSTALL_PS1_URL}; & ([scriptblock]::Create($sc)) -NoAutoStart"]
     return install_cmd
 
 
-def _installer_popen_kwargs(is_windows: bool, verbose: bool, env: dict) -> dict:
+def _installer_popen_kwargs(verbose: bool, env: dict) -> dict:
     """Popen kwargs for the upstream installer.
-    POSIX: own process group so a timeout kill takes out the whole `curl | bash` pipeline (and the
+    Own process group so a timeout kill takes out the whole `curl | bash` pipeline (and the
     exec'd _install-rust.sh), not just the outer shell — surviving grandchildren would keep
     holding the install lock and wedge every later run. Non-verbose (`hermes update` refresh):
     capture the chatty "Next steps" wall and log it so a failure stays debuggable; verbose
     interactive installs stream live."""
-    kwargs: dict = {"shell": False, "env": env}
-    if not is_windows:
-        kwargs["start_new_session"] = True
-    if verbose:
-        kwargs["creationflags"] = _post_setup_no_window_flags(streams_to_console=True)
-    else:
+    kwargs: dict = {"shell": False, "env": env, "start_new_session": True}
+    if not verbose:
         kwargs.update(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                      text=True, encoding="utf-8", errors="replace",
-                      creationflags=_post_setup_no_window_flags())
+                      text=True, encoding="utf-8", errors="replace")
     return kwargs
 
 
@@ -720,8 +524,8 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True,
     upgrades). ``installer_timeout`` lets quiet callers use a shorter ceiling without weakening the
     explicit install path's stale-lock recovery window."""
     system = platform.system()
-    is_windows, is_linux = system == "Windows", system == "Linux"
-    install_cmd, manual_hint, script_path = _cua_installer_command(is_windows)
+    is_linux = system == "Linux"
+    install_cmd, manual_hint, script_path = _cua_installer_command()
     if install_cmd is None:
         return False
     if show_progress:
@@ -736,46 +540,33 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True,
     # when provably stale so the refresh doesn't wedge waiting on a dead holder.
     # See #58762.
     _clear_stale_cua_install_lock()
-
-    # Unattended refreshes (installer_timeout set by `hermes update`) preflight and may skip.
-    # Unattended refreshes (installer_timeout set by `hermes update`) fail FAST on the two conditions that
-    # otherwise consume the whole ceiling: 1. Install lock held by a live process — upstream would poll it
-    # for up to LOCK_STALE_AFTER_SECONDS=600 before probing the holder. That is the 11-minute silent hang
-    # class (#87703; observed live 2026-08-25: "cua-driver refreshing timed out after 660s"). 2. Release
-    # host unreachable (outage/DNS/firewall) — the installer would die slowly inside its own retries. A 5s
-    # HEAD answers now. Explicit `computer-use install --upgrade` runs keep upstream's full lock-recovery
-    # semantics — a human is watching and can wait or Ctrl-C.
     if installer_timeout is not None:
-        install_cmd = _unattended_installer_preflight(install_cmd, is_windows)
+        install_cmd = _unattended_installer_preflight(install_cmd)
         if install_cmd is None:
             return False
-    popen_kwargs = _installer_popen_kwargs(is_windows, verbose, installer_env)
+    popen_kwargs = _installer_popen_kwargs(verbose, installer_env)
     try:
         proc = subprocess.Popen(install_cmd, **popen_kwargs)
         try:
             communicated = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _reap_after_timeout(proc, is_windows=is_windows)
+            _reap_after_timeout(proc)
             raise
         out = None if verbose else communicated[0]
         if out:
             _record_installer_output(out, proc.returncode)
         installed_binary = _resolved_cua_driver_cmd()
         if proc.returncode == 0 and installed_binary:
-            if is_windows and not _repair_cua_driver_autostart_windows(installed_binary,
-                                                                        verbose=verbose):
-                _print_warning("    cua-driver installed, but auto-start was not registered.")
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
-                _print_cua_platform_notes(is_windows, is_linux, fresh_install=True)
+                _print_cua_platform_notes(is_linux, fresh_install=True)
             return True
         return _fail(f"    cua-driver {label.lower()} did not complete. Re-run manually:",
                      f"      {manual_hint}")
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out after {timeout}s.")
-        if not is_windows:
-            _print_info("    If this repeats, a stale installer lock may be present — check "
-                        f"{_cua_install_lock_dir()}")
+        _print_info("    If this repeats, a stale installer lock may be present — check "
+                    f"{_cua_install_lock_dir()}")
         _print_info(f"    Re-run manually:  {manual_hint}")
         return False
     except Exception as e:

@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -326,17 +325,13 @@ def step_expose_cli() -> dict:
     moved checkout, a recreated venv, or a user's stray ``rm`` leaves
     stale or missing launchers that nothing repairs until a full
     reinstall. This step makes the POST-UPDATE side own the recurring
-    maintenance: rewrite the three wrappers (hermes, hermes-agent,
-    hermes-agent) whenever their recorded shape drifts from what this
-    tree would write today. First-time PATH bootstrapping (shell-rc
-    edits, Windows registry) stays installer-side on purpose — a
-    boot-time step must not edit rc files on every update.
+    maintenance: rewrite the wrappers (hermes, hermes-agent) whenever
+    their recorded shape drifts from what this tree would write today.
+    First-time PATH bootstrapping (shell-rc edits) stays installer-side on
+    purpose — a boot-time step must not edit rc files on every update.
 
-    Config-gated by ``cli.expose_on_path`` (default true). Windows is a
-    no-op: venv Scripts are already User-PATH-persisted by the installer.
+    Config-gated by ``cli.expose_on_path`` (default true).
     """
-    if sys.platform == "win32":
-        return {"ok": True, "skipped": "windows-installer-owned"}
 
     try:
         from hermes_cli.config import load_config
@@ -349,15 +344,14 @@ def step_expose_cli() -> dict:
 
     root = _install_root()
 
-    # pm-store-managed install: the launchers are owned by
-    # hermes_cli._launchers (staged by install.ps1 / _install_repair —
-    # boot the STORE python with a repo-first PYTHONPATH, never
-    # venv/Scripts|bin python). This step's venv-wrapper shape is NOT
-    # that shape; writing it here would rewrite a store launcher into a
-    # venv boot. No alternate writer: the existing owner maintains
+    # pm-store-managed install: the launchers are owned by the store layout
+    # (staged by the installer — boot the STORE python with a repo-first
+    # PYTHONPATH, never venv/Scripts|bin python). This step's venv-wrapper
+    # shape is NOT that shape; writing it here would rewrite a store launcher
+    # into a venv boot. No alternate writer: the existing owner maintains
     # these (per-name, at install and at process-start repair).
     try:
-        from hermes_cli._launchers import resolve_store_python
+        from hermes_cli.runtime_paths import resolve_store_python
 
         if resolve_store_python(root) is not None:
             return {"ok": True, "skipped": "store-launchers-owned"}
@@ -505,9 +499,8 @@ def resync_and_reexec(args) -> int | None:
     * the venv_sync stamp is the idempotence — a re-run of the whole
       update sees a fresh stamp and skips the sync entirely.
 
-    POSIX uses ``os.execv``: same pid, so an update-lock marker's owner
-    stays literally correct. Windows has no true exec — spawn + wait +
-    propagate, and the child passes any lock by process ancestry.
+    ``os.execv`` keeps the same pid, so an update-lock marker's owner
+    stays literally correct.
     """
     if args.resumed_after_sync:
         return None
@@ -534,14 +527,10 @@ def resync_and_reexec(args) -> int | None:
     if args.pre_update_snapshot_id:
         argv.extend(["--pre-update-snapshot-id", str(args.pre_update_snapshot_id)])
 
-    if os.name == "posix":
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.execv(sys.executable, argv)
-        # unreachable: execv only returns by raising
-
-    completed = subprocess.run(argv)
-    return completed.returncode
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, argv)
+    # unreachable: execv only returns by raising
 
 
 def _run_update_phase(args) -> int:

@@ -3,7 +3,7 @@
 Emits one grep-friendly ``[MEMORY] ...`` line every N seconds (default 300)
 from a daemon thread so slow leaks show up as an RSS time series in the logs.
 A baseline snapshot is logged on start and a final one on stop.  Uses stdlib
-``resource`` first, ``psutil`` as fallback (Windows); if neither works the
+``resource`` first, ``psutil`` as fallback; if neither works the
 monitor warns once and stays disabled.
 """
 

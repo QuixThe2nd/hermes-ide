@@ -32,8 +32,7 @@ Usage:
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
-    HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
-                         ';' also works and drive letters are handled;
+    HERMES_TEST_PATHS    Override discovery roots (colon-sep;
                          default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
@@ -106,48 +105,18 @@ _DURATIONS_FILE = "test_durations.json"
 
 
 def _split_pathspec(value: str) -> List[str]:
-    """Split a separator-joined path list (``--paths``/``--files``/
-    ``HERMES_TEST_PATHS``) into individual paths.
-
-    POSIX: ``:``-separated, as documented.
-
-    Windows: ``;`` (``os.pathsep``) and ``:`` are both accepted as
-    separators, but a ``:`` that forms a drive letter (``C:\\...`` or
-    ``C:/...``) stays glued to its path — a naive ``split(":")`` turns
-    ``C:\\repo\\tests`` into ``['C', '\\repo\\tests']``, where the bogus
-    ``C`` becomes a phantom discovery root and the rooted remainder only
-    resolves by accident of ``Path.__truediv__`` re-anchoring it onto
-    ``repo_root``'s drive.
-    """
-    if sys.platform != "win32":
-        return [p for p in value.split(":") if p.strip()]
-    parts: List[str] = []
-    for chunk in value.split(";"):
-        raw = chunk.split(":")
-        i = 0
-        while i < len(raw):
-            part = raw[i]
-            if (
-                len(part) == 1
-                and part.isalpha()
-                and i + 1 < len(raw)
-                and raw[i + 1][:1] in ("\\", "/")
-            ):
-                part = f"{part}:{raw[i + 1]}"
-                i += 1
-            parts.append(part)
-            i += 1
-    return [p for p in parts if p.strip()]
+    """Split a ``:``-separated path list (``--paths``/``--files``/
+    ``HERMES_TEST_PATHS``) into individual paths."""
+    return [p for p in value.split(":") if p.strip()]
 
 # Host-OS gating (see the ``_OS_MARKS`` block in tests/conftest.py): tests
 # marked for another host are collected and SKIPPED by the conftest hook —
 # this runner never executes them, by construction. The summary calls that
-# out explicitly so a local run isn't misread as covering macOS/Windows
+# out explicitly so a local run isn't misread as covering macOS
 # behaviour, and names the CI lane where those tests actually execute.
 _OS_MARKERS = {
     "linux_only": ("linux", "the main Linux CI lane"),
     "macos_only": ("darwin", "the macOS Python-tests lane"),
-    "windows_only": ("win32", "the Windows Python-tests lane"),
 }
 
 
@@ -251,8 +220,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     A test run can spin up uvicorn servers, async runtimes, or other
     long-running grandchildren that survive the pytest subprocess exit
     if we don't kill the whole tree. ``subprocess.Popen.kill()`` only
-    targets the immediate child; grandchildren reparent to PID 1
-    (Linux) / get adopted by services.exe (Windows) and leak.
+    targets the immediate child; grandchildren reparent to PID 1 and leak.
 
     POSIX: the caller must pass ``pgid`` — the process group id captured
     immediately after Popen (via ``os.getpgid(proc.pid)``). We can't
@@ -262,39 +230,23 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     the group are still alive. SIGKILL'ing the captured pgid takes out
     everything in that group atomically.
 
-    Windows: ``taskkill /F /T /PID`` walks the recorded ppid chain and
-    terminates the whole tree, even when the root has already exited.
-
     Why not psutil: psutil walks the parent-child tree, but in the
     happy path the root has already been reaped so ``psutil.Process(pid)``
     can't find it; grandchildren reparented to PID 1 are also
-    unreachable by tree walk at that point. The platform-native
-    primitives (process groups / taskkill) handle both cases correctly
-    without an extra abstraction layer.
+    unreachable by tree walk at that point. The POSIX process-group
+    primitive handles this correctly without an extra abstraction layer.
     """
     if proc.pid is None:
         return
 
-    if sys.platform == "win32":
+    # POSIX: kill the captured pgid. Local-import signal so the
+    # SIGKILL attribute is never referenced elsewhere.
+    if pgid is not None:
         try:
-            
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )  # windows-footgun: ok
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            import signal as _signal
+            os.killpg(pgid, _signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
-    else:
-        # POSIX: kill the captured pgid. Local-import signal so the
-        # SIGKILL attribute is never referenced on Windows.
-        if pgid is not None:
-            try:
-                import signal as _signal
-                os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
 
     # Belt-and-suspenders: ensure subprocess.communicate() sees the exit.
     try:
@@ -413,21 +365,18 @@ def _run_one_file_once(
         env=env,
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
         start_new_session=True,
     )
 
     # Capture the pgid NOW, before the leader can exit and be reaped. Once
     # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
     # even though grandchildren in that group are still alive — defeating
-    # the whole cleanup. None on Windows where the pgid concept doesn't apply.
+    # the whole cleanup.
     pgid: int | None = None
-    if sys.platform != "win32":
-        try:
-            pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, PermissionError):
-            pgid = None
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        pgid = None
 
     try:
         output, _ = proc.communicate(timeout=file_timeout)
@@ -465,7 +414,7 @@ def _run_one_file_once(
 
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a
-        # platform-gated or fully-marker-filtered file (e.g. a win32-only
+        # platform-gated or fully-marker-filtered file (e.g. a macos-only
         # suite on Linux) collects nothing and must not fail the suite.
         # Tolerated here; the RUN-level guard in main() still fails when
         # NOTHING was collected across every file, so a broken invocation
@@ -752,10 +701,9 @@ def _slice_files(
 def _make_stdio_glyph_safe() -> None:
     """Keep status glyphs from killing the runner on narrow console encodings.
 
-    On native Windows, piped or legacy-console stdio defaults to a locale
-    codec (usually cp1252) that cannot encode the ✓/✗ progress glyphs — the
-    first per-file status line then dies with UnicodeEncodeError before a
-    single test result is reported. Declare the runner's own output UTF-8
+    A narrow-console locale codec can fail to encode the ✓/✗ progress
+    glyphs — the first per-file status line would then die with
+    UnicodeEncodeError. Declare the runner's own output UTF-8
     (what CI and every modern terminal already are), with errors="replace"
     as the can't-crash backstop; where the encoding can't be changed, fall
     back to errors="replace" alone so glyphs degrade to "?" instead of
@@ -791,9 +739,7 @@ def main() -> int:
         "--paths",
         default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),
         help=(
-            "Colon-separated discovery roots (default: 'tests'). On "
-            "Windows, ';' also separates and drive letters (C:\\...) are "
-            "kept intact."
+            "Colon-separated discovery roots (default: 'tests')."
         ),
     )
     parser.add_argument(
@@ -853,9 +799,8 @@ def main() -> int:
         "--files",
         metavar="LIST",
         help=(
-            "Explicit colon-separated list of test files to run (on "
-            "Windows, ';' also separates and drive letters are kept "
-            "intact). Bypasses discovery entirely — used by CI matrix "
+            "Explicit colon-separated list of test files to run. "
+            "Bypasses discovery entirely — used by CI matrix "
             "jobs that receive their file list from the generate job."
         ),
     )
@@ -1149,7 +1094,7 @@ def main() -> int:
 
     # Host-OS gating note: tests marked for another OS were skipped by the
     # conftest hook, not run. Say so explicitly — a green local run on Linux
-    # proves nothing about the macos_only/windows_only tests, and the reader
+    # proves nothing about the macos_only tests, and the reader
     # should know where they DO run rather than misreading skips as coverage.
     off_host = _off_host_marker_files(files)
     if off_host:

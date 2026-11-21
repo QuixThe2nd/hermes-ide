@@ -34,7 +34,6 @@ Usage:
 import json
 import logging
 import os
-import platform
 import re
 import shlex
 import stat
@@ -318,35 +317,23 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     result = {"password": None, "done": False}
     
     def read_password_thread():
-        """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
+        """Read password with echo disabled, via /dev/tty."""
         tty_fd = None
         old_attrs = None
         try:
-            if platform.system() == "Windows":
-                import msvcrt
-                chars = []
-                while True:
-                    c = msvcrt.getwch()
-                    if c in {"\r", "\n"}:
-                        break
-                    if c == "\x03":
-                        raise KeyboardInterrupt
-                    chars.append(c)
-                result["password"] = "".join(chars)
-            else:
-                import termios
-                tty_fd = os.open("/dev/tty", os.O_RDONLY)
-                old_attrs = termios.tcgetattr(tty_fd)
-                new_attrs = termios.tcgetattr(tty_fd)
-                new_attrs[3] = new_attrs[3] & ~termios.ECHO
-                termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-                chars = []
-                while True:
-                    b = os.read(tty_fd, 1)
-                    if not b or b in {b"\n", b"\r"}:
-                        break
-                    chars.append(b)
-                result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+            import termios
+            tty_fd = os.open("/dev/tty", os.O_RDONLY)
+            old_attrs = termios.tcgetattr(tty_fd)
+            new_attrs = termios.tcgetattr(tty_fd)
+            new_attrs[3] = new_attrs[3] & ~termios.ECHO
+            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
+            chars = []
+            while True:
+                b = os.read(tty_fd, 1)
+                if not b or b in {b"\n", b"\r"}:
+                    break
+                chars.append(b)
+            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
         except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
@@ -2130,137 +2117,25 @@ def _pre_exec_block(
     workdir: Optional[str], session_key: str,
 ) -> None:
     """Fork union of upstream's ``_pre_exec_block`` (c1e749d679) and this
-    fork's inline guard chain: supervised-gateway lifecycle hard-block,
-    workdir validation, self-repo mutation guard. Raises :class:`_Rejected`
-    with a finished tool-result JSON on any block; approval/tirith guards
-    stay in ``terminal_tool`` (upstream split preserved).
+    fork's inline guard chain: supervised-gateway lifecycle hard-block and
+    workdir validation. Raises :class:`_Rejected`
+    with a finished tool-result JSON on any block.
     """
     # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
     # restart|stop|uninstall targeting hermes-gateway) must never run inside the
     # gateway process itself. The restart would SIGTERM the gateway, which
     # kills this very subprocess before it can complete — the service may
-    # never restart. This mirrors the `hermes gateway restart` guard in
-    # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
-    # but applies unconditionally (force=True cannot help here).
-    # Gate on the SUPERVISED-gateway probe, not the raw _HERMES_GATEWAY
-    # marker: gateway.run sets it at import time, so it leaks into every
-    # process that merely imports gateway.run (hermes serve --isolated,
-    # CLI, web server) which are NOT the gateway and must be able to
-    # restart it. A plain foreground `hermes gateway run` (env set, PID
-    # owned, no supervisor) now also PASSES this guard: intentional and
-    # harmless, since without a supervisor there is no KeepAlive to turn a
-    # self-restart into a respawn loop.
-    from tools.process_registry import _is_supervised_gateway_process
+    # never restart. Single implementation in terminal_tool_guards (message
+    # contract: refusal-naming per #113944, host-interpreter-kill route, and
+    # the `restart`-tool pointer).
+    from tools.terminal_tool_guards import gateway_lifecycle_block
 
-    if _is_supervised_gateway_process():
-        from cron.lifecycle_guard import (
-            _MAX_REFERENCED_SCRIPT_BYTES,
-            contains_gateway_lifecycle_command_or_referenced_script,
-            contains_launchctl_submit_command,
-            lifecycle_scan_root_within_budget,
-        )
-        # Keep the specific launchctl diagnostic when this optional
-        # pre-scan fits the budget.  The full fail-closed guard below still
-        # runs when it does not, so oversized roots never reach shlex here.
-        if (
-            lifecycle_scan_root_within_budget(command)
-            and contains_launchctl_submit_command(command)
-        ):
-            raise _Rejected(json.dumps({
-                "output": "",
-                "exit_code": 1,
-                "error": (
-                    "Blocked: launchctl submit/bootstrap registers a persistent "
-                    "KeepAlive job and is unsafe from inside the gateway process. "
-                    "Use Hermes cron for one-shot delayed work, or install an "
-                    "explicit LaunchAgent from a separate shell."
-                ),
-                "status": "error",
-            }, ensure_ascii=False))
-        guard_cwd_base = get_session_cwd(session_key)
-        if guard_cwd_base is None:
-            guard_cwd_base = getattr(env, "cwd", None) or cwd
-        guard_cwd = _resolve_command_cwd(
-            workdir=workdir,
-            default_cwd=guard_cwd_base,
-            session_key=session_key,
-            env_type=env_type,
-        )
-
-        def _read_script_in_env(script_path: str) -> Optional[str]:
-            """Best-effort script read; uses env.execute only when local read fails.
-
-            For local backends the script path is on the host filesystem. For
-            SSH/Modal/Daytona the same path is remote; the local read misses, so we
-            fall back to a bounded ``env.execute('head -c ... < path')`` read.
-            """
-            if env is None:
-                return None
-            try:
-                local_path = Path(script_path).expanduser()
-                if not local_path.is_absolute():
-                    local_path = Path(guard_cwd) / local_path
-                if local_path.is_file():
-                    metadata = local_path.stat()
-                    if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= _MAX_REFERENCED_SCRIPT_BYTES:
-                        data = local_path.read_bytes()
-                        if len(data) <= _MAX_REFERENCED_SCRIPT_BYTES:
-                            if b"\x00" in data:
-                                # Binary (ELF/Mach-O/PE), not a shell script:
-                                # feeding its decoded bytes back into the guard
-                                # tokenizes machine code into bogus NUL-bearing
-                                # paths and crashes the scanner (#77703). Mirror
-                                # lifecycle_guard._read_referenced_script and
-                                # treat it as nothing to scan.
-                                return None
-                            return data.decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            # Remote / sandboxed backend: read via the environment's shell.
-            # Bound the read at the source with `head -c` so an oversized
-            # file (e.g. a 166MB ELF invoked by absolute path) never
-            # crosses the wire — `cat` of such a binary previously pinned
-            # the gateway's tool thread on a superlinear shlex scan for
-            # 30+ minutes. One byte over the guard's budget is enough for
-            # lifecycle_guard's sanitizer to fail the oversized case
-            # closed, mirroring the local-read semantics. The `< path`
-            # redirect keeps leading-dash paths out of argv (same form as
-            # tools/image_source.py).
-            try:
-                result = env.execute(
-                    f"head -c {_MAX_REFERENCED_SCRIPT_BYTES + 1} "
-                    f"< {shlex.quote(script_path)}"
-                )
-                if result.get("returncode", -1) == 0:
-                    output = result.get("output", "")
-                    if output and "\x00" in output:
-                        # Binary content from a remote read: skip for the
-                        # same reason as the local branch above (#77703).
-                        return None
-                    return output
-            except Exception:
-                pass
-            return None
-
-        if contains_gateway_lifecycle_command_or_referenced_script(
-            command,
-            cwd=guard_cwd,
-            read_remote_script=_read_script_in_env,
-        ):
-            raise _Rejected(json.dumps({
-                "output": "",
-                "exit_code": 1,
-                "error": (
-                    "Blocked: command or referenced script cannot restart, stop, or "
-                    "uninstall the gateway from inside the gateway process. The gateway would "
-                    "kill this command before it could complete (SIGTERM propagates "
-                    "to child processes). To restart the gateway, call the `restart` tool "
-                    "(same drain path as `/restart` — it waits for this turn to finish). "
-                    "For stop/uninstall, run `hermes gateway restart|stop` from a separate "
-                    "shell outside the running gateway."
-                ),
-                "status": "error",
-            }, ensure_ascii=False))
+    blocked = gateway_lifecycle_block(
+        command=command, env=env, env_type=env_type, cwd=cwd,
+        workdir=workdir, session_key=session_key,
+    )
+    if blocked:
+        raise _Rejected(blocked)
 
     # Validate before the source guard resolves an explicit workdir.
     if workdir:
@@ -2274,39 +2149,6 @@ def _pre_exec_block(
                 "error": workdir_error,
                 "status": "blocked"
             }, ensure_ascii=False))
-
-    # Windows-only: NTFS locks loaded module files, so rewriting the local
-    # checkout backing this interpreter can corrupt the running process.
-    # POSIX keeps old inodes alive for open handles, so the guard is off
-    # there. Remote backends cannot reach that checkout.
-    if env_type == "local":
-        from tools.self_repo_guard import (
-            detect_self_repo_git_mutation,
-            guard_active,
-        )
-
-        guard_cwd = _resolve_command_cwd(
-            workdir=workdir,
-            default_cwd=cwd,
-            session_key=session_key,
-        )
-        _self_repo_hit, _self_repo_msg = (
-            detect_self_repo_git_mutation(command, guard_cwd)
-            if guard_active()
-            else (False, None)
-        )
-        if _self_repo_hit:
-            logger.warning(
-                "Blocked self-repo git mutation (command: %s)",
-                _safe_command_preview(command),
-            )
-            raise _Rejected(json.dumps({
-                "output": "",
-                "exit_code": 1,
-                "error": _self_repo_msg,
-                "status": "blocked",
-            }, ensure_ascii=False))
-
 
 
 def terminal_tool(

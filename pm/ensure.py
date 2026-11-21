@@ -120,7 +120,7 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
 
 
 def _remove_entry(store: Store, entry_name: str) -> None:
-    """Remove a replaced or failed entry, retrying transient Windows holds.
+    """Remove a replaced or failed entry, retrying transient holds.
 
     Corruption may leave a file where the directory belonged. Failure
     must propagate so recovery never claims to have removed surviving bytes.

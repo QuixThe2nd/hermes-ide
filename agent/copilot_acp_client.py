@@ -133,7 +133,7 @@ def _resolve_home_dir() -> str:
     try:
         import pwd
 
-        return pwd.getpwuid(os.getuid()).pw_dir.strip() or tempfile.gettempdir()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+        return pwd.getpwuid(os.getuid()).pw_dir.strip() or tempfile.gettempdir()
     except Exception:
         return tempfile.gettempdir()
 
@@ -372,14 +372,9 @@ class CopilotACPClient:
                 "HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS to a working pair."
             )
         try:
-            from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
-
-            # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
-            # pipes stay intact for the ACP wire.
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
-                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(f"Could not start Copilot ACP command '{self._acp_command}'. Install GitHub Copilot CLI or set "

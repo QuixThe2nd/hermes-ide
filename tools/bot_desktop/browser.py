@@ -39,9 +39,6 @@ def _chromium_search_roots() -> list[str]:
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
     if sys.platform == "darwin":
         roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
-        roots.append(os.path.join(local, "ms-playwright"))
     return roots
 
 

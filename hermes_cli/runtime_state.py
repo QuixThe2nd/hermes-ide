@@ -18,26 +18,12 @@ from hermes_cli.runtime_paths import dependency_home_root, install_state_dir, ru
 
 
 def _lock(fd: int, *, wait: bool) -> bool:
-    if os.name == "nt":
-        import msvcrt
-        while True:
-            try:
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                return True
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                    raise
-                if not wait:
-                    return False
-                time.sleep(0.05)
-    else:
-        import fcntl
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-            return True
-        except BlockingIOError:
-            return False
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        return True
+    except BlockingIOError:
+        return False
 
 
 @contextmanager
@@ -73,12 +59,11 @@ def _atomic_bytes(path: Path, data: bytes):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        if os.name != "nt":
-            directory = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
 

@@ -47,9 +47,7 @@ def update_marker_path() -> Path:
 def _pid_alive(pid: int) -> bool:
     """True when a process with ``pid`` currently exists.
 
-    Delegates to :func:`gateway.status._pid_exists`. Do NOT hand-roll ``os.kill(pid, 0)``: on
-    Windows CPython routes ``sig=0`` to ``GenerateConsoleCtrlEvent``, which Ctrl+C's the
-    target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
+    Delegates to :func:`gateway.status._pid_exists`. Any pid we cannot evaluate counts as
     dead so a corrupt marker never wedges the lock.
     """
     if pid <= 0:
