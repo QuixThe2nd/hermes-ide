@@ -20,7 +20,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.served_model import result_model_fields
 from agent.turn_control import is_gateway_restart_armed
-from agent.turn_timing import PHASE_KEYS, timed_phase
+from agent.turn_timing import PHASE_KEYS, add_phase_time, timed_phase
 
 # Verification continuation scaffolding flags: verify-on-stop / pre_verify /
 # pre_turn_end inject a synthetic user nudge to keep the agent going one more
@@ -412,6 +412,12 @@ def finalize_turn(
     turn_tool_calls=0,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
+    finalization_started_at = time.perf_counter()
+    finalization_phase_started = {
+        key: float(getattr(agent, f"_turn_{key}_time", 0.0) or 0.0) for key in PHASE_KEYS
+    }
+    finalization_api_started = float(turn_api_time or 0.0)
+    finalization_tool_started = float(turn_tool_time or 0.0)
     from agent.conversation_loop import logger
 
     (
@@ -697,6 +703,15 @@ def finalize_turn(
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
 
+    # Claim only the uninstrumented finalizer remainder. Nested phase buckets and
+    # fallback summary API/tool time already own their spans and must not double-count.
+    finalization_claimed = sum(
+        max(0.0, float(getattr(agent, f"_turn_{key}_time", 0.0) or 0.0) - started)
+        for key, started in finalization_phase_started.items()
+    )
+    finalization_claimed += max(0.0, float(result["api_time"]) - finalization_api_started)
+    finalization_claimed += max(0.0, float(result["tool_time"]) - finalization_tool_started)
+    add_phase_time(agent, "save", time.perf_counter() - finalization_started_at - finalization_claimed)
     # Phase buckets snapshot at the EXIT so the timed mem sync above reaches the footer.
     result.update({f"{key}_time": float(getattr(agent, f"_turn_{key}_time", 0.0) or 0.0)
                    for key in PHASE_KEYS})

@@ -19,6 +19,17 @@ from agent.turn_timing import (
     timed_setup_exclusive,
 )
 
+class _ControlledClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 
 class TestAccumulatorPrimitives:
     def test_add_phase_time_seeds_missing_accumulator_and_clamps_negative(self):
@@ -160,3 +171,69 @@ class TestTurnAccumulation:
 
         assert result["final_response"] == "the report is done"
         assert result["mem_time"] >= 0.2, result["mem_time"]
+
+    def test_untimed_finalizer_tail_lands_in_save_without_double_counting(self, phase_agent, monkeypatch):
+        """Every controlled post-loop delay is claimed exactly once by save or mem."""
+        from gateway.runtime_footer import phase_times_from_result
+        from tests.agent.test_run_agent import _mock_response
+
+        clock = _ControlledClock()
+        monkeypatch.setattr("agent.turn_finalizer.time.perf_counter", clock)
+        monkeypatch.setattr("agent.conversation_loop.time.time", clock)
+
+        def _advance(seconds):
+            def _run(*_args, **_kwargs):
+                clock.advance(seconds)
+            return _run
+
+        phase_agent._interruptible_api_call = lambda _kwargs: _mock_response(
+            content="the report is done", finish_reason="stop"
+        )
+        with (
+            patch.object(phase_agent, "_flush_messages_to_session_db", return_value=True),
+            patch.object(phase_agent, "_save_trajectory", side_effect=_advance(2.0)),
+            patch.object(phase_agent, "_persist_session", side_effect=_advance(3.0)),
+            patch.object(phase_agent, "_cleanup_task_resources", side_effect=_advance(4.0)),
+            patch.object(phase_agent, "_sync_external_memory_for_turn", side_effect=_advance(5.0)),
+        ):
+            started = clock()
+            result = phase_agent.run_conversation("please summarize the report")
+            ended = clock()
+
+        phases = phase_times_from_result(result)
+        assert result["save_time"] == pytest.approx(9.0)
+        assert result["mem_time"] == pytest.approx(5.0)
+        assert result["api_time"] + result["tool_time"] + sum(phases.values()) == pytest.approx(ended - started)
+
+    def test_finalizer_fallback_api_is_not_counted_as_save(self, phase_agent, monkeypatch):
+        """The max-iteration summary call remains api time while untimed cleanup becomes save."""
+        from gateway.runtime_footer import phase_times_from_result
+
+        clock = _ControlledClock()
+        monkeypatch.setattr("agent.turn_finalizer.time.perf_counter", clock)
+        monkeypatch.setattr("agent.conversation_loop.time.time", clock)
+        phase_agent.max_iterations = 0
+
+        def _fallback_summary(*_args, **_kwargs):
+            clock.advance(6.0)
+            return "iteration-limit summary"
+
+        def _cleanup(*_args, **_kwargs):
+            clock.advance(4.0)
+
+        with (
+            patch.object(phase_agent, "_flush_messages_to_session_db", return_value=True),
+            patch.object(phase_agent, "_save_trajectory"),
+            patch.object(phase_agent, "_persist_session"),
+            patch.object(phase_agent, "_cleanup_task_resources", side_effect=_cleanup),
+            patch.object(phase_agent, "_sync_external_memory_for_turn"),
+            patch.object(phase_agent, "_handle_max_iterations", side_effect=_fallback_summary),
+        ):
+            started = clock()
+            result = phase_agent.run_conversation("summarize without an available loop iteration")
+            ended = clock()
+
+        phases = phase_times_from_result(result)
+        assert result["api_time"] == pytest.approx(6.0)
+        assert result["save_time"] == pytest.approx(4.0)
+        assert result["api_time"] + result["tool_time"] + sum(phases.values()) == pytest.approx(ended - started)

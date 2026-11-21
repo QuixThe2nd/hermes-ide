@@ -305,13 +305,14 @@ func MergePhases(gateway, agent map[string]float64) map[string]float64 {
 }
 
 // FooterPhases mirrors footer_phase_times: the footer's phase map for one
-// gateway turn. The gateway's pre-run span ("gateway_setup_time": agent
-// build, history load) joins the agent's setup bucket; given the perf-counter
-// stamp the gateway's turn time ends at, the span from "conversation_ended_at"
-// to it (stream drain, final-delivery bookkeeping) joins save. Both spans lie
-// outside run_conversation, so they never overlap api/tool/agent-phase time.
-// A nil turnEndedAt (or no conversation stamp) measures no save span; a stamp
-// later than turnEndedAt yields a negative span that MergePhases drops.
+// gateway turn. The gateway's pre-conversation span ("gateway_setup_time":
+// inbound intake, agent build, history load) joins the agent's setup bucket;
+// agent save includes exclusive post-loop finalization work. Given the
+// perf-counter stamp the gateway's turn time ends at, the span from
+// "conversation_ended_at" to it (stream drain, final-delivery bookkeeping)
+// joins save without overlapping api/tool/agent-phase time. A nil turnEndedAt
+// (or no conversation stamp) measures no save span; a later conversation stamp
+// yields a negative span that MergePhases drops.
 func FooterPhases(result map[string]float64, turnEndedAt *float64) map[string]float64 {
 	gateway := make(map[string]float64)
 	if setup, ok := result["gateway_setup_time"]; ok {

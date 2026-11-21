@@ -4054,6 +4054,7 @@ class GatewayTurnMixin:
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                turn_started_at=_msg_start_time,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -6521,6 +6522,7 @@ class GatewayTurnMixin:
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
+                turn_started_at=time.perf_counter(),
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -6779,6 +6781,7 @@ class GatewayTurnMixin:
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
         scheduled_heartbeat: bool = False,
+        turn_started_at: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7147,6 +7150,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             scheduled_heartbeat=scheduled_heartbeat,
+            turn_started_at=turn_started_at,
         )
         from gateway.run_turn_runner import TurnRunner
         turn_runner = TurnRunner(self, turn_ctx)
@@ -8250,6 +8254,7 @@ class GatewayTurnMixin:
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                    turn_started_at=time.perf_counter(),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
