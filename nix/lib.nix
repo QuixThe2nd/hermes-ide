@@ -156,7 +156,6 @@ let
           # Docker files
           "Dockerfile"
           "docker-compose.yml"
-          "docker-compose.windows.yml"
           # Nix build definitions — editing the flake shouldn't rebuild
           # the venv.  (Input changes rebuild regardless, via the lock.)
           "flake.nix"

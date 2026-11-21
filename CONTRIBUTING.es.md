@@ -188,7 +188,6 @@ hermes-agent/
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS
-│   ├── install.ps1               # Instalador Windows PowerShell
 │   └── whatsapp-bridge/          # Puente WhatsApp Node.js (Baileys)
 │
 ├── skills/                   # Habilidades incluidas (copiadas a ~/.hermes/skills/ en la instalación)
@@ -455,10 +454,6 @@ Añade al dict `_BUILTIN_SKINS` en `hermes_cli/skin_engine.py`. Usa el mismo esq
 
 Hermes se ejecuta en Linux, macOS y Windows nativo (además de WSL2). Al escribir código
 que toca el SO, asume que *cualquier* plataforma puede alcanzar tu ruta de código.
-
-> **Antes de hacer PR:** ejecuta `scripts/check-windows-footguns.py` para detectar
-> los patrones inseguros comunes de Windows en tu diff. Es basado en grep y barato;
-> CI también lo ejecuta en cada PR.
 
 ### Reglas críticas
 
