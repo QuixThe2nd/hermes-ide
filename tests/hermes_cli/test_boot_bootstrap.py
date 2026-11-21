@@ -176,9 +176,6 @@ def test_record_path_rejects_unknown_scope(tmp_path):
         record_path(tmp_path, "galaxy")
 
 
-@pytest.mark.skipif(
-    os.name == "nt", reason="requires symlink privilege on Windows"
-)
 def test_symlinked_root_canonicalizes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     real = tmp_path / "real-install"
@@ -603,27 +600,27 @@ class TestOrphanedStoreEntries:
         )
 
     def test_referenced_entries_survive_unreferenced_are_flagged(self, store):
-        self._publish(store, "ripgrep-15.2.0-win32-x64")
-        stale = self._publish(store, "ripgrep-14.1.0-win32-x64", b"x" * 512)
+        self._publish(store, "ripgrep-15.2.0-linux-x64")
+        stale = self._publish(store, "ripgrep-14.1.0-linux-x64", b"x" * 512)
         self._facts(store, {
-            "ripgrep": {"entry": "ripgrep-15.2.0-win32-x64", "version": "15.2.0", "env": {}},
+            "ripgrep": {"entry": "ripgrep-15.2.0-linux-x64", "version": "15.2.0", "env": {}},
         })
 
         orphans = boot_bootstrap.orphaned_store_entries()
 
         assert [(e.name, s) for e, s in orphans] == [
-            ("ripgrep-14.1.0-win32-x64", 512)
+            ("ripgrep-14.1.0-linux-x64", 512)
         ]
         assert stale.exists()  # report-only: nothing was deleted
 
     def test_no_facts_file_reports_nothing(self, store):
         """pm only vouches for what it installed: no ledger, no verdicts."""
-        self._publish(store, "gh-2.97.0-win32-x64")
+        self._publish(store, "gh-2.97.0-linux-x64")
         assert boot_bootstrap.orphaned_store_entries() == []
 
     def test_unreadable_facts_err_toward_keep(self, store):
         """A busted ledger must cost disk, not flag entries it may own."""
-        self._publish(store, "gh-2.97.0-win32-x64")
+        self._publish(store, "gh-2.97.0-linux-x64")
         (store / "facts.json").write_text("NOT JSON", encoding="utf-8")
         assert boot_bootstrap.orphaned_store_entries() == []
 

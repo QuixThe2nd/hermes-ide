@@ -4,7 +4,7 @@ description: "Article illustrations: type × style × palette consistency."
 version: 1.57.0
 author: 宝玉 (JimLiu)
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [article-illustration, creative, image-generation]

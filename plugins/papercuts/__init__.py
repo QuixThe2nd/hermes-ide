@@ -21,13 +21,8 @@ from hermes_constants import get_hermes_home
 
 try:  # POSIX
     import fcntl  # type: ignore
-except ImportError:  # pragma: no cover - Windows
+except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore
-
-try:  # Windows
-    import msvcrt  # type: ignore
-except ImportError:  # pragma: no cover - POSIX
-    msvcrt = None  # type: ignore
 
 
 _ALLOWED_ACTIONS = {"log", "list", "resolve", "ignore", "stats"}
@@ -163,22 +158,11 @@ def _store_lock() -> Iterator[None]:
     with lock_path.open("a+", encoding="utf-8") as lock_fh:
         if fcntl is not None:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-        elif msvcrt is not None:  # pragma: no cover - Windows
-            lock_fh.seek(0)
-            if lock_fh.read(1) == "":
-                lock_fh.seek(0)
-                lock_fh.write("0")
-                lock_fh.flush()
-            lock_fh.seek(0)
-            msvcrt.locking(lock_fh.fileno(), msvcrt.LK_LOCK, 1)
         try:
             yield
         finally:
             if fcntl is not None:
                 fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-            elif msvcrt is not None:  # pragma: no cover - Windows
-                lock_fh.seek(0)
-                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _fallback_redact(value: str) -> str:

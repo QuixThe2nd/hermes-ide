@@ -4,7 +4,7 @@ description: Roleplay a hostile user to find and triage UX pain points.
 version: 1.0.0
 author: Omni @ Comelse
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [qa, ux, testing, adversarial, dogfood, personas, user-testing]

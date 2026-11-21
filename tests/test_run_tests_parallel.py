@@ -14,8 +14,6 @@ and walk away. The verifier runs the runner over the leaker file in a
 subprocess, then waits for the grandchild PID to disappear from the
 kernel's process table.
 
-POSIX-only: Windows has its own grandchild lifecycle (no shared session,
-``taskkill /F /T`` semantics). Marked accordingly.
 """
 
 from __future__ import annotations
@@ -43,8 +41,6 @@ def isolated_probe_environment(monkeypatch):
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
 # so concurrent invocations of the suite don't clobber each other.
-# gettempdir(): /tmp does not exist on Windows runners (the literal default
-# made this module fail at import time — a collection error for the whole file).
 _HANDOFF_DIR = Path(tempfile.gettempdir()) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
 
@@ -69,10 +65,6 @@ def _pid_alive(pid: int) -> bool:
     (someone else's pid). We treat PermissionError as "alive" because
     the process exists and that's all we need to know.
     """
-    if sys.platform == "win32":  # pragma: no cover — POSIX-only test
-        # On Windows we'd use OpenProcess + GetExitCodeProcess; this
-        # test is skipped on Windows so the path is unreachable.
-        raise RuntimeError("_pid_alive POSIX-only")
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -203,8 +195,8 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
-        # decode the same way so ✓-glyph assertions hold on Windows, where
-        # text=True alone would decode with the locale codec (cp1252).
+        # decode the same way so ✓-glyph assertions hold under any locale
+        # codec.
         encoding="utf-8",
         errors="replace",
         timeout=60,
@@ -281,8 +273,8 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
-        # decode the same way so ✓-glyph assertions hold on Windows, where
-        # text=True alone would decode with the locale codec (cp1252).
+        # decode the same way so ✓-glyph assertions hold under any locale
+        # codec.
         encoding="utf-8",
         errors="replace",
         timeout=60,
@@ -438,10 +430,6 @@ def test_explicit_k_wins_over_node_id_inference(tmp_path: Path) -> None:
 
 def test_multiple_absolute_paths_split_on_pathsep(tmp_path: Path) -> None:
     """``--paths`` accepts ``os.pathsep``-joined absolute paths.
-
-    On Windows the absolute paths contain drive-letter colons, so a naive
-    ``split(":")`` shreds them into phantom roots and only one (or neither)
-    of the two probe dirs would be discovered.
     """
     dir_a = _make_probe_dir(tmp_path)
     dir_b = tmp_path / "probe_b"
@@ -462,20 +450,3 @@ def test_multiple_absolute_paths_split_on_pathsep(tmp_path: Path) -> None:
     assert "Discovered 2 test files" in proc.stdout, proc.stdout
 
 
-@pytest.mark.platforms("windows")
-def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
-    """An absolute ``--paths`` value stays one root on Windows.
-
-    The naive split used to produce a phantom relative root ``'C'`` (the
-    drive letter) alongside the real path; discovery only worked by the
-    accident of ``repo_root / '\\rooted\\rest'`` re-anchoring onto the
-    repo's drive.
-    """
-    probe_dir = _make_probe_dir(tmp_path)
-    proc = _run_runner(probe_dir, "-q")
-    assert proc.returncode == 0, proc.stdout
-    drive = str(probe_dir)[0]
-    assert f"['{drive}', " not in proc.stdout, (
-        f"drive letter split off as a phantom root:\n{proc.stdout}"
-    )
-    assert "Discovered 1 test files" in proc.stdout, proc.stdout

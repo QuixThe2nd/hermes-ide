@@ -31,11 +31,6 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/acp"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
@@ -59,11 +54,6 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/acp"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
 
     result = json.loads(
         terminal_tool.terminal_tool(
@@ -103,11 +93,6 @@ def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
     monkeypatch.setattr(
         terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
-    monkeypatch.setattr(
-        terminal_tool,
         "record_session_cwd",
         lambda session_key, cwd: recorded.append((session_key, cwd)),
     )
@@ -145,11 +130,6 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
     terminal_tool.record_session_cwd(task_id, "/workspace/live")
 
@@ -196,8 +176,6 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
             raise AssertionError("host-local command reached configured backend")
 
     import tools.process_registry as process_registry_mod
-    import tools.self_repo_guard as self_repo_guard
-
     task_id = "bot-delivery"
     monkeypatch.setattr(
         terminal_tool,
@@ -219,13 +197,6 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value)
-    monkeypatch.setattr(terminal_tool, "_docker_has_host_access", lambda config: False)
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": env_type == "local"},
-    )
-    monkeypatch.setattr(self_repo_guard, "guard_active", lambda: False)
     monkeypatch.setattr(process_registry_mod, "process_registry", FakeRegistry())
 
     result = json.loads(
@@ -282,11 +253,6 @@ def test_concurrent_commands_record_their_own_observed_cwd(monkeypatch, tmp_path
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _value: "default")
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
     terminal_tool.record_session_cwd("task-a", str(cwd_a))
     terminal_tool.record_session_cwd("task-b", str(cwd_b))
 
@@ -359,11 +325,6 @@ def test_record_session_cwd_updates_when_stale_cwd_falls_back(monkeypatch, tmp_p
         lambda: _minimal_terminal_config(cwd=str(fallback)),
     )
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
     monkeypatch.setattr(
         terminal_tool,
         "record_session_cwd",

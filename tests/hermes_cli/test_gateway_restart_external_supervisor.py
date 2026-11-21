@@ -1,7 +1,7 @@
 """``hermes gateway restart`` must hand an externally-supervised gateway back to its supervisor.
 
 A custom launchd agent (a plist/label outside the canonical ``ai.hermes.gateway`` path, so
-``_installed_service_kind_for`` returns None) fell through to the manual stop + foreground
+``_installed_service_kind`` returns None) fell through to the manual stop + foreground
 ``run_gateway`` fallback. The foreground run stamps the restart CLI's own PID into gateway.pid,
 and every KeepAlive respawn of ``gateway run --external-supervisor`` then refuses with
 "Gateway already running (PID <restart>)" — the gateway stays down until the restart process is
@@ -40,7 +40,7 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
-    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
+    monkeypatch.setattr(gw, "_installed_service_kind", lambda: None)
     monkeypatch.setattr(gw, "_get_restart_exit_wait_budget", lambda: 7.0)
     monkeypatch.setattr(gateway_status, "get_running_pid", _running_pid)
     monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: SUPERVISED_ARGV if pid == 4321 else None)

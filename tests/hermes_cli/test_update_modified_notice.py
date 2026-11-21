@@ -20,7 +20,6 @@ from pathlib import Path
 import hermes_cli.main as main_mod
 import hermes_cli.update_cmd as update_mod
 import hermes_cli.update_cmd_maint as update_maint_mod
-import hermes_cli.update_cmd_zip as update_zip_mod
 
 
 _COUNT_RE = re.compile(r"user-modified \(kept\)")
@@ -32,7 +31,7 @@ def _source_lines() -> list[str]:
     # split into update_cmd_*.py; scan every home of the notice.
     return [
         line
-        for mod in (main_mod, update_mod, update_maint_mod, update_zip_mod)
+        for mod in (main_mod, update_mod, update_maint_mod)
         for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
     ]
 

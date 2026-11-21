@@ -4,7 +4,7 @@ description: Autonomously remove your info from data-broker sites.
 version: 1.0.0
 author: SHL0MS (github.com/SHL0MS)
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 prerequisites:
   commands: [python]
 metadata:

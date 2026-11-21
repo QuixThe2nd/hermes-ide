@@ -79,6 +79,37 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "cron",
 })
 
+# Root entries that are infrastructure / runtime state, never profile data. The export
+# path moved to a root ALLOW-list (``_DEFAULT_EXPORT_INCLUDE_ROOT``, #58394); the one
+# remaining consumer is the distribution path — ``profile_distribution.USER_OWNED_EXCLUDE``
+# layers its distribution-specific additions on top of this authority. Keep new root
+# artifacts here, not in a downstream copy.
+DEFAULT_EXPORT_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursively managed
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    ".hermes-runtime",      # managed runtime tree (install artifact)
+    "node",                 # legacy pre-split managed Node tree
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
+    "auth.lock", "active_profile", ".update_check",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+})
+
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
@@ -190,8 +221,8 @@ def _get_wrapper_dir() -> Path:
 
 
 def _wrapper_path(alias: str) -> Path:
-    """Wrapper script path for *alias*: ``<alias>.bat`` on Windows, bare name elsewhere."""
-    return _get_wrapper_dir() / (f"{alias}.bat" if sys.platform == "win32" else alias)
+    """Wrapper script path for *alias*."""
+    return _get_wrapper_dir() / alias
 
 
 def _is_our_wrapper(path: Path) -> bool:
@@ -389,7 +420,7 @@ def check_alias_collision(name: str) -> Optional[str]:
         return f"'{canon}' conflicts with a hermes subcommand"
     try:
         result = subprocess.run(
-            ["where" if sys.platform == "win32" else "which", canon],
+            ["which", canon],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         if result.returncode == 0:
@@ -421,12 +452,9 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         return None
     wrapper_path = _wrapper_path(canon)
     try:
-        if sys.platform == "win32":
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n", encoding="utf-8")
-        else:
-            hermes_exe = shutil.which("hermes") or "hermes"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n', encoding="utf-8")
-            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        hermes_exe = shutil.which("hermes") or "hermes"
+        wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n', encoding="utf-8")
+        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path
     except OSError as e:
         print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
@@ -442,10 +470,7 @@ def remove_wrapper_script(name: str) -> bool:
     except ValueError:
         return False
 
-    # Both the extensionless path (POSIX) and .bat (Windows)
     candidates = [_get_wrapper_dir() / canon]
-    if sys.platform == "win32":
-        candidates.insert(0, _get_wrapper_dir() / f"{canon}.bat")
     for wrapper_path in candidates:
         if wrapper_path.exists() and _is_our_wrapper(wrapper_path):
             with contextlib.suppress(Exception):
@@ -497,15 +522,12 @@ def build_alias_map() -> dict[str, str]:
     result: dict[str, str] = {}
     if not wrapper_dir.is_dir():
         return result
-    is_windows = sys.platform == "win32"
     prefix = "hermes -p "
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
-        # Our wrappers are named after the alias and (on Windows only) carry .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
+        # Our wrappers are named after the alias and carry no extension.
+        if entry.suffix:
             continue
         try:
             with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
@@ -521,7 +543,7 @@ def build_alias_map() -> dict[str, str]:
         if not canon:
             continue
         canon = normalize_profile_name(canon)
-        alias = entry.stem if is_windows else entry.name
+        alias = entry.name
         if alias == canon:
             result.setdefault(canon, alias)  # never overwrite a custom alias already found
         else:
@@ -948,53 +970,13 @@ def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
     return done
 
 
-def _junction_target(path: str) -> Optional[str]:
-    """Target of an NTFS directory junction, else ``None``. A junction is a reparse point, not a
-    symlink: ``os.path.islink()`` is False and ``shutil.copytree(symlinks=True)`` descends into it."""
-    if os.name != "nt":
-        return None
-    try:
-        if os.lstat(path).st_reparse_tag != stat.IO_REPARSE_TAG_MOUNT_POINT:
-            return None
-        target = os.readlink(path)
-    except OSError:
-        return None
-    # readlink hands back the substitute name; CreateJunction rejects the ``\\?\`` spelling.
-    if target.startswith("\\\\?\\UNC\\"):
-        return "\\" + target[7:]
-    return target[4:] if target.startswith("\\\\?\\") else target
 
-
-def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool = False) -> None:
-    """``shutil.copytree(symlinks=True)`` that re-creates NTFS junctions as junctions instead of
-    traversing them. A ``skills/foo`` junction into a ``skills.external_dirs`` root copied as a
-    physical tree is a second same-named candidate and ``_locate_skill`` refuses to guess (#113471).
-    A junction whose target is gone is skipped with a warning, never a crash."""
-    junctions: Dict[str, str] = {}
-
-    def _ignore(directory: str, names: List[str]) -> set:
-        ignored = set(ignore(directory, names))
-        for name in names:
-            target = _junction_target(os.path.join(directory, name))
-            if target is not None:
-                junctions[os.path.join(directory, name)] = target
-                ignored.add(name)
-        return ignored
-
-    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=dirs_exist_ok, ignore=_ignore)
-    if junctions:
-        import _winapi  # Windows-only stdlib module; only reachable once a junction was seen
-    for link, target in junctions.items():
-        try:
-            _winapi.CreateJunction(target, os.path.join(dst, os.path.relpath(link, src)))
-        except OSError as exc:
-            logger.warning("clone: skipped junction %s -> %s (%s)", link, target, exc)
 
 
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
-    _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
+    shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -1036,7 +1018,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
+        shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True, ignore=_non_exportable_entries)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     if sync_imports:
@@ -1164,7 +1146,7 @@ def create_profile(
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
-    # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
+    # process. No-op on host (systemd/launchd unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
     # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
     # rescans periodically, so a missed signal only delays serving).
@@ -1800,8 +1782,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
                 "(stale/poisoned PID record, #89315)."
             )
             return
-        # terminate_pid picks the Windows primitive (taskkill /T cascades to children; raw
-        # os.kill with SIGKILL fails at import on Windows).
+        # terminate_pid cascades to children; raw os.kill with SIGKILL does not.
         expected_start_time = data.get("start_time")
         if expected_start_time is None:
             expected_start_time = get_process_start_time(pid)

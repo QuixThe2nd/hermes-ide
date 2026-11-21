@@ -80,7 +80,7 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
 def _pgroup_alive(pgid: Optional[int]) -> bool:
     """Signal 0 to the group succeeds iff any member is alive (POSIX only)."""
     try:
-        os.killpg(pgid, 0)  # windows-footgun: ok — guarded by AttributeError below
+        os.killpg(pgid, 0)
         return True
     except (AttributeError, TypeError, OSError):  # non-POSIX / pgid None / gone
         return False

@@ -4,7 +4,7 @@ description: Find accounts for a username across 400+ platforms.
 version: 1.0.0
 author: unmodeled-tyler
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [osint, security, username, social-media, reconnaissance]

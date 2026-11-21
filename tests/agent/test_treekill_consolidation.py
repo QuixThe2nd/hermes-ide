@@ -176,7 +176,6 @@ class TestCodeExecutionDelegation:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX session semantics")
 def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
     """The delegating wrapper must reach descendants that setsid'd out of the
     child's process group — the exact capability the shared primitive adds

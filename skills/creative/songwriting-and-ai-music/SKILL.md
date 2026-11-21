@@ -5,7 +5,7 @@ version: 1.0.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
 tags: [songwriting, music, suno, parody, lyrics, creative]
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 triggers:
   - writing a song
   - song lyrics

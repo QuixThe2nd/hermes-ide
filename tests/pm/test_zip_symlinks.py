@@ -12,29 +12,19 @@ whose external_attr mode says S_ISLNK. The fixtures here build REAL
 entries of that shape, the same bytes a hostile server would send.
 
 Ported from restack's provisioner-zip-symlinks suite, rewritten against
-pm.store.extract. Containment arms (hostile links skipped, zip-slip
-ordering) are host-independent and run on Windows; the arms asserting
-links RESOLVE are POSIX-gated; a separate arm pins pm's truthful win32
-degradation (symlink if the host allows it, else a text placeholder —
-never an escape).
+pm.store.extract.
 """
 
 from __future__ import annotations
 
 import io
 import stat
-import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from pm.store import extract
-
-posix_only = pytest.mark.skipif(
-    sys.platform == "win32", reason="symlink resolution semantics are POSIX"
-)
-
 
 def _add_symlink(zf: zipfile.ZipFile, member: str, target: str) -> None:
     """Append a symlink entry the way zip tools actually encode one."""
@@ -59,7 +49,6 @@ def _write_zip(path: Path, build) -> Path:
     return path
 
 
-@posix_only
 def test_framework_shaped_links_round_trip(tmp_path: Path) -> None:
     """The CfT .framework shape: links out of the versioned dir, intact."""
 
@@ -84,7 +73,6 @@ def test_framework_shaped_links_round_trip(tmp_path: Path) -> None:
     assert (dest / "app/F.framework/Versions/A/F").stat().st_mode & 0o111
 
 
-@posix_only
 def test_intree_dotdot_target_is_kept(tmp_path: Path) -> None:
     """`..` in a target is fine while it stays under dest — real layouts
     (lib/foo -> ../share/foo) depend on it."""
@@ -147,30 +135,6 @@ def test_file_written_through_earlier_link_entry_cannot_escape(
     assert written.is_file() and not (dest / "outdir").is_symlink()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="pins the win32 degradation")
-def test_win32_safe_link_degrades_without_escaping(tmp_path: Path) -> None:
-    """On win32 pm attempts a real symlink (works with Developer Mode /
-    admin) and otherwise degrades to a text placeholder holding the
-    target path. Either way the entry stays inside dest — pin exactly
-    that, without faking the host."""
-
-    def build(zf: zipfile.ZipFile) -> None:
-        _add_file(zf, "share/data.txt", b"d")
-        _add_symlink(zf, "lib/data", "../share/data.txt")
-
-    dest = tmp_path / "out"
-    extract(_write_zip(tmp_path / "a.zip", build), dest)
-
-    link = dest / "lib" / "data"
-    if link.is_symlink():
-        assert link.readlink() == Path("../share/data.txt")
-    else:
-        assert link.is_file()
-        assert link.read_text(encoding="utf-8") == "../share/data.txt"
-    # Nothing anywhere else.
-    assert set(p.name for p in (dest / "lib").iterdir()) == {"data"}
-
-
 def test_plain_zip_unchanged(tmp_path: Path) -> None:
     """No links: behavior identical to before, exec bits included."""
 
@@ -180,7 +144,6 @@ def test_plain_zip_unchanged(tmp_path: Path) -> None:
 
     dest = tmp_path / "out"
     extract(_write_zip(tmp_path / "a.zip", build), dest)
-    if sys.platform != "win32":
-        assert (dest / "bin/tool").stat().st_mode & 0o111
+    assert (dest / "bin/tool").stat().st_mode & 0o111
     assert (dest / "bin/tool").read_bytes() == b"#!"
     assert (dest / "README").read_bytes() == b"r"

@@ -30,7 +30,6 @@ _CONFIG = {
 }
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
 def test_fresh_profile_env_is_owner_only_despite_permissive_umask():
     old_umask = os.umask(0o022)
     try:
@@ -47,7 +46,6 @@ def test_fresh_profile_env_is_owner_only_despite_permissive_umask():
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
 def test_rewrite_tightens_existing_world_readable_profile_env():
     profile_env = _embedded_profile_env_path(_CONFIG)
     profile_env.parent.mkdir(parents=True)
@@ -62,7 +60,6 @@ def test_rewrite_tightens_existing_world_readable_profile_env():
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
 def test_secret_file_removed_when_permission_validation_fails(monkeypatch):
     """If the post-write permission check cannot verify 0600, the plaintext
     key file must not be left behind."""
@@ -81,7 +78,6 @@ def test_secret_file_removed_when_permission_validation_fails(monkeypatch):
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
 def test_scopeless_worker_reuses_on_disk_key(monkeypatch):
     """Durability core: with no secret scope, the key resolves from disk.
 

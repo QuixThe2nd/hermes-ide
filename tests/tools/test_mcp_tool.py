@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -1616,34 +1615,6 @@ class TestBuildSafeEnv:
         assert result["GITHUB_TOKEN"] == "profile-b"
         assert "NOTION_TOKEN" not in result
 
-    def test_windows_location_vars_passed_without_secrets(self):
-        """Windows launcher tools need location vars, but secrets stay filtered."""
-        from tools.mcp_tool_config import _build_safe_env
-
-        fake_env = {
-            "PATH": r"C:\Windows\System32",
-            "PROGRAMFILES": r"C:\Program Files",
-            "PROGRAMDATA": r"C:\ProgramData",
-            "PROGRAMW6432": r"C:\Program Files",
-            "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
-            "APPDATA": r"C:\Users\alice\AppData\Roaming",
-            "USERPROFILE": r"C:\Users\alice",
-            "GITHUB_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-            "OPENAI_API_KEY": "sk-proj-abc123",
-        }
-        with patch.dict("os.environ", fake_env, clear=True):
-            result = _build_safe_env(None)
-
-        assert result["PROGRAMFILES"] == r"C:\Program Files"
-        assert result["PROGRAMDATA"] == r"C:\ProgramData"
-        assert result["PROGRAMW6432"] == r"C:\Program Files"
-        assert result["LOCALAPPDATA"].endswith("Local")
-        assert result["APPDATA"].endswith("Roaming")
-        assert result["USERPROFILE"] == r"C:\Users\alice"
-        assert "GITHUB_TOKEN" not in result
-        assert "OPENAI_API_KEY" not in result
-
-
 # ---------------------------------------------------------------------------
 # _sanitize_error
 # ---------------------------------------------------------------------------
@@ -3197,19 +3168,11 @@ class TestMCPDiscoveryCrossProcessLock:
 
     @staticmethod
     def _lock_exclusive(fh):
-        """Lock a file handle exclusively, cross-platform.
+        """Lock a file handle exclusively, mirroring production
+        _try_acquire_mcp_discovery_lock (fcntl)."""
+        import fcntl
 
-        Mirrors production _try_acquire_mcp_discovery_lock: fcntl on POSIX,
-        portalocker on Windows (portalocker only ships on win32 installs).
-        """
-        if sys.platform == "win32":
-            import portalocker
-
-            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
-        else:
-            import fcntl
-
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     @pytest.fixture(autouse=True)
     def _fast_retries(self):

@@ -4,7 +4,7 @@ description: Build PowerPoint decks headless with python-pptx.
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [powerpoint, pptx, python-pptx, presentation, finance]

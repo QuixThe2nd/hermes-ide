@@ -3,7 +3,6 @@
 import asyncio
 import json
 import socket
-import sys
 from pathlib import Path
 
 import pytest
@@ -16,13 +15,8 @@ from gateway.control_socket import (
     request_gateway_restart,
     resolve_client_socket_path,
     resolve_server_socket_path,
-    windows_pipe_name,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix-socket transport; the named-pipe half is covered on the wine2e lane",
-)
 
 
 def _run(coro):
@@ -89,13 +83,6 @@ def test_client_resolution_prefers_direct_then_pointer(home: Path, tmp_path: Pat
     direct.touch()
     assert resolve_client_socket_path(home) == direct
 
-
-def test_windows_pipe_name_is_stable_and_home_scoped(tmp_path: Path):
-    a = windows_pipe_name(tmp_path / "a")
-    b = windows_pipe_name(tmp_path / "b")
-    assert a.startswith(r"\\.\pipe\hermes-gateway-")
-    assert a != b
-    assert a == windows_pipe_name(tmp_path / "a")
 
 
 # ---------------------------------------------------------------------------

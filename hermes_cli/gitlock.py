@@ -33,10 +33,6 @@ def _git_proc_running() -> bool:
     A failed probe logs and returns False; the age floor in the sweep still applies.
     """
     try:
-        if os.name == "nt":
-            proc = subprocess.run(["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"],
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-            return "git.exe" in proc.stdout.lower()
         proc = subprocess.run(["pgrep", "-x", "git"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=10)
         return proc.returncode == 0

@@ -580,7 +580,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     Issue #37453: systemctl --user restart hermes-gateway runs as a child of the
     gateway process.  When systemd delivers SIGTERM the gateway kills its own
     restart command mid-execution — the service may never restart.  The guard
-    must fire before execution, unconditionally (force=True cannot bypass it).
+    must fire before execution, unconditionally.
     """
 
     def _make_fake_env(self):
@@ -629,16 +629,6 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
 
-    def test_force_true_cannot_bypass_block(self, monkeypatch):
-        import tools.terminal_tool as tt
-        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
-
-        result = json.loads(tt.terminal_tool(
-            command="systemctl restart hermes-gateway", force=True
-        ))
-
-        assert result["exit_code"] == 1
-        assert "Blocked" in result["error"]
 
     @pytest.mark.platforms("linux")
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
@@ -735,9 +725,6 @@ class TestTerminalToolGatewayLifecycleGuard:
                 return {"output": "", "returncode": 0}
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
-        monkeypatch.setattr(
-            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
-        )
 
         result = json.loads(tt.terminal_tool(command=command))
 
@@ -768,9 +755,6 @@ class TestTerminalToolGatewayLifecycleGuard:
         # process does not own the gateway PID file.
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
-        monkeypatch.setattr(
-            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
-        )
 
         result = json.loads(tt.terminal_tool(command="hermes gateway restart"))
 
@@ -916,9 +900,6 @@ class TestTerminalToolGatewayLifecycleGuard:
                 return {"output": "launchctl submit is persistent", "returncode": 0}
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
-        monkeypatch.setattr(
-            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
-        )
         command = "printf '%s\\n' 'launchctl submit is persistent'"
 
         result = json.loads(tt.terminal_tool(command=command))
@@ -941,9 +922,6 @@ class TestTerminalToolGatewayLifecycleGuard:
                 return {"output": "healthy", "returncode": 0}
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
-        monkeypatch.setattr(
-            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
-        )
         command = f"/bin/bash {script}"
 
         result = json.loads(tt.terminal_tool(command=command))
@@ -964,7 +942,6 @@ class TestTerminalToolGatewayLifecycleGuard:
                 return {"output": "Active: running", "returncode": 0}
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
-        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
 
         result = json.loads(tt.terminal_tool(command="systemctl status nginx"))
 
@@ -2313,12 +2290,10 @@ class TestLifecycleGuardNeverRaises:
         assert unsafe is False
 
     def test_directory_and_dev_null_fail_closed_not_crash(self, tmp_path):
-        # Directories are not scripts (#86753). Devices stay fail-closed
-        # where the OS actually exposes them (POSIX /dev/null).
+        # Directories are not scripts (#86753). Devices stay fail-closed.
         # The important contract is: verdict, not exception.
         assert self._scan(f"bash {tmp_path}") is False
-        if os.name != "nt":
-            assert self._scan("bash /dev/null") is True
+        assert self._scan("bash /dev/null") is True
 
     def test_magic_prefix_binaries_skipped_without_full_read(self, tmp_path):
         """Executable magic (ELF/PE/Mach-O) short-circuits the read: the
@@ -2348,6 +2323,5 @@ class TestLifecycleGuardNeverRaises:
         binary.write_bytes(b"\x7fELF" + bytes(128))
         for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh", str(tmp_path)):
             check_gateway_lifecycle("clean prompt", value)  # must not raise
-        if os.name != "nt":
-            with pytest.raises(GatewayLifecycleBlocked):
-                check_gateway_lifecycle("clean prompt", "/dev/null")
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("clean prompt", "/dev/null")

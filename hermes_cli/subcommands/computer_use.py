@@ -116,10 +116,9 @@ def _cu_perms_grant(args) -> None:
 def build_computer_use_parser(subparsers) -> None:
     """Attach the ``computer-use`` subcommand to ``subparsers``."""
     computer_use_parser = subparsers.add_parser(
-        "computer-use", help="Manage the Computer Use (cua-driver) backend (macOS/Windows/Linux)",
+        "computer-use", help="Manage the Computer Use (cua-driver) backend (macOS/Linux)",
         description="Install or check the cua-driver binary used by the\n"
-            "`computer_use` toolset. Supported on macOS, Windows, and\n"
-            "Linux.\n\n"
+            "`computer_use` toolset. Supported on macOS and Linux.\n\n"
             "Use `hermes computer-use install` to fetch and run the\n"
             "upstream cua-driver installer. This is equivalent to the\n"
             "post-setup hook that `hermes tools` runs when you first\n"
@@ -133,7 +132,7 @@ def build_computer_use_parser(subparsers) -> None:
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
     computer_use_install = computer_use_sub.add_parser(
-        "install", help="Install or repair the cua-driver binary (macOS/Windows/Linux)")
+        "install", help="Install or repair the cua-driver binary (macOS/Linux)")
     computer_use_install.add_argument(
         "--upgrade", action="store_true",
         help="Re-run the upstream installer even if cua-driver is already on "

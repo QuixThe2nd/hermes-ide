@@ -4,7 +4,7 @@ description: Create, read, edit .pptx decks with python-pptx.
 version: 1.1.0
 author: Nous Research
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [pptx, powerpoint, presentations, slides, office, python-pptx]

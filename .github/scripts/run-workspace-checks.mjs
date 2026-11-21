@@ -20,13 +20,12 @@ import { execFileSync, spawn } from 'node:child_process'
 import { availableParallelism } from 'node:os'
 
 const IS_CI = Boolean(process.env.GITHUB_ACTIONS)
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const NPM = 'npm'
 
 /** @returns {{pkg: string, script: string}[]} */
 function discoverUnits() {
   const raw = execFileSync(NPM, ['query', '.workspace'], {
     encoding: 'utf-8',
-    shell: process.platform === 'win32',
   })
   /** @type {{location: string, scripts?: Record<string,string>}[]} */
   const pkgs = JSON.parse(raw)
@@ -53,7 +52,6 @@ function runUnit(unit) {
       // Buffer, and do not inherit. Children that share one stdout
       // interleave their lines, and a failure is then hard to read.
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
     })
     /** @type {Buffer[]} */
     const chunks = []

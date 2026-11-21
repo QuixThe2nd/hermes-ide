@@ -131,8 +131,8 @@ def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> b
     Selects the exit-75 restart route, so only markers of a manager with a restart policy count:
     systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME``, the s6 sentinel, or the explicit
     ``--external-supervisor`` opt-in. The generalized ``HERMES_SUPERVISED_CHILD`` launcher marker is
-    deliberately NOT read here: the Windows Scheduled-Task launcher sets it without a restart policy
-    (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
+    deliberately NOT read here: a launcher without a restart policy would have its ``/restart``
+    routed through exit 75 and left dead.
     """
     env = os.environ if environ is None else environ
     xpc_service = env.get("XPC_SERVICE_NAME", "")
@@ -158,7 +158,7 @@ def detached_restart_spawn_blocked(
 
 
 # ── standalone detached restart watcher ──────────────────────────────────────
-# One watcher contract, shared by POSIX and Windows: wait for the old gateway
+# One watcher contract: wait for the old gateway
 # PID to be PROVEN absent — with no deadline — then relaunch the gateway
 # through its direct entry point (``sys.executable -m gateway.run`` from the
 # project root). The watcher must never shell out to ``hermes gateway
@@ -166,56 +166,6 @@ def detached_restart_spawn_blocked(
 # the legacy CLI paths this in-process restart flow must not enter, and a
 # replacement launched while the old PID is merely *thought* gone would race
 # the dying process for platform locks and ports.
-
-
-# Win32 wait/probe result codes for the PID liveness check below. The ONLY
-# value that proves a process absent is WAIT_OBJECT_0 (handle signaled, the
-# process has exited). WAIT_TIMEOUT means it is running; WAIT_FAILED
-# (0xFFFFFFFF) means the wait itself errored — an unknown, which must read
-# as LIVE: this predicate's False is the detached watcher's sole authority
-# to launch a replacement, so a failed probe returning "absent" would race
-# a still-live gateway for its platform locks and ports.
-WIN32_WAIT_OBJECT_0 = 0x0
-WIN32_WAIT_TIMEOUT = 0x102
-WIN32_WAIT_FAILED = 0xFFFFFFFF
-# GetLastError() when OpenProcess cannot even address the PID slot — the
-# one OpenProcess failure that means "no such process". Everything else
-# (ERROR_ACCESS_DENIED 5 on a protected process, ...) is unknown ⇒ live.
-WIN32_ERROR_INVALID_PARAMETER = 87
-
-
-def _win32_wait_result_means_live(result: int) -> bool:
-    """Fail-closed reading of ``WaitForSingleObject(handle, 0)``.
-
-    Only ``WAIT_OBJECT_0`` (the handle signaled — the process exited) is
-    proof of absence. ``WAIT_TIMEOUT`` is a live process, ``WAIT_FAILED``
-    is a failed probe, and any other/unexpected value is ignorance; all of
-    them mean "live" to the caller. The old ``== 0x102`` comparison read
-    ``WAIT_FAILED`` (and any non-timeout value) as absent — exactly the
-    fail-open this function exists to prevent.
-    """
-    return int(result) != WIN32_WAIT_OBJECT_0
-
-
-def _windows_pid_alive_fail_closed(pid: int, kernel32) -> bool:
-    """Windows arm of :func:`pid_alive_fail_closed`, with kernel32 injected.
-
-    ``kernel32`` is a seam so tests can drive real Win32 result codes
-    (``WAIT_FAILED`` included) deterministically on any host — the same
-    platform-logic-as-data pattern as ``hidden_windows_child_options``.
-    """
-    handle = kernel32.OpenProcess(0x1000 | 0x100000, False, int(pid))
-    if not handle:
-        # ERROR_INVALID_PARAMETER (87): the PID slot cannot even be
-        # addressed — the process is gone. Anything else (access denied
-        # on a protected process, ...) is unknown, i.e. still live.
-        return int(kernel32.GetLastError()) != WIN32_ERROR_INVALID_PARAMETER
-    try:
-        return _win32_wait_result_means_live(
-            kernel32.WaitForSingleObject(handle, 0)
-        )
-    finally:
-        kernel32.CloseHandle(handle)
 
 
 def pid_alive_fail_closed(pid: int) -> bool:
@@ -227,23 +177,9 @@ def pid_alive_fail_closed(pid: int) -> bool:
     exists under another credentials context, and any other ``OSError`` from
     the probe is ignorance, never proof of death. Elapsed time is never
     consulted — the caller has no deadline to expire.
-
-    On Windows ``os.kill(pid, 0)`` is not a liveness no-op (it maps to
-    ``GenerateConsoleCtrlEvent``, bpo-14484), so the check goes through the
-    Win32 handle-based existence probe instead, with the same fail-closed
-    reading of its errors: only ``WAIT_OBJECT_0`` proves absence;
-    ``WAIT_TIMEOUT``, ``WAIT_FAILED``, and every other result stay live.
     """
-    if os.name == "nt":
-        import ctypes
-
-        k32 = ctypes.windll.kernel32
-        k32.OpenProcess.restype = ctypes.c_void_p
-        k32.WaitForSingleObject.restype = ctypes.c_uint
-        k32.GetLastError.restype = ctypes.c_uint
-        return _windows_pid_alive_fail_closed(pid, k32)
     try:
-        os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch; the os.name == "nt" branch above returns through the Win32 handle probe before reaching this line (bpo-14484)
+        os.kill(int(pid), 0)
         return True
     except ProcessLookupError:
         return False
@@ -286,10 +222,7 @@ def _replacement_interpreter(project_root: str) -> tuple[str, Optional[Path]]:
     supposed to run under.
     """
     root = Path(project_root)
-    if os.name == "nt":
-        candidate = root / ".venv" / "Scripts" / "python.exe"
-    else:
-        candidate = root / ".venv" / "bin" / "python"
+    candidate = root / ".venv" / "bin" / "python"
     if candidate.is_file():
         return str(candidate), candidate.parent
     return sys.executable, None
@@ -307,12 +240,11 @@ def spawn_replacement_gateway(
     repository's ``gateway.run`` entry point resolves without touching the
     ``hermes`` CLI, service managers, or anything else that could route this
     back into a legacy restart path. The child inherits the watcher's
-    environment — already built without ``_HERMES_GATEWAY`` — and detaches
-    per platform through the existing safe detach helpers (a new session on
-    POSIX, the no-breakaway creation flags on Windows).
+    environment — already built without ``_HERMES_GATEWAY`` — and detaches into
+    a new session.
 
     Custom ``popen`` env builders receive ``checkout_venv_bin_dir`` (the
-    resolved venv's bin/Scripts directory) so they can pin ``VIRTUAL_ENV`` and
+    resolved venv's ``bin`` directory) so they can pin ``VIRTUAL_ENV`` and
     ``PATH`` to the checkout venv instead of the spawning process's.
     """
     interpreter, venv_bin_dir = _replacement_interpreter(project_root)
@@ -322,14 +254,7 @@ def spawn_replacement_gateway(
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
-    if os.name == "nt":
-        from hermes_cli._subprocess_compat import (
-            windows_detach_flags_without_breakaway,
-        )
-
-        kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-    else:
-        kwargs["start_new_session"] = True
+    kwargs["start_new_session"] = True
     if popen is None:
         return subprocess.Popen(argv, **kwargs)
     if venv_bin_dir is not None:
@@ -356,8 +281,8 @@ def is_supervised_gateway_launch(environ: Mapping[str, str] | None = None) -> bo
     """Return whether this gateway was launched by a generated service/launcher rather than a shell.
 
     Superset of :func:`is_gateway_supervisor_process` that also honours ``HERMES_SUPERVISED_CHILD``,
-    the marker every generated launcher exports (systemd unit, launchd plist, s6 run script, Windows
-    Scheduled Task — see ``hermes_cli.main._apply_profile_override``). This is the identity the
+    the marker every generated launcher exports (systemd unit, launchd plist, s6 run script
+    — see ``hermes_cli.main._apply_profile_override``). This is the identity the
     self-targeting guards key on: a kill or lifecycle command issued from inside such a gateway takes
     down the process hosting the caller with nobody at a terminal to bring it back (#113667).
     """
@@ -414,8 +339,8 @@ def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
     A hub successor may have been started by a request whose ``via_service``
     flag was false. Re-check native supervision at teardown in that case:
     exiting 0 under systemd would make it start another gateway beside the
-    successor. Do not use the generalized supervised-launch marker here; the
-    Windows Scheduled Task has no restart policy.
+    successor. Do not use the generalized supervised-launch marker here: a
+    launcher without a restart policy must not gate the overlap exit.
 
     Generation-array aware: a live NEWER generation (hub registry, read
     synchronously from the hub's mirror file) keeps the overlap exit code

@@ -462,9 +462,6 @@ class TestSaveEnvValueSecure:
         writes. Previously _secure_file ran unconditionally after the
         mode-restore branch and re-tightened to 0600.
         """
-        if os.name == "nt":
-            return
-
         env_path = tmp_path / ".env"
         env_path.write_text("EXISTING=value\n")
         os.chmod(env_path, 0o640)
@@ -546,9 +543,6 @@ class TestRemoveEnvValue:
         mode-restore branch and re-tightened to 0600 — the same bug fixed
         in save_env_value (#33699), in the sibling remove path.
         """
-        if os.name == "nt":
-            return
-
         env_path = tmp_path / ".env"
         env_path.write_text("KEEP=value\nDROP=gone\n")
         os.chmod(env_path, 0o640)
@@ -1429,49 +1423,6 @@ class TestEnvWriteDenylist:
         invalidate_env_cache()
 
         assert load_env()["HERMES_OPTIONAL_MCPS"] == str(catalog)
-
-    @pytest.mark.parametrize(
-        ("key", "expected"),
-        [
-            ("Path", "PATH"),
-            ("Hermes_Accept_Hooks", "HERMES_ACCEPT_HOOKS"),
-            ("Hermes_Optional_Mcps", "HERMES_OPTIONAL_MCPS"),
-            ("Hermes_Copilot_Acp_Command", "HERMES_COPILOT_ACP_COMMAND"),
-            ("Hermes_Copilot_Acp_Args", "HERMES_COPILOT_ACP_ARGS"),
-        ],
-    )
-    def test_windows_policy_names_are_case_insensitive(self, key, expected):
-        from hermes_cli.config import _env_var_policy_name
-
-        assert _env_var_policy_name(key, is_windows=True) == expected
-
-    def test_posix_policy_names_remain_case_sensitive(self):
-        from hermes_cli.config import _env_var_policy_name
-
-        assert _env_var_policy_name("Path", is_windows=False) == "Path"
-
-    @pytest.mark.parametrize("prefix", ["", "export "])
-    def test_windows_env_assignment_matching_is_case_insensitive(self, prefix):
-        from hermes_cli.config import _env_line_defines_key
-
-        line = f"{prefix}Path=C:\\Windows\\System32\n"
-        assert _env_line_defines_key(line, "PATH", is_windows=True)
-        assert not _env_line_defines_key(line, "PATH", is_windows=False)
-
-    @pytest.mark.platforms("windows")
-    @pytest.mark.parametrize(
-        "protected_key",
-        [
-            # Hermes_Yolo_Mode went with the approval subsystem (#663); the
-            # denylist entry no longer exists to reject.
-            "Hermes_Optional_Mcps",
-            "Hermes_Copilot_Acp_Command",
-            "Hermes_Copilot_Acp_Args",
-        ],
-    )
-    def test_windows_writer_rejects_mixed_case_protected_name(self, protected_key):
-        with pytest.raises(ValueError, match="denylist"):
-            save_env_value(protected_key, "1")
 
 
 

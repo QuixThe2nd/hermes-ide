@@ -613,12 +613,8 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
     runner_argv.extend(argv)
-    if sys.platform == "win32":
-        # The tracked local backend uses Git Bash on native Windows: forward slashes keep drive
-        # paths executable there; backslash paths are parsed as command names (exit 127).
-        runner_argv = [part.replace("\\", "/") for part in runner_argv]
     if author:
-        # Inserted after the slash rewrite: JSON escapes are backslashes too.
+        # JSON escapes are backslashes too; keep them intact in the author blob.
         runner_argv[3:3] = ["--author", json.dumps(author, separators=(",", ":"))]
     return shlex.join(runner_argv)
 

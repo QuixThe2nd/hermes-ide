@@ -407,7 +407,6 @@ class TestRunBoundedAsync:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
 class TestKillProcessTree:
     def test_kills_descendants_of_session_leader(self, tmp_path):
         """A child spawned with start_new_session must die with its own child.

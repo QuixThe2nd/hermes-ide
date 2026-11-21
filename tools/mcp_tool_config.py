@@ -73,14 +73,6 @@ def _write_stderr_log_header(server_name: str) -> None:
 # Env vars safe to pass to stdio subprocesses (no secrets).
 _SAFE_ENV_KEYS = frozenset({"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR"})
 
-# Windows process/location vars needed by launcher-style tools (e.g. Docker Desktop's MCP plugin discovery).
-_SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
-    "ALLUSERSPROFILE", "APPDATA", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)",
-    "COMMONPROGRAMW6432", "COMPUTERNAME", "COMSPEC", "HOMEDRIVE", "HOMEPATH",
-    "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "OS", "PATHEXT", "PROCESSOR_ARCHITECTURE",
-    "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PUBLIC",
-    "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERDOMAIN", "USERNAME",
-    "USERPROFILE", "WINDIR"})
 
 # ${VAR_NAME} interpolation; any non-} chars allowed so MY-VAR / my.var work.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -116,7 +108,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     from hermes_cli.env_loader import secret_source_names
     env = {
         key: value for key, value in os.environ.items()
-        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
+        if key in _SAFE_ENV_KEYS or key.startswith("XDG_")}
     # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
     # holds only the LAUNCH profile's values, so the value must come from the active profile's
     # secret scope; a profile that lacks the name gets nothing, never another profile's token.
@@ -130,35 +122,18 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return delegated_child_subprocess_env(env)
 
 
-def _which_with_config_pathext(command: str, path_arg, env: dict):
-    """``shutil.which`` retried under the config env's PATHEXT (Windows only; ``which`` uses the PARENT's)."""
-    cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
-    if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
-        return None
-    saved = os.environ.get("PATHEXT")
-    try:
-        os.environ["PATHEXT"] = cfg_pathext
-        return shutil.which(command, path=path_arg)
-    finally:
-        if saved is None:
-            os.environ.pop("PATHEXT", None)
-        else:
-            os.environ["PATHEXT"] = saved
-
-
-def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+def _node_fallback(command: str) -> str:
     """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
 
-    The managed tree comes from ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into
-    ``<home>/node/bin``) under the active profile's ``get_hermes_home()``; on Windows the real files are
-    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``)."""
+    The managed tree comes from ``iter_hermes_node_dirs`` (POSIX into ``<home>/node/bin``)
+    under the active profile's ``get_hermes_home()``."""
     from hermes_constants import get_hermes_home, iter_hermes_node_dirs
     home = os.path.expanduser("~")
     # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
     # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
     directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())), os.path.join(home, ".local", "bin"),
                    os.path.join(os.sep, "usr", "local", "bin")]
-    candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
+    candidates = (c for d in directories for c in _npx_bin_candidates(d, command))
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 
 
@@ -169,8 +144,6 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     if os.sep not in resolved_command:
         path_arg = resolved_env.get("PATH")
         which_hit = shutil.which(resolved_command, path=path_arg)
-        if which_hit is None and sys.platform == "win32" and resolved_env:
-            which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
@@ -181,15 +154,8 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
-def _npx_bin_candidates(bin_dir: str, name: str, *, windows: Optional[bool] = None) -> list:
-    """Launcher paths to try for *name* inside an npx cache's ``.bin``, in order. On Windows that
-    directory holds the extensionless sh script plus ``<name>.cmd``/``<name>.ps1``; the sh one
-    cannot be spawned there and ``os.access(X_OK)`` is only an existence check, so select by
-    extension (same precedence as ``hermes_constants._candidate_node_command_names``). ``windows``
-    is injectable so the branch is testable without patching ``os.name`` process-wide."""
-    is_windows = os.name == "nt" if windows is None else windows
-    if is_windows:
-        return [os.path.join(bin_dir, name + ext) for ext in (".cmd", ".exe")]
+def _npx_bin_candidates(bin_dir: str, name: str) -> list:
+    """Launcher paths to try for *name* inside an npx cache's ``.bin``."""
     return [os.path.join(bin_dir, name)]
 
 

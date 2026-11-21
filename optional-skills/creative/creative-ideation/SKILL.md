@@ -5,7 +5,7 @@ description: "Generate ideas via named methods from creative practice."
 version: 2.1.0
 author: SHL0MS
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Creative, Ideation, Brainstorming, Methods, Inspiration]

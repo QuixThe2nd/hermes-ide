@@ -81,7 +81,7 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
     from pm.lock import Facts
 
     store = paths.store_root()
-    entry = "llamacpp-cpu-10362-win32-x64"
+    entry = "llamacpp-cpu-10362-linux-x64"
     (store / entry).mkdir(parents=True, exist_ok=True)
     Facts(store / "facts.json").record("llamacpp-cpu", "10362", entry, {}, store)
 

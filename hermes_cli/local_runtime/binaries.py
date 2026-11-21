@@ -21,12 +21,6 @@ logger = logging.getLogger(__name__)
 
 RELEASE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/{asset}"
 
-# Windows CUDA zips ship per CUDA major; the runtime zip must be paired with its cudart zip so
-# end users need no toolkit. 13.3 verified on 13.1 and 13.2 drivers.
-_WIN_CUDA_VERSION = "13.3"
-# arm64 Windows CUDA prebuilts landed upstream (~b1036x) on CUDA 13.4. Tags at or before b10290
-# don't have them; resolution succeeds and the download 404s honestly if a user pins backward.
-_WIN_CUDA_VERSION_ARM64 = "13.4"
 
 
 def default_tag() -> str:
@@ -90,16 +84,10 @@ def installed_tags() -> list[str]:
 
 
 def _host_os_arch() -> tuple[str, str]:
-    """(os, arch) normalized to release-asset vocabulary. PITFALL: PROCESSOR_ARCHITECTURE lies
-    under x64 emulation on ARM64 Windows, and platform.machine() reads the same env on some
-    Pythons — so on Windows prefer PROCESSOR_IDENTIFIER's text when present."""
+    """(os, arch) normalized to release-asset vocabulary."""
     system = platform.system().lower()
-    os_name = {"windows": "win", "darwin": "macos", "linux": "ubuntu"}.get(system, system)
+    os_name = {"darwin": "macos", "linux": "ubuntu"}.get(system, system)
     arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
-    if os_name == "win":
-        ident = os.environ.get("PROCESSOR_IDENTIFIER", "").lower()
-        if "armv8" in ident or "arm " in ident:
-            arch = "arm64"
     return os_name, arch
 
 
@@ -118,20 +106,12 @@ def select_backend(gpu_vendor: str | None, os_name: str | None = None) -> str:
     return "cpu"
 
 
-# Per-OS (human label, {backend: asset-name templates}). Windows CUDA pairs the runtime zip with
-# its cudart zip; ubuntu ships tarballs, win ships zips.
+# Per-OS (human label, {backend: asset-name templates}). Ubuntu ships tarballs.
 _ASSET_TEMPLATES = {
     "ubuntu": ("linux", {
         "vulkan": ["llama-{tag}-bin-ubuntu-vulkan-{arch}.tar.gz"],
         "hip": ["llama-{tag}-bin-ubuntu-rocm-7.2-{arch}.tar.gz"],
         "cpu": ["llama-{tag}-bin-ubuntu-{arch}.tar.gz"],
-    }),
-    "win": ("windows", {
-        "cuda": ["llama-{tag}-bin-win-cuda-{cuda_ver}-{arch}.zip",
-                 "cudart-llama-bin-win-cuda-{cuda_ver}-{arch}.zip"],
-        "vulkan": ["llama-{tag}-bin-win-vulkan-x64.zip"],
-        "hip": ["llama-{tag}-bin-win-hip-radeon-x64.zip"],
-        "cpu": ["llama-{tag}-bin-win-cpu-{arch}.zip"],
     }),
 }
 
@@ -153,8 +133,6 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
         # use vulkan; the resolver is honest about it.
         raise BinaryResolutionError(
             f"no prebuilt linux CUDA asset at {tag}; use vulkan/cpu or a source build")
-    if os_name == "win" and backend == "vulkan" and arch == "arm64":
-        raise BinaryResolutionError(f"no win-vulkan-arm64 asset at {tag}")
     label, templates = _ASSET_TEMPLATES[os_name]
     if backend not in templates:
         raise BinaryResolutionError(f"unsupported {label} backend {backend}")
@@ -166,11 +144,9 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
             if arch != "x64":
                 raise BinaryResolutionError(f"no {label} HIP {arch} asset at {tag}")
             rocm_ver = "10.0" if build >= 10767 else "7.14"
-            extension = "zip" if os_name == "win" else "tar.gz"
             return AssetPlan(tag, backend, [
-                f"llama-{tag}-bin-{os_name}-rocm-{rocm_ver}-{arch}.{extension}"])
-    cuda_ver = _WIN_CUDA_VERSION_ARM64 if arch == "arm64" else _WIN_CUDA_VERSION
-    return AssetPlan(tag, backend, [t.format(tag=tag, arch=arch, cuda_ver=cuda_ver)
+                f"llama-{tag}-bin-{os_name}-rocm-{rocm_ver}-{arch}.tar.gz"])
+    return AssetPlan(tag, backend, [t.format(tag=tag, arch=arch)
                                     for t in templates[backend]])
 
 

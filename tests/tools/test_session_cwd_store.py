@@ -62,10 +62,6 @@ class TestPostCommandDualWrite:
             lambda: {"env_type": "local", "cwd": "/default", "timeout": 60,
                      "lifetime_seconds": 3600},
         )
-        monkeypatch.setattr(
-            tt, "_check_all_guards",
-            lambda command, env_type, **kwargs: {"approved": True},
-        )
         return json.loads(tt.terminal_tool(command="cd /new/dir", task_id=task_id))
 
     def test_cd_result_is_recorded_under_the_session_key(self, monkeypatch):
@@ -243,10 +239,6 @@ class TestCommandCwdReadsTheRecord:
             tt, "_get_env_config",
             lambda: {"env_type": "local", "cwd": "/default", "timeout": 60,
                      "lifetime_seconds": 3600},
-        )
-        monkeypatch.setattr(
-            tt, "_check_all_guards",
-            lambda command, env_type, **kwargs: {"approved": True},
         )
 
         json.loads(tt.terminal_tool(command="cd /project", task_id="sess-a"))

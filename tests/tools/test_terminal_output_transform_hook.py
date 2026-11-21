@@ -36,7 +36,6 @@ def _run_terminal(
     output,
     returncode=0,
     invoke_hook=_UNSET,
-    approval=None,
     command="echo hello",
 ):
     mock_env = MagicMock()
@@ -46,11 +45,6 @@ def _run_terminal(
         terminal_tool_module, "_get_env_config", lambda: _make_env_config(tmp_path)
     )
     monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(
-        terminal_tool_module,
-        "_check_all_guards",
-        lambda *_args, **_kwargs: approval or {"approved": True},
-    )
     monkeypatch.setitem(terminal_tool_module._active_environments, "default", mock_env)
     monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
 
@@ -103,11 +97,6 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
         terminal_tool_module, "_get_env_config", lambda: _make_env_config(tmp_path)
     )
     monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(
-        terminal_tool_module,
-        "_check_all_guards",
-        lambda *_args, **_kwargs: {"approved": True},
-    )
 
     sudo_input_lengths = []
     hook_inputs = []
@@ -121,8 +110,10 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
             hook_inputs.append(kwargs["output"])
         return []
 
+    # Production reads terminal_tool's import-time binding (terminal_tool.py
+    # `from tools.terminal_tool_sudo import ...`), so patch where it reads.
     monkeypatch.setattr(
-        "tools.terminal_tool_sudo._sudo_wrong_password_failure", _sudo_spy
+        terminal_tool_module, "_sudo_wrong_password_failure", _sudo_spy
     )
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook_spy)
 
@@ -149,26 +140,17 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
     assert len(result["output"]) <= limit
 
 
-def test_terminal_output_transform_does_not_change_approval_or_exit_code_meaning(monkeypatch, tmp_path):
-    approval = {
-        "approved": True,
-        "user_approved": True,
-        "description": "dangerous command",
-    }
+def test_terminal_output_transform_does_not_change_exit_code_meaning(monkeypatch, tmp_path):
     result, _mock_env = _run_terminal(
         monkeypatch,
         tmp_path,
         output="original output",
         returncode=1,
-        approval=approval,
         command="grep foo bar",
         invoke_hook=lambda hook_name, **kwargs: ["replaced output"],
     )
 
     assert result["output"] == "replaced output"
-    assert result["approval"] == (
-        "Command required approval (dangerous command) and was approved by the user."
-    )
     assert result["exit_code_meaning"] == "No matches found (not an error)"
 
 

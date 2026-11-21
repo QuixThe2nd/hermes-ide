@@ -374,7 +374,7 @@ def _node_npm_binary(name: str) -> Optional[str]:
 
         for d in path_value.split(os.pathsep):
             if d:
-                candidate = Path(d) / ("npm.cmd" if os.name == "nt" else name)
+                candidate = Path(d) / name
                 if candidate.is_file():
                     return str(candidate)
     import shutil as _shutil

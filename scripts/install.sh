@@ -568,13 +568,6 @@ detect_os() {
             OS="macos"
             DISTRO="macos"
             ;;
-        CYGWIN*|MINGW*|MSYS*)
-            OS="windows"
-            DISTRO="windows"
-            log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
-            exit 1
-            ;;
         *)
             OS="unknown"
             DISTRO="unknown"
@@ -849,8 +842,7 @@ check_python() {
     fi
 }
 
-# Best-effort automatic git provisioning, mirroring install.ps1's Install-Git
-# (which downloads PortableGit on Windows). git is required to clone the repo,
+# Best-effort automatic git provisioning. git is required to clone the repo,
 # and a fresh "normie" machine with no developer tools won't have it. Returns 0
 # if git is available afterwards, non-zero otherwise (caller prints manual
 # instructions and aborts).
@@ -938,7 +930,7 @@ check_git() {
         fi
     fi
 
-    # Try to install it automatically before giving up (parity with install.ps1).
+    # Try to install it automatically before giving up.
     log_info "Attempting to install Git automatically..."
     if attempt_install_git; then
         GIT_VERSION=$(git --version | awk '{print $3}')
@@ -3056,7 +3048,7 @@ require_install_dir() {
     cd "$INSTALL_DIR"
 }
 
-# Installer stage protocol, shared with install.ps1 for programmatic drivers.
+# Installer stage protocol for programmatic drivers.
 run_stage_body() {
     local stage="$1"
 

@@ -479,25 +479,21 @@ def mark_lanes_failed(directory: Path, error: str) -> None:
 # Locking
 # ---------------------------------------------------------------------------
 
-# fcntl is Unix-only; on Windows fall back to msvcrt. A platform with neither
-# primitive is the one documented degraded mode: _job_lock() then provides
-# in-process locking only — the same shape as cron/jobs.py. Everywhere else
-# the cross-process lock is mandatory and fails closed (see StatusLockError).
+# fcntl is Unix-only; a platform without it is the one documented degraded
+# mode: _job_lock() then provides in-process locking only — the same shape as
+# cron/jobs.py. Everywhere else the cross-process lock is mandatory and fails
+# closed (see StatusLockError).
 try:
-    import fcntl  # windows-footgun: ok — msvcrt fallback below
+    import fcntl
 except ImportError:  # pragma: no cover — POSIX always provides fcntl
     fcntl = None
-try:
-    import msvcrt  # windows-footgun: ok — POSIX never imports this branch
-except ImportError:  # pragma: no cover — Windows-only module
-    msvcrt = None
 
 
 class StatusLockError(RuntimeError):
     """A status transaction was refused: the cross-process lock was not owned.
 
     Raised before any read/guard/mutate/write runs, when a locking primitive
-    exists (POSIX ``fcntl`` or Windows ``msvcrt``) but the exclusive
+    exists (POSIX ``fcntl``) but the exclusive
     ``.status.lock`` could not be taken. Callers must treat the transaction
     as *not performed* — never as a refused transition (``None``) and never
     as success. The kernel releases the flock when its holder dies, so a
@@ -536,13 +532,13 @@ def _job_lock(directory: Path):
     replace still provides the durability (a crashed writer leaves a whole
     file); the lock serializes the transaction, it does not replace the write.
 
-    Mirrors the fcntl + msvcrt pattern in ``cron/jobs.py`` and
+    Mirrors the flock pattern in ``cron/jobs.py`` and
     ``tools/memory_tool.py``. The flock poll is bounded and **fails closed**:
     a timeout — or any other acquisition failure while a primitive exists —
     raises :class:`StatusLockError` before the transaction starts, because
     proceeding on a stale snapshot is exactly how one writer's update
-    silently overwrites another's. The only degraded mode is a platform with
-    neither ``fcntl`` nor ``msvcrt``. The kernel releases the flock when its
+    silently overwrites another's. The only degraded mode is a platform
+    without ``fcntl``. The kernel releases the flock when its
     holder dies, so a crashed process can never wedge the lock permanently.
     Re-entrant per thread like the cron lock, so a nested acquisition reuses
     the held lock instead of deadlocking on its own flock.
@@ -585,8 +581,7 @@ def _job_lock(directory: Path):
 def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
     """Take the cross-process advisory lock; return its releaser.
 
-    Fails closed. When a locking primitive exists (POSIX ``fcntl``, Windows
-    ``msvcrt``) the caller may only run its read-modify-write transaction
+    Fails closed. When a locking primitive exists (POSIX ``fcntl``) the caller
     *owning* this lock, so every refusal — a bounded-acquisition timeout, an
     unopenable lock file, or an OS-level acquisition error — raises
     :class:`StatusLockError` (a timeout raises :class:`StatusLockTimeout`)
@@ -595,7 +590,7 @@ def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
     update. ``None``, the documented degraded mode, is returned only on a
     platform with neither primitive.
     """
-    if fcntl is None and msvcrt is None:
+    if fcntl is None:
         return None
     lock_path = directory / _LOCK_FILE_NAME
     try:
@@ -604,16 +599,7 @@ def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
         raise StatusLockError(f"could not open the status lock {lock_path}: {exc}") from exc
     acquired = False
     try:
-        if fcntl is not None:
-            _flock_exclusive(handle, lock_path)
-        else:
-            try:
-                handle.seek(0)
-                getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-            except OSError as exc:
-                raise StatusLockError(
-                    f"could not acquire the status lock {lock_path}: {exc}"
-                ) from exc
+        _flock_exclusive(handle, lock_path)
         acquired = True
     finally:
         if not acquired:
@@ -624,11 +610,7 @@ def _acquire_status_file_lock(directory: Path) -> Optional[Callable[[], None]]:
 
     def _release() -> None:
         try:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            else:
-                handle.seek(0)
-                getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:
             pass
         finally:

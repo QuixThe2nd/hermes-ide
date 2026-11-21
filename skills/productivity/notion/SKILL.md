@@ -4,7 +4,7 @@ description: "Notion API + ntn CLI: pages, databases, markdown, Workers."
 version: 2.0.0
 author: community
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 prerequisites:
   env_vars: [NOTION_API_KEY]
 metadata:
@@ -17,8 +17,8 @@ metadata:
 
 Talk to Notion two ways. Same integration token works for both — pick by what's available.
 
-◆ **`ntn` CLI** — Notion's official CLI. Shorter syntax, one-line file uploads, required for Workers. macOS + Linux only as of May 2026 (Windows support "coming soon"). **Default when installed.**
-◆ **HTTP + curl** — works everywhere including Windows. **Default fallback** when `ntn` isn't installed.
+◆ **`ntn` CLI** — Notion's official CLI. Shorter syntax, one-line file uploads, required for Workers. **Default when installed.**
+◆ **HTTP + curl** — works everywhere. **Default fallback** when `ntn` isn't installed.
 
 ## Setup
 
@@ -61,8 +61,6 @@ else
   # fall back to curl
 fi
 ```
-
-Windows users: skip step 2 entirely until native `ntn` ships — Path B works fine. If you want CLI ergonomics now, install `ntn` inside WSL2.
 
 ## API Basics
 
@@ -151,7 +149,7 @@ Compare to the 3-step HTTP flow (create upload → PUT bytes → reference).
 | `NOTION_KEYRING=0` | File-based creds at `~/.config/notion/auth.json` instead of OS keychain |
 | `NOTION_WORKSPACE_ID` | Skip the workspace picker prompt |
 
-## Path B — HTTP + curl (cross-platform, default on Windows)
+## Path B — HTTP + curl (cross-platform)
 
 All requests share this pattern:
 
@@ -161,8 +159,6 @@ curl -s -X GET "https://api.notion.com/v1/..." \
   -H "Notion-Version: 2025-09-03" \
   -H "Content-Type: application/json"
 ```
-
-On Windows the `curl` shipped with Windows 10+ works as-is. PowerShell users can also use `Invoke-RestMethod`.
 
 ### Search
 ```bash
@@ -335,7 +331,6 @@ Workers are TypeScript programs Notion hosts for you. One worker can expose any 
 
 **Plan / platform gating:**
 - CLI works on all plans. **Deploying Workers requires Business or Enterprise.**
-- `ntn` is macOS/Linux only as of May 2026. Windows users need WSL2 or to wait for native support.
 - Free through August 11, 2026; metered on Notion credits after.
 
 ### Minimal Worker
@@ -430,13 +425,13 @@ Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks 
 
 ## Choosing the Right Path
 
-| Task | mac / Linux | Windows |
-|---|---|---|
-| Read/write pages, search, query databases | `ntn api ...` | curl |
-| Read a page for an agent to summarize | `ntn api v1/pages/{id}/markdown` | curl `/markdown` endpoint |
-| Upload a file | `ntn files create < file` | 3-step HTTP flow |
-| One-off API exploration | `ntn api ...` | curl |
-| Build a sync / webhook / agent tool hosted by Notion | `ntn workers ...` | WSL2 + `ntn workers ...` |
+| Task | mac / Linux |
+|---|---|
+| Read/write pages, search, query databases | `ntn api ...` |
+| Read a page for an agent to summarize | `ntn api v1/pages/{id}/markdown` |
+| Upload a file | `ntn files create < file` |
+| One-off API exploration | `ntn api ...` |
+| Build a sync / webhook / agent tool hosted by Notion | `ntn workers ...` |
 
 ## Notes
 

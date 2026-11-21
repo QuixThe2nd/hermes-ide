@@ -104,8 +104,8 @@ def drain_restart_receipt_for_record(record: Any) -> Optional[Dict[str, Any]]:
     if pid == os.getpid():
         return None
     # Liveness via the shared non-signalling tri-state probe. Never
-    # ``os.kill(pid, 0)``: it raises OverflowError for oversized JSON ints
-    # and on Windows signals the target's whole console group. The helper
+    # ``os.kill(pid, 0)``: it raises OverflowError for oversized JSON ints.
+    # The helper
     # returns False ONLY for a kernel-confirmed NoSuchProcess (proven dead)
     # and None for an unavailable/erroring backend — unknown is never dead.
     try:

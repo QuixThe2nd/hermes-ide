@@ -4,7 +4,7 @@ description: "Premium scroll-driven landing pages; scroll = timeline."
 version: 1.0.0
 author: 'nateherkai (upstream scroll-craft), ported by Hermes Agent'
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [web-development, landing-page, scrollytelling, animation, design, frontend]

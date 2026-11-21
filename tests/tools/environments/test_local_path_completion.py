@@ -6,14 +6,11 @@ installed there were ``command not found`` from the terminal tool (#111778).
 """
 
 import os
-import sys
 
-import pytest
 
 from tools.environments import local as local_mod
 from tools.environments.local import _append_missing_sane_path_entries, _make_run_env
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH completion only")
 
 
 def test_existing_user_local_bin_appended_after_inherited_entries(monkeypatch, tmp_path):
@@ -21,7 +18,6 @@ def test_existing_user_local_bin_appended_after_inherited_entries(monkeypatch, t
     local_bin.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
     monkeypatch.setattr(local_mod, "_managed_runtime_path_entries", lambda: [])
     monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: None)
 

@@ -24,8 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-
 logger = logging.getLogger(__name__)
 
 
@@ -260,13 +258,6 @@ def _allow_lazy_installs() -> bool:
     return True
 
 
-def _unsupported_feature_reason(feature: str) -> Optional[str]:
-    """Platform capability gate (not policy): why a feature cannot work on this host, or None."""
-    if sys.platform == "win32" and feature == "platform.matrix":
-        return ("unsupported on Windows: Matrix E2EE depends on python-olm, which has no Windows wheel and "
-                "requires make + libolm to build from sdist. Run Hermes under WSL to use Matrix on Windows.")
-    return None
-
 
 def _spec_is_safe(spec: str) -> bool:
     """Reject pip specs that contain URLs, paths, or shell metacharacters."""
@@ -400,7 +391,7 @@ def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> 
 
 def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     # _SUBPROCESS_KW carries stdin=DEVNULL  # noqa: subprocess-stdin
-    return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
+    return subprocess.run(cmd, **_SUBPROCESS_KW, **kw)
 
 
 def _uv_binary() -> Optional[str]:
@@ -533,8 +524,6 @@ def ensure(feature: str, *, prompt: bool = True, explicit_update: bool = False) 
     missing = feature_missing(feature)
     if not missing:
         return
-    if unsupported := _unsupported_feature_reason(feature):
-        raise FeatureUnavailable(feature, missing, unsupported)
     # Package-manager installs (NixOS etc.) have read-only site-packages: fail fast instead of burning
     # ~15s on ensurepip — unless a durable target is configured. The reason MUST start with
     # "unsupported ": _refresh_features classifies skips by that prefix.
@@ -663,9 +652,6 @@ def _refresh_features(features: list[str], *, prompt: bool, restoring: bool) -> 
             continue
         if not feature_missing(feature):
             results[feature] = "current"
-            continue
-        if unsupported := _unsupported_feature_reason(feature):
-            results[feature] = f"skipped: {unsupported}"
             continue
         try:
             ensure(

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
 def test_status_finds_user_local_driver_when_path_omits_it(tmp_path, monkeypatch):
     """Desktop status must agree with the runtime resolver, not bare PATH."""
     from tools.computer_use import permissions

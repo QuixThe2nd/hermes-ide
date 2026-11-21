@@ -21,28 +21,15 @@ _INSTALL_ID_LOCK, _INSTALL_ID_PUBLICATION_LOCK = threading.Lock(), threading.Loc
 
 @contextlib.contextmanager
 def _install_id_file_lock(root: Path):
-    """Serialize identity publication across processes on POSIX and Windows."""
+    """Serialize identity publication across processes."""
     fd = os.open(root / ".install_id.lock", os.O_RDWR | os.O_CREAT, 0o600)
-    windows = os.name == "nt"
     try:
-        if windows:
-            import msvcrt
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
-                os.fsync(fd)
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         try:
-            if windows:
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -63,7 +50,7 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
 
     ``None`` = neither readable nor persistable; an ephemeral id would violate the authority/registry contract.
     """
-    # A reader can collide with the first atomic replace on Windows. Serialize
+    # A reader can collide with the first atomic replace. Serialize
     # threads before reading, and recheck an unavailable file under the OS lock.
     root = get_default_hermes_root() if root is None else root
     path = root / _INSTALL_ID_FILENAME
@@ -76,8 +63,8 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
     try:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(root)
-        # Windows byte-range locks can report a same-process conflict instead of waiting for another
-        # thread: serialize threads here, then keep the file lock as the cross-process publication fence.
+        # flock() serializes processes, not threads of this one: serialize threads
+        # here, then keep the file lock as the cross-process publication fence.
         with _INSTALL_ID_PUBLICATION_LOCK, _install_id_file_lock(root):
             existing, mint = _read_existing(path)
             if not mint:

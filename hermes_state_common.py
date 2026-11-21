@@ -982,7 +982,7 @@ END;
 # concurrent rebuilds corrupted state.db in production.  Gates `rebuild_fts()`, `_rebuild_fts_indexes()`,
 # `_recover_stale_fts()`; the chunked backfill (`fts_rebuild_step`) is deliberately NOT routed through it (it
 # claims progress under SQLite transaction authority).  Mirrors `hermes_state_repair._cross_process_repair_lock`:
-# portable (msvcrt/flock), bounded wait, FAIL CLOSED; orphaned-fd holders (see `_acquire_db_flock`) are broken
+# flock-based, bounded wait, FAIL CLOSED; orphaned-fd holders (see `_acquire_db_flock`) are broken
 # only when provably dead, indeterminate liveness defers.  `<db>.fts_rebuild.lock` is distinct from
 # `<db>.repair.lock` (offline schema surgery, minutes in VACUUM).  Lives here: mixins cannot import hermes_state.
 
@@ -997,8 +997,8 @@ END;
 # `SessionSchemaMixin._recover_stale_fts()`. The chunked deferred backfill (`fts_rebuild_step`) is
 # deliberately NOT routed through it — it claims progress under `_execute_write`'s SQLite transaction
 # authority and is intentionally multi-process. Semantics mirror `hermes_state_repair._cross_process_repair_lock`
-# (the schema- surgery authority): portable (msvcrt on Windows, flock elsewhere), bounded wait, and FAIL
-# CLOSED — a caller that cannot acquire the lock must NOT rebuild. The kernel drops both lock types when the
+# (the schema- surgery authority): flock-based, bounded wait, and FAIL
+# CLOSED — a caller that cannot acquire the lock must NOT rebuild. The kernel drops the lock when the
 # holder dies — UNLESS a forked child inherited the lock fd (flock rides the open file description, which
 # fork() duplicates), in which case the orphaned descriptor holds the lock forever (issue #100108).
 # `_acquire_db_flock` therefore records the holder's pid + start time under the lock and, when the recorded
@@ -1012,12 +1012,11 @@ logger = logging.getLogger("hermes_state")
 
 _FTS_REBUILD_LOCK_TIMEOUT_SECONDS = 120.0
 _FTS_REBUILD_LOCK_POLL_SECONDS = 0.1
-_IS_WINDOWS = sys.platform == "win32"
 # Post-break re-acquire budget: the fresh inode is contended only by live processes — never the full timeout.
 _LOCK_BREAK_REACQUIRE_SECONDS = 5.0
 
-# "Another process holds the lock": flock → EWOULDBLOCK/EAGAIN, msvcrt.locking → EACCES (EDEADLK when its retry
-# gives up).  Anything else (ESTALE, ENOTSUP, ENOLCK, EIO) is a persistent failure polling cannot fix.
+# "Another process holds the lock": flock → EWOULDBLOCK/EAGAIN.  Anything else (ESTALE, ENOTSUP,
+# ENOLCK, EIO) is a persistent failure polling cannot fix.
 _LOCK_CONTENTION_ERRNOS = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK, errno.EDEADLK}
 
 
@@ -1171,25 +1170,6 @@ def _describe_lock_holder(record) -> str:
     return f"pid {record.get('pid')}{age}"
 
 
-def _acquire_msvcrt_lock(lock_path, handle, timeout):
-    """Windows counterpart of ``_acquire_db_flock`` (no orphan break); same True / False / None contract."""
-    import msvcrt
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            return True
-        except (BlockingIOError, OSError) as exc:
-            if not is_advisory_lock_contention(exc):
-                logger.warning("Could not acquire FTS rebuild lock %s (%s) — deferring on a non-contention error.",
-                               lock_path, exc)
-                return None
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
-
-
 @contextlib.contextmanager
 def fts_rebuild_admission(db_path, *, timeout_seconds=None):
     """Serialize full structural FTS rebuilds on *db_path* across processes.  Yields True when this process
@@ -1214,16 +1194,13 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
         return
     acquired = False
     try:
-        if _IS_WINDOWS:
-            acquired = _acquire_msvcrt_lock(lock_path, handle, timeout)
-        else:
-            acquired, handle = _acquire_db_flock(
-                lock_path, handle, timeout, _FTS_REBUILD_LOCK_POLL_SECONDS, "FTS rebuild lock")
+        acquired, handle = _acquire_db_flock(
+            lock_path, handle, timeout, _FTS_REBUILD_LOCK_POLL_SECONDS, "FTS rebuild lock")
         if acquired is None:
             # Already logged with the real errno; "held by another process" would be a lie.
             acquired = False
         elif not acquired:
-            record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
+            record = _read_lock_holder_record(handle)
             if timeout <= 0:
                 # Non-blocking probe from an in-process retry: keep it quiet.
                 logger.info("FTS rebuild lock %s is busy — deferring this retry "
@@ -1237,11 +1214,7 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
     finally:
         try:
             with contextlib.suppress(OSError):  # best-effort release
-                if acquired and _IS_WINDOWS:
-                    import msvcrt
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                elif acquired:
+                if acquired:
                     import fcntl
                     _clear_lock_holder_record(handle)
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

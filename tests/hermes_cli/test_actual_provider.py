@@ -120,7 +120,9 @@ def test_actual_runtime_uses_hosted_default(monkeypatch):
 
 def test_actual_runtime_repairs_stale_responses_mode(monkeypatch, caplog):
     _clear_actual_env(monkeypatch)
-    caplog.set_level(logging.INFO, logger="hermes_cli.auth")
+    # Capture at the logger that EMITS the repair line (hermes_cli.runtime_provider);
+    # relying on an unrelated hermes_cli.main import to raise the root level lost the record.
+    caplog.set_level(logging.INFO, logger="hermes_cli.runtime_provider")
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
     monkeypatch.setattr(
         rp,

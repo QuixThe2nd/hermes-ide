@@ -315,14 +315,14 @@ async def _tick_socket_handler(reader: asyncio.StreamReader, writer: asyncio.Str
 
 
 def _sweep_stale_tick_sockets(own_path: Path) -> None:
-    """Unlink loop-tick socket nodes left by dead PIDs (POSIX only; never raises).
+    """Unlink loop-tick socket nodes left by dead PIDs (never raises).
     create_unix_server removes a leftover node at OUR path (os._exit / SIGKILL skip the
-    finally-unlink) but not SIBLING nodes from other dead PIDs. os.kill(pid, 0) is a liveness
-    probe only on POSIX (Windows would TerminateProcess)."""
+    finally-unlink) but not SIBLING nodes from other dead PIDs. os.kill(pid, 0) is a
+    liveness probe."""
     try:
         for stale in (p for p in own_path.parent.glob("gateway.loop-tick.*.sock") if p != own_path):
             try:
-                os.kill(int(stale.name.split(".")[-2]), 0)  # windows-footgun: ok — POSIX-only
+                os.kill(int(stale.name.split(".")[-2]), 0)
             except (ValueError, IndexError, OSError):
                 stale.unlink(missing_ok=True)
     except Exception:
@@ -343,30 +343,20 @@ async def loop_heartbeat_forever(
     require the witness to agree before classifying WEDGED."""
     interval = _coerce_float(interval_s, DEFAULT_HEARTBEAT_INTERVAL_S, floor=1.0)
     # Arm the witness, best-effort: a failed bind only disables it and the payload flag makes
-    # probes classify UNKNOWN, never WEDGED (drain backstop stays). asyncio AF_UNIX is POSIX-only
-    # (ungated it raised AttributeError on native Windows), so non-POSIX binds TCP loopback and
-    # publishes ``loop_tick_tcp_port``.
-    tick_server = tick_socket_path = tick_tcp_port = None
+    # probes classify UNKNOWN, never WEDGED (drain backstop stays).
+    tick_server = tick_socket_path = None
     try:
-        if os.name == "posix":
-            tick_socket_path = get_loop_tick_socket_path(home)
-            tick_socket_path.parent.mkdir(parents=True, exist_ok=True)
-            _sweep_stale_tick_sockets(tick_socket_path)
-            tick_server = await asyncio.start_unix_server(_tick_socket_handler,
-                                                          path=str(tick_socket_path))
-        else:
-            tick_server = await asyncio.start_server(_tick_socket_handler, host="127.0.0.1", port=0)
-            for _s in tick_server.sockets or []:
-                with contextlib.suppress(Exception):
-                    if isinstance(_sname := _s.getsockname(), tuple) and len(_sname) >= 2:
-                        tick_tcp_port = int(_sname[1])
-                        break
+        tick_socket_path = get_loop_tick_socket_path(home)
+        tick_socket_path.parent.mkdir(parents=True, exist_ok=True)
+        _sweep_stale_tick_sockets(tick_socket_path)
+        tick_server = await asyncio.start_unix_server(_tick_socket_handler,
+                                                      path=str(tick_socket_path))
     except Exception:
-        tick_server = tick_tcp_port = None
+        tick_server = None
         logger.warning("Loop tick socket unavailable — liveness probes will have no "
                        "loop-scheduling witness and will not escalate on a stale heartbeat",
                        exc_info=True)
-    extra = {"loop_tick_socket": tick_server is not None, "loop_tick_tcp_port": tick_tcp_port}
+    extra = {"loop_tick_socket": tick_server is not None}
     try:
         while True:  # first write is immediate so monitors see a fresh file at once
             try:

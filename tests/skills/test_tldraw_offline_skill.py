@@ -109,5 +109,5 @@ def test_main_js_matches_verified_contract(main_js: str):
 def test_platforms_declared(skill_text: str):
     m = re.search(r"^platforms: (.*)$", skill_text, re.MULTILINE)
     assert m, "platforms field required (cross-platform desktop app)"
-    for os_name in ("linux", "macos", "windows"):
+    for os_name in ("linux", "macos"):
         assert os_name in m.group(1)

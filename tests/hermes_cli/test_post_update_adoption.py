@@ -82,8 +82,8 @@ def test_sealed_tree_untouched(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="chmod-based read-only dirs are not enforceable on Windows or as root",
+    os.geteuid() == 0,
+    reason="chmod-based read-only dirs are not enforceable as root",
 )
 def test_read_only_tree_fails_soft(blessed_checkout):
     """nix-like read-only tree: debug-log skip, never a crash."""

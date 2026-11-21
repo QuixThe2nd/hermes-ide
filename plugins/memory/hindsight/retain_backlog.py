@@ -232,8 +232,7 @@ def _source_fingerprint() -> str:
 
 
 def _prebuilt_binary() -> str | None:
-    exe = "retainbacklog.exe" if os.name == "nt" else "retainbacklog"
-    path = _GO_PACKAGE_DIR / "bin" / exe
+    path = _GO_PACKAGE_DIR / "bin" / "retainbacklog"
     if path.is_file() and os.access(path, os.X_OK):
         return str(path)
     return None

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 
 import pytest
@@ -33,7 +32,6 @@ def _patch_codesign(monkeypatch, proc):
     monkeypatch.setattr(cua_backend.subprocess, "run", lambda *args, **kwargs: proc)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="macOS bundle paths use POSIX separators")
 def test_resolve_app_path_follows_real_symlink_and_is_idempotent(tmp_path):
     app = tmp_path / "CuaDriver.app"
     executable = app / "Contents" / "MacOS" / "cua-driver"

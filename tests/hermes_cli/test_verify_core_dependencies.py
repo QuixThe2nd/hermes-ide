@@ -9,15 +9,13 @@ missing module.
 The verification step:
   1. Reads pyproject.toml's [project.dependencies] directly.
   2. Filters by environment markers so cross-platform exclusions don't
-     false-positive (e.g. ``ptyprocess ; sys_platform != 'win32'`` on Windows).
+     false-positive.
   3. Probes ``importlib.metadata.version()`` in the venv interpreter.
   4. Reinstalls with --reinstall, then per-package, if anything's missing.
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -53,28 +51,19 @@ def temp_pyproject(tmp_path, monkeypatch):
 def fake_venv_python(tmp_path):
     """Create a fake venv python shim path that exists on disk."""
     venv_root = tmp_path / "venv"
-    scripts = venv_root / "Scripts"
+    scripts = venv_root / "bin"
     scripts.mkdir(parents=True)
-    py = scripts / "python.exe"
+    py = scripts / "python"
     py.write_text("#!/bin/sh\necho fake python")
     return py, venv_root
 
 
 class TestVerifyCoreDependencies:
-
-
-
     def test_skips_deps_excluded_by_environment_markers(self, temp_pyproject, fake_venv_python):
         """A dep whose ``sys_platform`` marker excludes THIS host must not be
         probed (and so never reported missing). Without marker evaluation the
         verification step would false-positive on every cross-platform
         exclusion and chase its tail installing something inapplicable here.
-
-        Deliberately host-invariant rather than ``platforms("windows")``: the subject
-        is ``packaging``'s marker *evaluation*, not any OS facility. The
-        pyproject fixture declares one dep gated to non-Windows and one gated
-        to Windows, so exactly one of the pair is filtered on any host — the
-        old ``patch("sys.platform", "win32")`` bought nothing but a fake host.
         """
         py, venv_root = fake_venv_python
         env = {"VIRTUAL_ENV": str(venv_root)}
@@ -97,17 +86,9 @@ class TestVerifyCoreDependencies:
             None,
         )
         assert probe is not None, "verification probe should have run"
-        # The dep names are tacked on after the -c script. Exactly one of the
-        # marker-gated pair applies to this host; the other must be filtered.
-        on_windows = sys.platform == "win32"
-        assert ("ptyprocess" in probe) is not on_windows, (
-            "ptyprocess is gated by sys_platform != 'win32', so it must be "
-            f"probed off Windows and filtered on it; probe argv was: {probe}"
-        )
-        assert ("tzdata" in probe) is on_windows, (
-            "tzdata is gated by sys_platform == 'win32', so it must be probed "
-            f"on Windows and filtered elsewhere; probe argv was: {probe}"
-        )
+        # The dep names are tacked on after the -c script.
+        assert "ptyprocess" in probe, f"applicable marker must be probed: {probe}"
+        assert "tzdata" not in probe, f"excluded marker must be filtered: {probe}"
         assert "pathspec" in probe, "core deps without markers must be checked"
 
     def test_no_pyproject_is_noop(self, tmp_path, monkeypatch):
@@ -124,7 +105,6 @@ class TestVerifyCoreDependencies:
             assert not mock_install.called
 
 
-
 class TestResolveInstallTargetPython:
     def test_uses_virtual_env_from_environment(self, tmp_path):
         """When VIRTUAL_ENV is set, the verification step must probe THAT
@@ -132,25 +112,23 @@ class TestResolveInstallTargetPython:
         If we probed sys.executable instead, we'd false-positive every dep
         the outer interpreter happens to lack."""
         venv_root = tmp_path / "newvenv"
-        scripts = venv_root / "Scripts"
+        scripts = venv_root / "bin"
         scripts.mkdir(parents=True)
-        py = scripts / "python.exe"
+        py = scripts / "python"
         py.write_text("fake")
 
-        with patch("hermes_cli.main_install_repair._is_windows", return_value=True):
-            from hermes_cli.main_install_repair import _resolve_install_target_python
-            result = _resolve_install_target_python(
-                ["uv", "pip"], env={"VIRTUAL_ENV": str(venv_root)}
-            )
-            assert result == py
+        from hermes_cli.main_install_repair import _resolve_install_target_python
+        result = _resolve_install_target_python(
+            ["uv", "pip"], env={"VIRTUAL_ENV": str(venv_root)}
+        )
+        assert result == py
 
     def test_returns_none_when_venv_python_missing(self, tmp_path):
         """If the path we'd point at doesn't exist (uv install failed before
         the python shim landed), return None so the verification step
         cleanly short-circuits instead of crashing on FileNotFoundError."""
-        with patch("hermes_cli.main_install_repair._is_windows", return_value=True):
-            from hermes_cli.main_install_repair import _resolve_install_target_python
-            result = _resolve_install_target_python(
-                ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "does_not_exist")}
-            )
-            assert result is None
+        from hermes_cli.main_install_repair import _resolve_install_target_python
+        result = _resolve_install_target_python(
+            ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "does_not_exist")}
+        )
+        assert result is None

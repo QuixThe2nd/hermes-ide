@@ -9,7 +9,6 @@ writes byte-identical.
 
 import os
 import stat
-import sys
 
 import pytest
 
@@ -19,23 +18,18 @@ from tools.spill_safety import (
     write_text_exclusive,
 )
 
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX perms/symlinks")
-
-
 def test_write_creates_file_with_content(tmp_path):
     target = tmp_path / "spill.txt"
     write_text_exclusive(target, "hello\n")
     assert target.read_text(encoding="utf-8") == "hello\n"
 
 
-@posix_only
 def test_private_file_is_0600(tmp_path):
     target = tmp_path / "spill.txt"
     write_text_exclusive(target, "secret", private=True)
     assert stat.S_IMODE(os.lstat(target).st_mode) == 0o600
 
 
-@posix_only
 def test_private_dir_is_0700_and_tightened(tmp_path):
     d = tmp_path / "spills"
     d.mkdir(mode=0o755)

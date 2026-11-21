@@ -7,23 +7,11 @@ import pytest
 from scripts import smoke_nemo_relay_shared_metrics as smoke
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    [
-        Path(".venv") / "bin" / "hermes",
-        Path(".venv") / "Scripts" / "hermes.exe",
-    ],
-)
-def test_resolve_hermes_executable_from_repository_venv(
-    tmp_path,
-    monkeypatch,
-    relative_path,
-):
-    executable = tmp_path / relative_path
+def test_resolve_hermes_executable_from_repository_venv(tmp_path, monkeypatch):
+    executable = tmp_path / ".venv" / "bin" / "hermes"
     executable.parent.mkdir(parents=True)
     executable.touch()
     monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
-
     assert smoke._resolve_hermes_executable(tmp_path) == executable
 
 

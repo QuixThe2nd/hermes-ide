@@ -1225,10 +1225,9 @@ class TestProfileRestoration:
         from hermes_cli.backup import run_import
         run_import(args)
 
-        # Only valid profile should get a wrapper (Windows uses a .bat shim).
-        suffix = ".bat" if os.name == "nt" else ""
-        assert (wrapper_dir / f"valid{suffix}").exists()
-        assert not (wrapper_dir / f"empty{suffix}").exists()
+        # Only valid profile should get a wrapper.
+        assert (wrapper_dir / "valid").exists()
+        assert not (wrapper_dir / "empty").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ description: "Drive the desktop background-first; escalate on signal."
 version: 2.1.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
-platforms: [macos, windows, linux]
+platforms: [macos, linux]
 metadata:
   hermes:
     tags: [computer-use, desktop, automation, gui, cross-platform]
@@ -58,7 +58,7 @@ refused explicitly (`stale`) instead of landing on the wrong control.
 Re-capture after anything that changes the screen; indices do not survive it.
 
 The role names match the host platform's accessibility framework
-(`AXButton` on macOS, `Button` on Windows UIA, `push button` on Linux
+(`AXButton` on macOS, `push button` on Linux
 AT-SPI) — treat them as labels, not as strict types.
 
 **Step 2 — Click by element index.** This is the single most important
@@ -202,7 +202,7 @@ dialogs) and anything else on screen that isn't page content.
 
 Use the host's idiomatic modifier:
 
-| Common action | macOS | Windows / Linux |
+| Common action | macOS | Linux |
 |---|---|---|
 | Save | `cmd+s` | `ctrl+s` |
 | New tab | `cmd+t` | `ctrl+t` |
@@ -300,14 +300,13 @@ in your conversation context.
 | Symptom | Likely cause + remedy |
 |---|---|
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
-| Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
+| Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. |
 | `code:"stale"` / "element_token is stale" | Indices belong to one snapshot. Re-`capture`, read the new indices, then act. Never reuse an index across a capture |
 | "bare element_index is not accepted" / `snapshot_id_required` | The driver saw a raw index without its token. This is a wrapper defect, not something you fix by passing `snapshot_id` (Hermes has no such argument). Re-capture once; if it repeats, tell the user to run `hermes update` and fall back to `coordinate=[x, y]` from the capture's bounds meanwhile |
 | "tool 'capture' has no reviewed risk classification" / `Unknown tool` | Something called the driver's MCP vocabulary directly (`capture`, `screenshot`, `get_window_state`, `click` with raw args). Only the `computer_use(action=…)` vocabulary in this file exists on the Hermes side |
 | Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
-| Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
+| Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
-| `hermes computer-use doctor` says "could not be started … Access is denied" (Windows) | The Hermes venv interpreter can't execute a binary under `C:\Program Files\WindowsApps`; the tool itself may still work because the shell resolves another copy on PATH. Fix once: reinstall cua-driver with the upstream installer (lands under the user profile) or set `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`. The same denial spams `errors.log` for any other `WindowsApps` binary Hermes spawns (e.g. `bws.exe`) |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 
 ## When NOT to use `computer_use`
@@ -321,13 +320,13 @@ in your conversation context.
 - **File edits** — use `read_file` / `write_file` / `patch`, not
   `type` into an editor window.
 - **Shell commands** — use `terminal`, not `type` into Terminal.app /
-  Windows Terminal / gnome-terminal.
+  gnome-terminal.
 
 ## Going deeper — read the cua-driver skill pack
 
 Hermes intentionally keeps THIS skill focused on the Hermes-side
 `computer_use` action vocabulary. The platform-specific deep dives
-(macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI +
+(macOS no-foreground contract, Linux AT-SPI +
 X11/Wayland nuances, recording trajectory + video, browser-page
 interaction, etc.) live in cua-driver's skill pack — same content the
 cua-driver team ships and maintains for every other agent harness.
@@ -343,8 +342,6 @@ agent; `cua-driver skills status` shows the link state). You'll then have:
   foreground contract, click dispatch, AX tree mechanics)
 - `MACOS.md` — macOS specifics (no-foreground contract, AXMenuBar
   navigation, SkyLight click dispatch, Apple Events JS bridge)
-- `WINDOWS.md` — Windows specifics (UIA tree, UWP / ApplicationFrameHost
-  hosting, Session 0 isolation, autostart pattern for SSH)
 - `LINUX.md` — Linux specifics (AT-SPI tree, X11 / Wayland, terminal
   emulator detection)
 - `RECORDING.md` — trajectory + video recording semantics

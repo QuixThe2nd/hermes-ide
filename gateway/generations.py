@@ -174,9 +174,8 @@ def _pid_alive(pid: int) -> bool:
     """Conservative liveness for a PID with no start fingerprint: alive
     blocks, because a reused PID must not read as a free slot.
 
-    Delegates to ``gateway.status._pid_exists`` — ``os.kill(pid, 0)`` sends
-    ``CTRL_C_EVENT`` to the target's console group on Windows (bpo-14484).
-    PermissionError still reads alive there; a zombie reads dead (a defunct
+    Delegates to ``gateway.status._pid_exists`` — the shared non-signalling
+    probe. PermissionError reads alive; a zombie reads dead (a defunct
     predecessor can never serve, and waiting for it blocks handover forever).
     """
     if pid <= 0:

@@ -28,7 +28,6 @@ from tests.hermes_state._wal_generation_harness import (
 )
 
 FD_DIRECTORY = "/proc/self/fd" if sys.platform.startswith("linux") else "/dev/fd"
-not_windows = pytest.mark.skipif(sys.platform == "win32", reason="a held sidecar cannot be unlinked on Windows")
 
 
 @pytest.fixture
@@ -80,7 +79,6 @@ def _count(conn: sqlite3.Connection, content_like: str) -> int:
 # ── Capture at the first halt ───────────────────────────────────────────────────────────────────────
 
 
-@not_windows
 @pytest.mark.parametrize("rename", [False, True], ids=["unlink", "rename"])
 def test_halt_captures_the_exact_retired_generation(tmp_path, force_wal, rename):
     path = tmp_path / "state.db"
@@ -117,7 +115,6 @@ def test_halt_captures_the_exact_retired_generation(tmp_path, force_wal, rename)
     assert db._retired_generation_capture == artifact  # captured once, not again at close
 
 
-@not_windows
 def test_close_captures_when_the_loss_is_first_seen_at_close(tmp_path, force_wal):
     path = tmp_path / "state.db"
     db = make_db(path, "gw-0", "seed")
@@ -137,7 +134,6 @@ def test_close_captures_when_the_loss_is_first_seen_at_close(tmp_path, force_wal
         recovered.close()
 
 
-@not_windows
 def test_close_refuses_to_settle_without_a_capture(tmp_path, force_wal, monkeypatch):
     path = tmp_path / "state.db"
     db = make_db(path, "gw-0", "seed")
@@ -165,7 +161,6 @@ def test_close_refuses_to_settle_without_a_capture(tmp_path, force_wal, monkeypa
         recovered.close()
 
 
-@not_windows
 def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(tmp_path, force_wal, monkeypatch, caplog):
     """Production closes go through hermes_state_registry.release_or_close, which swallows close()
     errors. A failed capture must still (a) log above DEBUG and (b) on runtimes without setconfig take
@@ -201,7 +196,6 @@ def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(
     assert db._conn is None and db._retired_generation_capture is not None
 
 
-@not_windows
 def test_capture_selects_the_recorded_inode_not_the_pathname(tmp_path, force_wal):
     """A second deleted WAL under the same pathname belongs to another owner: it must be neither
     captured as ours nor touched."""

@@ -379,8 +379,6 @@ def default_ping() -> Optional[float]:
         # 2ms and times every probe out. There is no clean fail-wait flag
         # there, so the outer subprocess timeout does the waiting.
         argv = ["ping", "-c", "1", PING_HOST]
-    elif os.name == "nt":
-        argv = ["ping", "-n", "1", "-w", "2000", PING_HOST]
     else:
         argv = ["ping", "-c", "1", "-W", "2", PING_HOST]
     try:

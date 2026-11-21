@@ -69,7 +69,7 @@ def _signal_process_group(proc: subprocess.Popen, sig: signal.Signals) -> bool:
     if not _KILLPG_SUPPORTED:
         return False
     try:
-        os.killpg(os.getpgid(proc.pid), sig)  # windows-footgun: ok — guarded by _KILLPG_SUPPORTED
+        os.killpg(os.getpgid(proc.pid), sig)
         return True
     except (OSError, ProcessLookupError, AttributeError):
         return False
@@ -79,7 +79,7 @@ def _signal_pgid(pgid: int, sig: signal.Signals) -> bool:
     if not _KILLPG_SUPPORTED:
         return False
     try:
-        os.killpg(pgid, sig)  # windows-footgun: ok — guarded by _KILLPG_SUPPORTED
+        os.killpg(pgid, sig)
         return True
     except (OSError, ProcessLookupError):
         return False
@@ -91,7 +91,7 @@ def _wait_pgid_reap(pgid: int, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            os.killpg(pgid, 0)  # windows-footgun: ok — guarded by _KILLPG_SUPPORTED
+            os.killpg(pgid, 0)
         except ProcessLookupError:
             return
         except OSError as exc:

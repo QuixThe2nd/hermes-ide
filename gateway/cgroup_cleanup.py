@@ -50,7 +50,7 @@ def reap_cgroup(cgroup_path: str | None = None) -> int:
         if pid == os.getpid():
             continue
         try:
-            os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (reads /proc, /sys/fs/cgroup; runs from a systemd unit)
+            os.kill(pid, signal.SIGKILL)
             killed += 1
         except (ProcessLookupError, PermissionError):
             continue

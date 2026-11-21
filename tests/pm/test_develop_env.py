@@ -19,18 +19,16 @@ import pytest
 
 import pm.cli as pm_cli
 import pm.paths as paths
-from pm.store import current_target
 
 
 def _fake_store(tmp_path: Path, monkeypatch, *, with_python: bool = True):
     """A store laid out like pm's: facts.json + a python entry. The
     interpreter file's bytes don't matter — only the layout does."""
     store = tmp_path / "store"
-    entry = store / "python-3.11.15+x20260807-win32-arm64"
+    entry = store / "python-3.11.15+x20260807-linux-x64"
     (entry / "bin").mkdir(parents=True)
     if with_python:
         (entry / "bin" / "python3").write_bytes(b"MZ")
-        (entry / "python.exe").write_bytes(b"MZ")
     (store / "facts.json").write_text(
         json.dumps(
             {
@@ -52,8 +50,7 @@ def _fake_store(tmp_path: Path, monkeypatch, *, with_python: bool = True):
 def _fake_repo(tmp_path: Path, monkeypatch) -> Path:
     """A fake repo root with a synced venv, substituted for pm.paths.repo_root."""
     repo = tmp_path / "repo"
-    win = current_target().startswith("win32")
-    site = repo / "venv" / ("Lib" if win else "lib/python3.11") / "site-packages"
+    site = repo / "venv" / "lib/python3.11" / "site-packages"
     site.mkdir(parents=True)
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     return repo
@@ -62,8 +59,7 @@ def _fake_repo(tmp_path: Path, monkeypatch) -> Path:
 def _develop_env(tmp_path, monkeypatch, *, with_python=True):
     _fake_store(tmp_path, monkeypatch, with_python=with_python)
     repo = _fake_repo(tmp_path, monkeypatch)
-    win = current_target().startswith("win32")
-    site = repo / "venv" / ("Lib" if win else "lib/python3.11") / "site-packages"
+    site = repo / "venv" / "lib/python3.11" / "site-packages"
     return pm_cli._develop_env(["faketool"]), repo, site
 
 
@@ -96,8 +92,7 @@ def test_venv_boot_markers_are_absent(tmp_path, monkeypatch):
 
 def test_venv_bin_dir_is_removed_from_path(tmp_path, monkeypatch):
     env, repo, _site = _develop_env(tmp_path, monkeypatch)
-    win = current_target().startswith("win32")
-    venv_bin = str(repo / "venv" / ("Scripts" if win else "bin"))
+    venv_bin = str(repo / "venv" / "bin")
 
     assert venv_bin not in env["PATH"].split(os.pathsep)
 

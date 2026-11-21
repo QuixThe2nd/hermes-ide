@@ -76,7 +76,7 @@ def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
 
 @contextmanager
 def _locked_plugin_state(path: Path):
-    """Serialize state read-modify-write across threads/processes (fcntl / msvcrt). The lock lives in a
+    """Serialize state read-modify-write across threads/processes (fcntl). The lock lives in a
     sibling file because atomic replacement changes the target's inode."""
     lock_path = path.with_name(f".{path.name}.lock")
     with _PLUGIN_STATE_LOCKS_GUARD:
@@ -84,24 +84,12 @@ def _locked_plugin_state(path: Path):
     with thread_lock:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a+b") as handle:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                import msvcrt
-                if handle.seek(0, os.SEEK_END) == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class PluginState:

@@ -31,8 +31,6 @@ from hermes_cli.clipboard import (
     _wsl_has_image,
     _wayland_save,
     _wayland_has_image,
-    _windows_save,
-    _windows_has_image,
     _convert_to_png,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
@@ -335,59 +333,6 @@ class TestLinuxSave:
                     with patch("hermes_cli.clipboard._xclip_save", return_value=True) as m:
                         assert _linux_save(dest) is True
                         m.assert_called_once_with(dest)
-
-
-# ── Native Windows (PowerShell) ─────────────────────────────────────────
-
-class TestWindowsHasImage:
-    def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._ps_exe = False  # reset cache
-
-    def test_clipboard_has_image(self):
-        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(stdout="True\n", returncode=0)
-                assert _windows_has_image() is True
-
-    def test_falls_back_to_get_clipboard_image(self):
-        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                mock_run.side_effect = [
-                    MagicMock(stdout="False\n", returncode=0),
-                    MagicMock(stdout="True\n", returncode=0),
-                ]
-                assert _windows_has_image() is True
-                assert mock_run.call_count == 2
-
-
-class TestWindowsSave:
-    def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._ps_exe = False  # reset cache
-
-    def test_successful_extraction(self, tmp_path):
-        dest = tmp_path / "out.png"
-        b64_png = base64.b64encode(FAKE_PNG).decode()
-        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(stdout=b64_png + "\n", returncode=0)
-                assert _windows_save(dest) is True
-        assert dest.read_bytes() == FAKE_PNG
-
-    def test_falls_back_to_filedrop_image(self, tmp_path):
-        dest = tmp_path / "out.png"
-        b64_png = base64.b64encode(FAKE_PNG).decode()
-        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
-            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-                mock_run.side_effect = [
-                    MagicMock(stdout="", returncode=1),
-                    MagicMock(stdout="", returncode=1),
-                    MagicMock(stdout=b64_png + "\n", returncode=0),
-                ]
-                assert _windows_save(dest) is True
-                assert mock_run.call_count == 3
-        assert dest.read_bytes() == FAKE_PNG
 
 
 # ── BMP conversion ──────────────────────────────────────────────────────

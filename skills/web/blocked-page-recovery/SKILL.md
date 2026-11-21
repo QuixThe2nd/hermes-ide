@@ -4,7 +4,7 @@ description: "Use when a fetch fails: 403/429, paywall, WAF, bot wall."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Research, Archives, Wayback, Paywall, WAF, Fallback]

@@ -196,7 +196,6 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
     still owns the lock race with the fallback's re-check + rename.
     """
     import hermes_state as hs
-    import platform
     import threading
 
     db = tmp_path / "state.db"
@@ -213,26 +212,12 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
     def hold_lock():
         handle = lock_path.open("a+b")
         try:
-            if platform.system() == "Windows":
-                import msvcrt
+            import fcntl
 
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             lock_held.set()
             release_lock.wait(timeout=15)
-            if platform.system() == "Windows":
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:
             lock_held.clear()
         finally:

@@ -163,10 +163,6 @@ class TestTerminalToolReadsTheFlag:
             lambda: {"env_type": "local", "cwd": env.cwd, "timeout": 60,
                      "lifetime_seconds": 3600},
         )
-        monkeypatch.setattr(
-            tt, "_check_all_guards",
-            lambda command, env_type, **kwargs: {"approved": True},
-        )
         return json.loads(
             tt.terminal_tool(command=command, task_id=task_id, timeout=timeout)
         )
@@ -209,3 +205,17 @@ class TestTerminalToolReadsTheFlag:
         assert result["exit_code"] == 0
         assert tt.get_session_cwd("sess") == str(target)
         assert os.path.realpath(result["cwd"]) == os.path.realpath(str(target))
+
+
+class TestDeletedCwd:
+    def test_missing_reported_cwd_is_not_adopted(self, env, tmp_path):
+        """A marker naming a directory that no longer exists (deleted by the
+        command, or by a sibling) must not become the session's cwd."""
+        prev = env.cwd
+        gone = str(tmp_path / "gone")
+        marker = env._cwd_marker
+        result = {"output": f"out\n{marker}{gone}{marker}\n"}
+        env._extract_cwd_from_output(result)
+        assert env.cwd == prev
+        assert "cwd_observed" not in result and "cwd" not in result
+        assert marker not in result["output"]

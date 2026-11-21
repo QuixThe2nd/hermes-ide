@@ -264,7 +264,6 @@ for c in all_chars:
 |----------|-------------|
 | macOS | `/System/Library/Fonts/Menlo.ttc`, `/System/Library/Fonts/Monaco.ttf` |
 | Linux | `/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf` |
-| Windows | `C:\Windows\Fonts\consola.ttf` (Consolas) |
 
 Always probe multiple paths and fall back gracefully. See `architecture.md` § Font Selection.
 

@@ -164,20 +164,10 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
     acquired = False
     deadline = time.monotonic() + max(0.0, timeout_seconds)
     try:
-        if os.name == "nt":
-            import msvcrt
-            if lock_path.stat().st_size == 0:
-                handle.write(b" ")
-                handle.flush()
-            def _lock_op(flag: int) -> None:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), flag, 1)
-            lock_flag, unlock_flag = msvcrt.LK_NBLCK, msvcrt.LK_UNLCK
-        else:
-            import fcntl
-            def _lock_op(flag: int) -> None:
-                fcntl.flock(handle.fileno(), flag)
-            lock_flag, unlock_flag = fcntl.LOCK_EX | fcntl.LOCK_NB, fcntl.LOCK_UN
+        import fcntl
+        def _lock_op(flag: int) -> None:
+            fcntl.flock(handle.fileno(), flag)
+        lock_flag, unlock_flag = fcntl.LOCK_EX | fcntl.LOCK_NB, fcntl.LOCK_UN
         while not acquired:
             try:
                 _lock_op(lock_flag)
@@ -346,15 +336,14 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         # writes its first byte.  O_NOFOLLOW also refuses a planted symlink on
         # platforms that support it.  Tighten an existing internal staging
         # file as well (NamedTemporaryFile callers already create it 0600).
-        if os.name != "nt":
-            open_flags = os.O_WRONLY | os.O_CREAT
-            if hasattr(os, "O_NOFOLLOW"):
-                open_flags |= os.O_NOFOLLOW
-            secure_fd = os.open(dst, open_flags, 0o600)
-            try:
-                os.fchmod(secure_fd, 0o600)
-            finally:
-                os.close(secure_fd)
+        open_flags = os.O_WRONLY | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            open_flags |= os.O_NOFOLLOW
+        secure_fd = os.open(dst, open_flags, 0o600)
+        try:
+            os.fchmod(secure_fd, 0o600)
+        finally:
+            os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
@@ -374,7 +363,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        # Windows won't remove the partial destination while SQLite still has it open.
+        # A partial destination must be closed before it can be removed.
         _close_quietly(backup_conn)
         backup_conn = None
         with suppress(OSError):
@@ -801,6 +790,14 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     print(f"  Compressed:  {_format_size(zip_size)}")
     print(f"  Time:        {elapsed:.1f}s")
 
+    # --keep bounds default-named archives only (the ones this command mints);
+    # custom or foreign zips in the same directory are never touched (#81317).
+    keep = max(int(getattr(args, "keep", 0) or 0), 0)
+    if keep and out_path.name.startswith("hermes-backup-"):
+        removed = _prune_prefixed_zips(out_path.parent, "hermes-backup-", keep, "backup")
+        if removed:
+            print(f"  Pruned:      {removed} older backup(s) beyond newest {keep}")
+
     if external_to_add:
         print(
             f"\n  Included {len(external_to_add)} memory-provider file(s) "
@@ -1210,6 +1207,22 @@ def create_quick_snapshot(
             max_file_size=max_file_size,
         )
 
+def _secure_quick_snapshot_tree(root: Path, snapshot_dir: Path) -> None:
+    """Make a staged quick snapshot owner-only before it is published.
+
+    The staging directory is private from creation, so copied source modes can
+    be normalized safely before the final atomic rename exposes the snapshot.
+    Permission failures are intentionally fatal: publishing a readable
+    recovery bundle is worse than reporting a failed snapshot.
+    """
+    os.chmod(root, 0o700)
+    os.chmod(snapshot_dir, 0o700)
+    for path in snapshot_dir.rglob("*"):
+        if path.is_dir():
+            os.chmod(path, 0o700)
+        elif path.is_file():
+            os.chmod(path, 0o600)
+
 
 def _create_quick_snapshot_locked(
     label: Optional[str] = None,
@@ -1270,7 +1283,9 @@ def _create_quick_snapshot_locked(
     snap_dir = root / snap_id
     staging_dir = root / f".{snap_id}.{os.getpid()}.partial"
     shutil.rmtree(staging_dir, ignore_errors=True)
-    staging_dir.mkdir(parents=True, exist_ok=False)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)  # pre-existing roots may carry a permissive mode
+    staging_dir.mkdir(mode=0o700, exist_ok=False)  # private from creation: copied modes normalize safely
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
@@ -1401,6 +1416,7 @@ def _create_quick_snapshot_locked(
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    _secure_quick_snapshot_tree(root, staging_dir)
     os.replace(staging_dir, snap_dir)
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers

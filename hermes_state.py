@@ -268,14 +268,9 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
             return not psutil.pid_exists(pid)
         except Exception:
             return False  # any doubt → keep the lease until TTL expiry
-    # Scaffold-phase fallback only (psutil missing), and POSIX-only: stdlib
-    # os.kill(pid, 0) is NOT a no-op probe on Windows (bpo-14484 — sig=0 maps
-    # to CTRL_C_EVENT and can kill the target's console group). Without psutil
-    # a Windows host stays TTL-only; the lease TTL remains the recovery path.
-    if os.name == "nt":
-        return False
+    # Scaffold-phase fallback only (psutil missing): stdlib os.kill(pid, 0).
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
+        os.kill(pid, 0)
     except ProcessLookupError:
         return True
     except (PermissionError, OSError, OverflowError):
@@ -936,15 +931,7 @@ def _real_platform_state_root() -> Optional[Path]:
     variable / passwd entry, which the hermetic conftest never rewrites.
     """
     try:
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA", "").strip()
-            root = (
-                Path(base) / "hermes"
-                if base
-                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "hermes"
-            )
-        else:
-            root = Path(os.path.expanduser("~")) / ".hermes"
+        root = Path(os.path.expanduser("~")) / ".hermes"
         return root.resolve()
     except Exception:
         return None
@@ -1224,9 +1211,6 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     close, checkpoint, and unlink the sidecars while long-lived holders
     (gateway, desktop ``hermes serve``) keep using the deleted inodes.
     """
-    if os.name == "nt":
-        return
-
     main_path = db_path
     if create_main:
         # O_EXCL: only a brand-new inode gets a descriptor. Opening an existing
@@ -2524,7 +2508,6 @@ _REPAIR_LOCK_POLL_SECONDS = 0.1
 # bound separate and give a conservative 10 MiB/s budget to each snapshot or
 # promotion, with the historical two-minute floor for ordinary state.db files.
 _REPAIR_SNAPSHOT_MIN_THROUGHPUT_BYTES_PER_SECOND = 10 * 1024 * 1024
-_IS_WINDOWS = sys.platform == "win32"
 
 
 @contextlib.contextmanager
@@ -2573,41 +2556,18 @@ def _cross_process_repair_lock(db_path: Path):
 
     acquired = False
     try:
-        if _IS_WINDOWS:
-            deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
-            while True:
-                try:
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    acquired = True
-                    break
-                except (BlockingIOError, OSError) as exc:
-                    if not is_advisory_lock_contention(exc):
-                        logger.warning(
-                            "Could not acquire state.db repair lock %s (%s) — "
-                            "skipping schema surgery on a non-contention error.",
-                            lock_path, exc,
-                        )
-                        acquired = None
-                        break
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(_REPAIR_LOCK_POLL_SECONDS)
-        else:
-            acquired, handle = _acquire_db_flock(
-                str(lock_path),
-                handle,
-                _REPAIR_LOCK_TIMEOUT_SECONDS,
-                _REPAIR_LOCK_POLL_SECONDS,
-                "state.db repair lock",
-            )
+        acquired, handle = _acquire_db_flock(
+            str(lock_path),
+            handle,
+            _REPAIR_LOCK_TIMEOUT_SECONDS,
+            _REPAIR_LOCK_POLL_SECONDS,
+            "state.db repair lock",
+        )
         if acquired is None:
             # Non-contention failure already logged with its errno.
             acquired = False
         elif not acquired:
-            record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
+            record = _read_lock_holder_record(handle)
             logger.warning(
                 "state.db repair lock %s held by another process for more "
                 "than %.0fs — skipping schema surgery in this process to "
@@ -2619,16 +2579,10 @@ def _cross_process_repair_lock(db_path: Path):
     finally:
         try:
             if acquired:
-                if _IS_WINDOWS:
-                    import msvcrt
+                import fcntl
 
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    _clear_lock_holder_record(handle)
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                _clear_lock_holder_record(handle)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:  # pragma: no cover - best effort release
             pass
         finally:
@@ -2657,17 +2611,9 @@ def _try_acquire_auto_maintenance_lock(db_path: Path) -> Optional[Any]:
         return None
 
     try:
-        if _IS_WINDOWS:
-            import msvcrt
+        import fcntl
 
-            handle.seek(0)
-            msvcrt.locking(  # type: ignore[attr-defined]
-                handle.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
-            )
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (BlockingIOError, OSError):
         handle.close()
         return None
@@ -2677,17 +2623,9 @@ def _try_acquire_auto_maintenance_lock(db_path: Path) -> Optional[Any]:
 def _release_auto_maintenance_lock(handle: Any) -> None:
     """Release a handle returned by :func:`_try_acquire_auto_maintenance_lock`."""
     try:
-        if _IS_WINDOWS:
-            import msvcrt
+        import fcntl
 
-            handle.seek(0)
-            msvcrt.locking(  # type: ignore[attr-defined]
-                handle.fileno(), msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
-            )
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except OSError:  # pragma: no cover - best effort release
         pass
     finally:
@@ -4136,24 +4074,12 @@ def _unlink_db_triple(path: Path) -> Optional[str]:
     failures: List[str] = []
     for suffix in ("", *_DB_SIDECAR_SUFFIXES):
         victim = path if not suffix else path.with_name(path.name + suffix)
-        for attempt in range(10):
-            try:
-                victim.unlink()
-                break
-            except FileNotFoundError:
-                break
-            except PermissionError as exc:
-                # Windows may retain a just-closed SQLite handle for a few
-                # scheduler ticks. Bound the retry; a later backup open still
-                # fails safely if the handle truly remains live.
-                if _IS_WINDOWS and attempt < 9:
-                    time.sleep(0.05)
-                    continue
-                failures.append(f"{victim}: {exc}")
-                break
-            except OSError as exc:
-                failures.append(f"{victim}: {exc}")
-                break
+        try:
+            victim.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failures.append(f"{victim}: {exc}")
     return "; ".join(failures) or None
 
 
@@ -4609,16 +4535,9 @@ _RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
 def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
     """Lock-safe raw header read of a possibly-live SQLite database.
 
-    POSIX: pread from a cached, never-closed fd (rebound when the path names
-    a new inode).  Windows: plain read — advisory-lock cancellation is a
-    POSIX-only hazard and msvcrt locks do not share the failure mode.
+    pread from a cached, never-closed fd (rebound when the path names a new
+    inode): closing the fd would drop this process's advisory locks.
     """
-    if _IS_WINDOWS:
-        try:
-            with db_path.open("rb") as handle:
-                return handle.read(length)
-        except OSError:
-            return None
     key = str(db_path)
     try:
         st = os.stat(db_path)
@@ -4883,44 +4802,24 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     acquired = False
     try:
         deadline = time.monotonic() + timeout
-        if platform.system() == "Windows":
-            import msvcrt
+        import fcntl
 
-            while True:
-                try:
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    acquired = True
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
                     break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.020)
-        else:
-            import fcntl
-
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except (BlockingIOError, OSError):
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.020)
+                time.sleep(0.020)
         yield acquired
     finally:
         try:
             if acquired:
-                if platform.system() == "Windows":
-                    import msvcrt
+                import fcntl
 
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except (OSError, AttributeError):
             pass
         finally:

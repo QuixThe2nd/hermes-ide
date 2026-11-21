@@ -4,7 +4,7 @@ description: Embed an in-page natural-language GUI copilot in web apps.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [web, javascript, agent, browser, gui, alibaba, embed, copilot, saas]

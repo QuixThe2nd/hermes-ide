@@ -6,7 +6,6 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 
 import logging
 import os
-import platform
 import re
 import shlex
 import subprocess
@@ -154,27 +153,19 @@ def _release_tty(tty_fd, old_attrs) -> None:
 
 
 def _read_hidden_password(result: dict) -> None:
-    """Read one line with echo disabled into ``result``. Uses msvcrt on Windows, /dev/tty on Unix."""
+    """Read one line with echo disabled into ``result``, via /dev/tty."""
     tty_fd = old_attrs = None
     try:
+        import termios
         chars = []
-        if platform.system() == "Windows":
-            import msvcrt
-            while (c := msvcrt.getwch()) not in {"\r", "\n"}:
-                if c == "\x03":
-                    raise KeyboardInterrupt
-                chars.append(c)
-            result["password"] = "".join(chars)
-        else:
-            import termios
-            tty_fd = os.open("/dev/tty", os.O_RDONLY)
-            old_attrs = termios.tcgetattr(tty_fd)
-            new_attrs = termios.tcgetattr(tty_fd)
-            new_attrs[3] = new_attrs[3] & ~termios.ECHO
-            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-            while (b := os.read(tty_fd, 1)) and b not in {b"\n", b"\r"}:
-                chars.append(b)
-            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+        tty_fd = os.open("/dev/tty", os.O_RDONLY)
+        old_attrs = termios.tcgetattr(tty_fd)
+        new_attrs = termios.tcgetattr(tty_fd)
+        new_attrs[3] = new_attrs[3] & ~termios.ECHO
+        termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
+        while (b := os.read(tty_fd, 1)) and b not in {b"\n", b"\r"}:
+            chars.append(b)
+        result["password"] = b"".join(chars).decode("utf-8", errors="replace")
     except (KeyboardInterrupt, Exception):
         result["password"] = ""
     finally:
@@ -184,8 +175,8 @@ def _read_hidden_password(result: dict) -> None:
 
 def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -> str:
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
-    CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
-    Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
+    CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty
+    with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
     from tools.terminal_tool import _get_sudo_password_callback
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:

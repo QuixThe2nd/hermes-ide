@@ -121,7 +121,6 @@ def _no_fts_rebuild_throttle(monkeypatch):
 
 
 class TestConnectionLifecycle:
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_writable_state_db_is_owner_only_under_permissive_umask(self, tmp_path):
         """state.db and any live SQLite sidecars must not inherit 0644 modes."""
         db_path = tmp_path / "state.db"
@@ -150,7 +149,6 @@ class TestConnectionLifecycle:
         finally:
             session_db.close()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_writable_state_db_tightens_existing_loose_mode(self, tmp_path):
         """Opening a legacy 0644 profile store repairs it in place."""
         db_path = tmp_path / "state.db"
@@ -164,7 +162,6 @@ class TestConnectionLifecycle:
         finally:
             session_db.close()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX fcntl locks")
     def test_writable_state_db_keeps_locks_across_second_open(self, tmp_path):
         """Opening a second SessionDB in this process must not unlink live sidecars.
 

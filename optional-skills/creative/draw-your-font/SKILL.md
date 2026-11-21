@@ -4,7 +4,7 @@ description: "Turn a handwriting photo into an installable TTF font."
 version: 0.1.0
 author: Danilo Znamerovszkij (https://github.com/danilo-znamerovszkij/draw-your-font), ported by Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 required_commands: [node, npx]
 metadata:
   hermes:
@@ -109,7 +109,9 @@ only bother the user for re-shoots when the source ink is the problem.
 
 **5. Deliver.** The font lands at `<workdir>/<NameWithoutSpaces>.ttf` (the
 build output prints the exact path). Give that path and how to install:
-macOS - double-click → "Install Font"; Windows - right-click → "Install".
+macOS - double-click → "Install Font"; Linux - most desktops open the font
+viewer via double-click with an Install button (or copy to
+`~/.local/share/fonts` and run `fc-cache`).
 Mention what's missing (the build prints uncovered letters) and offer,
 without pushing:
 

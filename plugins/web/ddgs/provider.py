@@ -99,7 +99,7 @@ def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
         env["PYTHONPATH"] = path_entry + os.pathsep + child_pythonpath if child_pythonpath else path_entry
     worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_search_worker.py")
     # Own process group/session so terminate/kill also reach a hung primp grandchild.
-    extra_kwargs: dict[str, Any] = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
+    extra_kwargs: dict[str, Any] = {"start_new_session": True}
     # stdin/stdout/stderr stay explicit keyword args so scripts/check_subprocess_stdin.py sees them
     # (TUI gateway inherits stdin). stderr=DEVNULL: a chatty child would deadlock a stdout-only drain.
     return subprocess.Popen(

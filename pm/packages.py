@@ -20,8 +20,6 @@ from pm.package import (
 from pm.registry import register
 from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
 from pm.update import (
-    btbn_index,
-    btbn_versions,
     github_release_tags,
     llama_app_bucket_versions,
     llama_app_latest,
@@ -33,8 +31,6 @@ from pm.update import (
 )
 
 _RUST_TRIPLE = {
-    "win32-x64": "x86_64-pc-windows-msvc",
-    "win32-arm64": "aarch64-pc-windows-msvc",
     "linux-x64": "x86_64-unknown-linux-gnu",
     "linux-arm64": "aarch64-unknown-linux-gnu",
     "darwin-x64": "x86_64-apple-darwin",
@@ -42,8 +38,6 @@ _RUST_TRIPLE = {
 }
 
 _NODE_PLAT = {
-    "win32-x64": "win-x64",
-    "win32-arm64": "win-arm64",
     "linux-x64": "linux-x64",
     "linux-arm64": "linux-arm64",
     "darwin-x64": "darwin-x64",
@@ -65,10 +59,7 @@ class BinaryPackage(Package):
     probe_cwd = False
 
     def _rel(self, target: str) -> Optional[str]:
-        win = target.startswith("win32")
-        return self.binary_rel.get(target) or self.binary_rel.get(
-            "win32" if win else "posix"
-        )
+        return self.binary_rel.get(target) or self.binary_rel.get("posix")
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         if self.flatten:
@@ -120,11 +111,11 @@ class BinaryPackage(Package):
 class Uv(BinaryPackage):
     name = "uv"
     internal = True
-    binary_rel = {"win32": "uv.exe", "posix": "uv"}
+    binary_rel = {"posix": "uv"}
 
     def fetch_url(self, version: str, target: str) -> str:
         triple = _RUST_TRIPLE[target]
-        ext = "zip" if target.startswith("win32") else "tar.gz"
+        ext = "tar.gz"
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -188,20 +179,13 @@ class Python(BinaryPackage):
     name = "python"
     optional = True
     probe_version = False
-    binary_rel = {"win32": "python.exe", "posix": "bin/python3"}
+    binary_rel = {"posix": "bin/python3"}
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
         if binary is not None:
             _macos_sign_managed_python(binary)
-        # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
-        # beside ARM64 Windows Python; it cannot load on ARM64 and would fail
-        # the arch guard. Drop it HERE, before publish: the tree digest is
-        # recorded over the shipped bytes, so a post-publish deletion (as the
-        # old bundle-time drop did) makes doctor's re-hash mismatch.
-        if target == "win32-arm64":
-            (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
 
     def fetch_url(self, version: str, target: str) -> str:
         # lock version is "<python>+<release tag>", e.g. "3.11.13+202****0807"
@@ -432,7 +416,7 @@ class Venv(StatePackage):
                         self.name, f"uv sync exited {proc.returncode}: {proc.stderr[-400:]}"
                     )
                 resolved_lock = project / "uv.lock"
-            python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            python = candidate / "bin/python"
             checked = subprocess.run(
                 [uv_bin, "pip", "check", "--python", str(python)],
                 env=env, capture_output=True, text=True, timeout=60,
@@ -449,12 +433,11 @@ class Venv(StatePackage):
 @register
 class Nodejs(BinaryPackage):
     name = "node"
-    binary_rel = {"win32": "node.exe", "posix": "bin/node"}
+    binary_rel = {"posix": "bin/node"}
 
     def fetch_url(self, version: str, target: str) -> str:
         plat = _NODE_PLAT[target]
-        ext = "zip" if target.startswith("win32") else "tar.xz"
-        return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
+        return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.tar.xz"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         return node_latest_versions()
@@ -464,7 +447,7 @@ class Nodejs(BinaryPackage):
 class Npm(BinaryPackage):
     name = "npm"
     deps = ("node",)
-    binary_rel = {"win32": "npm.cmd", "posix": "bin/npm"}
+    binary_rel = {"posix": "bin/npm"}
     flatten = False
     probe_version = False
     url = "https://registry.npmjs.org/npm/-/npm-{version}.tgz"
@@ -489,12 +472,7 @@ class Npm(BinaryPackage):
         node_bin = node.binary(store.entry(node_fact["entry"]), target)
         if node_bin is None or not node_bin.is_file():
             raise InstallError(self.name, "node's entry is missing its binary")
-        win = target.startswith("win32")
-        bundled_cli = (
-            node_bin.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
-            if win
-            else node_bin.parent.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-        )
+        bundled_cli = node_bin.parent.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
         if not bundled_cli.is_file():
             raise InstallError(self.name, "node's entry is missing its bundled npm-cli.js")
 
@@ -529,68 +507,16 @@ class Npm(BinaryPackage):
 
 
 @register
-class Git(BinaryPackage):
-    """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git — a deliberate gap, not an oversight. The tar.bz2
-    release asset extracts with stdlib tarfile: no self-extractor, no GUI."""
-
-    name = "git"
-    optional = True
-    binary_rel = {"win32": "cmd/git.exe"}
-    flatten = False
-    gaps = {
-        "linux-x64": "POSIX uses system git by choice",
-        "linux-arm64": "POSIX uses system git by choice",
-        "darwin-x64": "POSIX uses system git by choice",
-        "darwin-arm64": "POSIX uses system git by choice",
-    }
-
-    def fetch_url(self, version: str, target: str) -> str:
-        tag, build = version.split("+")
-        arch = "arm64" if target.endswith("arm64") else "64-bit"
-        return (
-            f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
-        )
-
-    def latest_versions(self, target: str, locked=None) -> list[str]:
-        # Tag is v2.53.0.windows.3; the lock version is 2.53.0+3.
-        out = []
-        for tag in github_release_tags("git-for-windows/git", strip_prefix="v"):
-            if ".windows." in tag:
-                base, _, build = tag.partition(".windows.")
-                out.append(f"{base}+{build}")
-        return out
-
-    def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        """stdlib tar extract, but skip members the data filter refuses —
-        the MSYS tree ships dev/fd → /proc/self/fd style links that mean
-        nothing on Windows and must not fail the install."""
-        import tarfile
-
-        staged.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive) as tf:
-            for member in tf:
-                try:
-                    tf.extract(member, staged, filter="data")
-                except (tarfile.FilterError, OSError):
-                    continue
-
-    def env(self, entry: Path, target: str) -> dict:
-        return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}
-
-
-@register
 class Gh(BinaryPackage):
     name = "gh"
     optional = True
-    binary_rel = {"win32": "bin/gh.exe", "posix": "bin/gh"}
+    binary_rel = {"posix": "bin/gh"}
 
     def fetch_url(self, version: str, target: str) -> str:
         osname, arch = target.split("-")
-        plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
+        plat = {"linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
-        ext = "zip" if osname in ("win32", "darwin") else "tar.gz"
+        ext = "zip" if osname == "darwin" else "tar.gz"
         return (
             f"https://github.com/cli/cli/releases/download/v{version}/"
             f"gh_{version}_{plat}_{arch}.{ext}"
@@ -606,48 +532,34 @@ class Ffmpeg(BinaryPackage):
     optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
     it baked into the payload (post_update skips provisioning sealed
     installs — the artifact is atomic); dev installs get it re-ensured by
-    step_provision_runtimes when the pin bumps. Windows: BtbN/FFmpeg-Builds
-    (dated autobuild tag; ships ffprobe too). Linux + macOS:
+    step_provision_runtimes when the pin bumps. Linux + macOS:
     ffmpeg.martin-riedl.de (uniform ZIP, published sha256; single-binary —
     no ffprobe)."""
 
     name = "ffmpeg"
     optional = False
-    # The posix (martin-riedl) and win32 (BtbN) build streams have no shared
-    # release cadence — they drift in PATCH. The lockfile version label is
-    # major.minor; each target's exact patch lives in its artifact urls.
+    # The per-target build streams can drift in PATCH. The lockfile version
+    # label is major.minor; each target's exact patch lives in its artifact urls.
     version_style = "minor"
-    # martin-riedl (posix) zips are a single `ffmpeg` file at the zip root;
-    # BtbN (win32) zips carry bin/ffmpeg.exe under one top-level dir that
-    # flatten hoists.
-    binary_rel = {"win32": "bin/ffmpeg.exe", "posix": "ffmpeg"}
+    # martin-riedl zips are a single `ffmpeg` file at the zip root.
+    binary_rel = {"posix": "ffmpeg"}
     flatten = True
-    # BtbN autobuild n9.0.1-11-ge47273f4d9 rejects `--version`
-    # ("Unrecognized option '-version'", exit 2880417800); `-version` works
-    # and is accepted by every ffmpeg build.
+    # `-version` is accepted by every ffmpeg build.
     probe_args = ["-version"]
 
     def fetch_url(self, version: str, target: str) -> str:
         osname, arch = target.split("-")
-        if osname == "win32":
-            artifact = btbn_index().get(target, {}).get(version)
-            if artifact is not None:
-                tag, asset = artifact
-                return f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{asset}"
-        else:
-            epoch = martin_riedl_index().get(target, {}).get(version)
-            if epoch is not None:
-                osdir = "macos" if osname == "darwin" else "linux"
-                source_arch = "amd64" if arch == "x64" else arch
-                return f"https://ffmpeg.martin-riedl.de/download/{osdir}/{source_arch}/{epoch}_{version}/ffmpeg.zip"
+        epoch = martin_riedl_index().get(target, {}).get(version)
+        if epoch is not None:
+            osdir = "macos" if osname == "darwin" else "linux"
+            source_arch = "amd64" if arch == "x64" else arch
+            return f"https://ffmpeg.martin-riedl.de/download/{osdir}/{source_arch}/{epoch}_{version}/ffmpeg.zip"
         # Existing installs read exact URLs from the lockfile. Re-pinning
         # must never silently substitute a different version or target.
         raise InstallError(self.name, f"no advertised {version} artifact for {target}",
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        if target.startswith("win32"):
-            return btbn_versions(target)
         return martin_riedl_versions(target)
 
 
@@ -655,14 +567,13 @@ class Ffmpeg(BinaryPackage):
 @register
 class Ripgrep(BinaryPackage):
     name = "ripgrep"
-    binary_rel = {"win32": "rg.exe", "posix": "rg"}
+    binary_rel = {"posix": "rg"}
 
     def fetch_url(self, version: str, target: str) -> str:
         triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
-        ext = "zip" if target.startswith("win32") else "tar.gz"
         return (
             f"https://github.com/BurntSushi/ripgrep/releases/download/{version}/"
-            f"ripgrep-{version}-{triple}.{ext}"
+            f"ripgrep-{version}-{triple}.tar.gz"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -673,7 +584,7 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
-    binary_rel = {"win32": "cua-driver.exe", "posix": "cua-driver"}
+    binary_rel = {"posix": "cua-driver"}
 
     def fetch_url(self, version: str, target: str) -> str:
         arch = {
@@ -681,13 +592,10 @@ class CuaDriver(BinaryPackage):
             "darwin-arm64": "darwin-universal",
             "linux-x64": "linux-x86_64",
             "linux-arm64": "linux-arm64",
-            "win32-x64": "windows-x86_64",
-            "win32-arm64": "windows-arm64",
         }[target]
-        ext = "zip" if target.startswith("win32") else "tar.gz"
         return (
             f"https://github.com/trycua/cua/releases/download/cua-driver-rs-v{version}/"
-            f"cua-driver-rs-{version}-{arch}-binary.{ext}"
+            f"cua-driver-rs-{version}-{arch}-binary.tar.gz"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -712,10 +620,7 @@ class CuaDriver(BinaryPackage):
 
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
-    usable engine is one archive per (target, backend) — plus, for Windows
-    CUDA, the cudart archive: end users have no CUDA toolkit, and Windows
-    resolves a DLL from the loading executable's own directory, so those
-    DLLs must land beside llama-server.exe rather than in a second entry.
+    usable engine is one archive per (target, backend).
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -724,7 +629,7 @@ class LlamaCpp(BinaryPackage):
 
     optional = True
     on_path = False
-    binary_rel = {"win32": "llama-server.exe", "posix": "llama-server"}
+    binary_rel = {"posix": "llama-server"}
     flatten = False
     # --version is llama-server's liveness proof AND the check that the
     # backend's shared libraries resolve: a CUDA build with no cudart
@@ -744,8 +649,7 @@ class LlamaCpp(BinaryPackage):
         }
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        ext = "zip" if target.startswith("win32") else "tar.gz"
-        return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
+        return [f"llama-b{version}-bin-{self.assets[target]}.tar.gz"]
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
         return [
@@ -822,23 +726,11 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """Windows only: upstream publishes no prebuilt Linux CUDA archive at
-    current tags, so NVIDIA Linux users run the vulkan build."""
+    """Upstream publishes no prebuilt Linux CUDA archive at current tags, so
+    NVIDIA Linux users run the vulkan build."""
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
-    assets = {
-        "win32-x64": "win-cuda-13.3-x64",
-        "win32-arm64": "win-cuda-13.4-arm64",
-    }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
-
-    def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
-        ]
 
 
 @register
@@ -846,7 +738,6 @@ class LlamaCppVulkan(LlamaCpp):
     name = "llamacpp-vulkan"
     backend = "vulkan"
     assets = {
-        "win32-x64": "win-vulkan-x64",
         "linux-x64": "ubuntu-vulkan-x64",
         "linux-arm64": "ubuntu-vulkan-arm64",
     }
@@ -866,8 +757,6 @@ class LlamaCppCpu(LlamaCpp):
     name = "llamacpp-cpu"
     backend = "cpu"
     assets = {
-        "win32-x64": "win-cpu-x64",
-        "win32-arm64": "win-cpu-arm64",
         "linux-x64": "ubuntu-x64",
         "linux-arm64": "ubuntu-arm64",
         "darwin-x64": "macos-x64",

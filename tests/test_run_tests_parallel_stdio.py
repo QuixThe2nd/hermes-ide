@@ -1,10 +1,10 @@
 """The runner's status glyphs must not crash narrow console encodings.
 
-On native Windows, piped or legacy-console stdio defaults to cp1252, which
-cannot encode the runner's ✓/✗ progress glyphs — before the fix, the first
-per-file status line killed the whole run with UnicodeEncodeError. The
-failure depends only on the stream's encoding, so these tests pin it on
-every OS by building a cp1252 stream explicitly.
+A narrow-console locale codec such as cp1252 cannot encode the runner's
+✓/✗ progress glyphs — before the fix, the first per-file status line killed
+the whole run with UnicodeEncodeError. The failure depends only on the
+stream's encoding, so these tests pin it on every OS by building a cp1252
+stream explicitly.
 """
 
 from __future__ import annotations

@@ -43,10 +43,6 @@ from agent.secret_sources.base import (  # noqa: E402
 from hermes_cli import env_loader  # noqa: E402
 
 
-pytestmark = pytest.mark.skipif(
-    os.name == "nt", reason="the command secret provider is POSIX-only"
-)
-
 
 def _write_helper(tmp_path: Path, body: str, name: str = "helper.sh") -> Path:
     """Write a real executable helper script and return its path."""

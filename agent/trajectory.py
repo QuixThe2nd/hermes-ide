@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -22,16 +21,9 @@ def has_incomplete_scratchpad(content: str) -> bool:
 
 
 def _lock_append_handle(f, acquire: bool) -> None:
-    """Exclusive whole-file lock on an append handle: ``flock`` on POSIX, a 1-byte
-    ``msvcrt.locking`` range at offset 0 on Windows (append position is restored by the OS)."""
-    if os.name == "nt":
-        import msvcrt
-        f.seek(0)
-        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK if acquire else msvcrt.LK_UNLCK, 1)
-        f.seek(0, os.SEEK_END)
-    else:
-        import fcntl
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX if acquire else fcntl.LOCK_UN)
+    """Exclusive whole-file ``flock`` on an append handle."""
+    import fcntl
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX if acquire else fcntl.LOCK_UN)
 
 
 def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):

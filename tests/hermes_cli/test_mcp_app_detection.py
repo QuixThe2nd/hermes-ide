@@ -1,6 +1,5 @@
 """Backend-native, read-only catalog app discovery; no app or MCP is launched."""
 
-import os
 from pathlib import Path
 import sys
 
@@ -16,10 +15,6 @@ def test_native_discovery_returns_only_curated_boundary_matches(tmp_path, monkey
         (root / "Vendor" / "FIXTURE Paint 5.1.app").mkdir(parents=True)
         (root / "SuperFixtureCode.app").mkdir()
         (root / "Personal Secret.app").mkdir()
-    elif sys.platform == "win32":
-        (root / "Vendor" / "FIXTURE Paint 5.1").mkdir(parents=True)
-        (root / "SuperFixtureCode").mkdir()
-        (root / "Personal Secret").mkdir()
     else:
         (root / "org.example.editor.desktop").write_text(
             "[Desktop Entry]\nName=FIXTURE Paint 5.1\nExec=do-not-run\n", encoding="utf-8")
@@ -32,7 +27,7 @@ def test_native_discovery_returns_only_curated_boundary_matches(tmp_path, monkey
     assert result == {"matches": {"paint": ["Fixture Paint"], "code": [], "legacy": []},
                       "discovery": {"scope": "backend", "status": "ok", "platform": sys.platform}}
     # A PATH signal is exact, not a substring or shell invocation. Executable content is never run.
-    candidate = tmp_path / "bin" / ("fixturecode.exe" if os.name == "nt" else "fixturecode")
+    candidate = tmp_path / "bin" / "fixturecode"
     candidate.write_text("this is not an executable program", encoding="utf-8")
     candidate.chmod(0o755)
     assert detection.discover_catalog_apps(criteria)["matches"]["code"] == ["FixtureCode"]

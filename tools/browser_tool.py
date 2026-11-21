@@ -431,7 +431,6 @@ _PLUGIN_COMPAT_LAZY = {
     "node_tool_runnable": ("hermes_constants", "node_tool_runnable"),
     "reset_hermes_home_override": ("hermes_constants", "reset_hermes_home_override"),
     "set_hermes_home_override": ("hermes_constants", "set_hermes_home_override"),
-    "windows_hide_flags": ("hermes_cli._subprocess_compat", "windows_hide_flags"),
 }
 
 

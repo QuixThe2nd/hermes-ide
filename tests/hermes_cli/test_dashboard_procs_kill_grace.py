@@ -27,7 +27,6 @@ from hermes_cli import dashboard_procs
 
 _REPO_ROOT = pathlib.Path(dashboard_procs.__file__).resolve().parents[1]
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics only")
 
 # Mirrors the lifespan: sleep for the teardown budget on SIGTERM, then leave a marker and exit 0.
 _GRACEFUL_CHILD = textwrap.dedent(
@@ -207,7 +206,7 @@ _BACKEND_WITH_STOPPER_CHILD = textwrap.dedent(
 
 
 def test_stopper_running_as_backend_descendant_survives_the_sweep(tmp_path):
-    """POSIX twin of the Windows #98814 hazard: the caller and its ancestors are not descendants
+    """The caller and its ancestors are not descendants
     to sweep, even when the stop runs from inside the backend's own process tree."""
     marker, ready = tmp_path / "marker", tmp_path / "ready"
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH")])))

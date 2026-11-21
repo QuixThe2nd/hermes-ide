@@ -4,7 +4,7 @@ description: "Adversarial plan interview before implementation."
 version: 2.0.0
 author: "Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Hermes Agent"
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [planning, adversarial, interview, decision-tree, pre-implementation, review, alignment]
