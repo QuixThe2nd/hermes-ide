@@ -4,7 +4,7 @@ description: Scrape sites with stealth browsing and Cloudflare bypass.
 version: 1.0.0
 author: FEUAZUR
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Web Scraping, Browser, Cloudflare, Stealth, Crawling, Spider]

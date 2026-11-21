@@ -4,7 +4,7 @@ description: Derive an HTTP client from an existing browser HAR.
 version: 0.1.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Browser, HAR, API, Reverse-Engineering]

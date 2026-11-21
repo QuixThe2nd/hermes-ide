@@ -2,7 +2,7 @@
 name: osint-investigation
 description: Follow the money via public records and sanctions data.
 version: 0.1.0
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 author: Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT)
 license: MIT
 metadata:
@@ -21,7 +21,7 @@ entities across heterogeneous sources, build cross-links with explicit
 confidence, run statistical timing tests, and produce structured evidence
 chains.
 
-**Python stdlib only.** Zero install. Works on Linux, macOS, Windows. Most
+**Python stdlib only.** Zero install. Works on Linux and macOS. Most
 sources work with no API key (OpenCorporates has an optional free token
 that raises rate limits).
 

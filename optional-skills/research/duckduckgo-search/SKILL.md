@@ -4,7 +4,7 @@ description: Free keyless web, news, and image search via ddgs.
 version: 1.3.0
 author: gamedevCloudy
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [search, duckduckgo, web-search, free, fallback]

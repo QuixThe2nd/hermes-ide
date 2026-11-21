@@ -5,7 +5,7 @@ version: 1.0.0
 author: immuhammadfurqan
 license: MIT
 dependencies: [pinecone-client, langchain-pinecone]
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [RAG, Pinecone, Memory, Research, Vector Database, Agent, Retrieval]

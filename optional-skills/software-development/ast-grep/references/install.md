@@ -1,10 +1,9 @@
 # Install ast-grep
 
-The skill ships an `install.sh` (POSIX) and `install.ps1` (Windows) that try every reasonable method in priority order and fall back to a GitHub release download as a last resort. **You usually do not need to read this page.** Run the installer:
+The skill ships an `install.sh` that tries every reasonable method in priority order and fall back to a GitHub release download as a last resort. **You usually do not need to read this page.** Run the installer:
 
 ```bash
 bash install.sh                        # macOS / Linux / WSL / Git Bash
-pwsh -File install.ps1                 # Windows PowerShell
 ```
 
 This page exists for the (rare) case the installer cannot find a working method, or you want to install ast-grep manually.

@@ -100,9 +100,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 ## Fleet version verification
 
 Gateways stamp `code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can
-verify a fleet. The Windows shim-unlock teardown (`taskkill /T /F` on venv-shim holders, #85265)
-exists to let updates proceed and is replaced by #92091's `pause-for-update`; do NOT "fix" update
-locks by widening the tree-kill.
+verify a fleet.
 
 ## Profile scope (adapters, turns, and everything between turns)
 

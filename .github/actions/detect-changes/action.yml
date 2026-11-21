@@ -13,7 +13,7 @@ inputs:
 
 outputs:
   python:
-    description: Run Python tests / ruff / ty / windows-footguns.
+    description: Run Python tests / ruff / ty.
     value: ${{ steps.classify.outputs.python }}
   python_prod:
     description: Python changes outside tests/ — gates product jobs (Docker).
@@ -45,9 +45,6 @@ outputs:
   npm_lock:
     description: Post/update the semantic package-lock.json diff PR comment.
     value: ${{ steps.classify.outputs.npm_lock }}
-  installer:
-    description: Run the PowerShell installer tests on a Windows runner.
-    value: ${{ steps.classify.outputs.installer }}
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}

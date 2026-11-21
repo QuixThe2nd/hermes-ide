@@ -4,7 +4,7 @@ description: "Audio spectrograms/features (mel, chroma, MFCC) via CLI."
 version: 1.0.0
 author: community
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Audio, Visualization, Spectrogram, Music, Analysis]

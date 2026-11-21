@@ -4,7 +4,7 @@ description: "Operate and publish services on existing infrastructure."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [devops, homelab, deployment, operations, self-hosted]

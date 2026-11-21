@@ -4,7 +4,7 @@ description: Present property and rental listings as desktop cards.
 version: 0.1.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [property, rental, real-estate, listings, desktop, cards]

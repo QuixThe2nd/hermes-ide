@@ -4,7 +4,7 @@ description: "Throwaway HTML mockups: 2-3 design variants to compare."
 version: 1.0.1
 author: Hermes Agent (adapted from gsd-build/get-shit-done)
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [sketch, mockup, design, ui, prototype, html, variants, exploration, wireframe, comparison]
@@ -200,7 +200,7 @@ Propose 2-4 named candidates. Let the user pick.
 
 - Create `sketches/` (or `.planning/sketches/` if the user is using GSD conventions) in the repo root
 - One subdir per variant: `NNN-stance-name/index.html` + `README.md`
-- Tell the user how to open them: `open sketches/001-calm-editorial/index.html` on macOS, `xdg-open` on Linux, `start` on Windows
+- Tell the user how to open them: `open sketches/001-calm-editorial/index.html` on macOS, `xdg-open` on Linux
 - Keep variants disposable — a sketch that you felt the need to preserve should be promoted into real project code, not curated as an asset
 
 **Typical tool sequence for one variant:**

@@ -4,7 +4,7 @@ description: "PDF files: create, read, merge, fill, OCR, edit text."
 version: 1.1.0
 author: Nous Research
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [pdf, documents, forms, ocr, text-extraction, reportlab, pypdf, pdfplumber, pymupdf, marker]

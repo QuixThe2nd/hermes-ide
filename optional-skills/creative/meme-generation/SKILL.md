@@ -4,7 +4,7 @@ description: Create meme PNGs from templates with Pillow text overlay.
 version: 2.0.0
 author: adanaleycio
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [creative, memes, humor, images]
