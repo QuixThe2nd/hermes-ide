@@ -7,7 +7,6 @@ PYTHONPATH hygiene, UTF-8 forcing, TZ) cannot drift between them.
 
 import logging
 import os
-import platform
 import subprocess
 import sys
 from typing import Dict
@@ -15,10 +14,9 @@ from typing import Dict
 # Logger name kept as the origin module's so existing log expectations hold.
 logger = logging.getLogger("tools.code_execution_tool")
 
-_IS_WINDOWS = platform.system() == "Windows"
 
 # Scrub order: secret-substring block first; whatever is left must match a safe
-# prefix, the exact-name HERMES_ allowlist, or (Windows) an OS-essential name.
+# prefix or the exact-name HERMES_ allowlist.
 # The broad "HERMES_" prefix is deliberately NOT safe — it leaked config vars
 # without a secret substring (HERMES_BASE_URL, HERMES_CONFIG, *_WEBHOOK).
 # HERMES_RPC_SOCKET / HERMES_RPC_DIR / TZ / HOME are injected after scrubbing.
@@ -36,26 +34,15 @@ _HERMES_CHILD_ALLOWED = frozenset({
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "HERMES_DELEGATED_CHILD_CONTEXT",
 })
 
-# Windows-only: without these the CRT itself fails — socket.socket() raises
-# WinError 10106 (Winsock can't find mswsock.dll) and subprocess can't resolve
-# cmd.exe. Well-known OS paths, not secrets; the substring block still runs.
-_WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
-    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "OS",
-    "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "PUBLIC", "ALLUSERSPROFILE",
-    "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
-    "APPDATA", "LOCALAPPDATA", "USERPROFILE", "USERDOMAIN", "USERNAME",
-    "HOMEDRIVE", "HOMEPATH", "COMPUTERNAME",
-})
 
 
-def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
+def _scrub_child_env(source_env, is_passthrough=None):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules, in order: (1) passthrough vars (skill/config-declared) resolve
     through the active profile secret scope — an absent scoped value is
     omitted; (2) secret-substring names are blocked; (3) safe prefixes pass;
-    (4) operational HERMES_* pass by exact name; (5) on Windows the
-    OS-essential allowlist passes by exact name.
+    (4) operational HERMES_* pass by exact name.
     """
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
@@ -65,8 +52,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         scoped_passthrough_additions = lambda _present: {}  # noqa: E731
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
-    if is_windows is None:
-        is_windows = _IS_WINDOWS
     scrubbed = {}
     # Non-secret HERMES_* vars no allowlist admits are dropped on purpose; a script importing a
     # repo module that reads one would see it silently unset — log the drop, point at the opt-in.
@@ -80,8 +65,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
             continue
         if (any(k.startswith(p) for p in _SAFE_ENV_PREFIXES)
-                or k in _HERMES_CHILD_ALLOWED
-                or (is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS)):
+                or k in _HERMES_CHILD_ALLOWED):
             scrubbed[k] = v
         elif k.startswith("HERMES_"):
             _dropped_hermes.append(k)
@@ -109,8 +93,8 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-    # Force UTF-8 stdio and default file encoding: on Windows sys.stdout is bound to the console
-    # code page (cp1252) and print("→") raises; harmless under a C/POSIX locale (containers).
+    # Force UTF-8 stdio and default file encoding; harmless under a C/POSIX
+    # locale (containers).
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
     # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting (and under the multiplexed
@@ -118,9 +102,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     from hermes_time import get_timezone_name
 
     _tz_name = get_timezone_name()
-    # Windows CPython does not support IANA names in TZ.  Leaving TZ unset
-    # preserves the OS-configured local timezone for the child process.
-    if _tz_name and not _IS_WINDOWS:
+    if _tz_name:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
     apply_subprocess_home_env(child_env)
@@ -181,7 +163,6 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
         from agent.delegation_context import delegated_child_subprocess_env
         return subprocess.run(
             [python_path, "-c", code], timeout=5, capture_output=True, text=text,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
@@ -228,11 +209,10 @@ def _resolve_child_python(mode: str) -> str:
     VIRTUAL_ENV/CONDA_PREFIX python if it exists and passes the 3.8+ probe, else ``sys.executable``."""
     if mode != "project":
         return sys.executable
-    subdir, exe_names = ("Scripts", ("python.exe", "python3.exe")) if _IS_WINDOWS else ("bin", ("python", "python3"))
     for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
         root = os.environ.get(var, "").strip()
-        for exe in exe_names if root else ():
-            candidate = os.path.join(root, subdir, exe)
+        for exe in ("python", "python3") if root else ():
+            candidate = os.path.join(root, "bin", exe)
             if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
                 continue
             if _is_usable_python(candidate):

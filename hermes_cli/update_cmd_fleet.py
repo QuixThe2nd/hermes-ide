@@ -431,7 +431,7 @@ def _needs_sudo(scope: str) -> bool:
     return (
         scope == "system"
         and hasattr(os, "geteuid")
-        and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
+        and os.geteuid() != 0
     )
 
 
@@ -510,7 +510,7 @@ def _run_pending_fleet_restart() -> bool:
     # user migrates.
     try:
         from hermes_cli.gateway import (
-            find_gateway_pids, is_windows, supports_systemd_services,
+            find_gateway_pids, supports_systemd_services,
         )
     except Exception as exc:
         _warn_gateway_restart_phase_aborted(exc, None)
@@ -579,14 +579,6 @@ def _run_pending_fleet_restart() -> bool:
         failed.extend(f"restart-phase: {error}" for error in restart.phase_errors)
         if restart.incomplete and not failed:
             failed.append("gateway-fleet")
-        if is_windows():
-            try:
-                from hermes_cli import gateway_windows
-                if gateway_windows.is_installed():
-                    gateway_windows.restart()
-            except Exception as exc:
-                logger.debug("Pending fleet restart: Windows failed: %s", exc)
-                failed.append("windows-gateway")
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False
@@ -673,8 +665,7 @@ def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplet
     a STALE fleet caused only by this deliberate deferral is expected and
     does NOT make the update partial — exit 0, receipt "success". The receipt
     is "partial" (and the process exits 1, marker kept) when the update
-    itself did not complete (``update_complete`` False) or the Windows
-    pause/resume reconciliation reported incomplete.
+    itself did not complete (``update_complete`` False).
 
     The live interpreter still serves pre-update code here, so callers must
     also skip stale-module purge/reload work: mutating this process's
@@ -1655,8 +1646,8 @@ def _print_legacy_units_warning() -> None:
 def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     """Fleet version rows, polled over a bounded settle window when runtimes are expected.
 
-    Gateways need time to rewrite gateway_state.json; Windows resumes DETACHED (~10s boot),
-    so a single 2s sleep reported "no rows" on healthy resumes. A "down" row may be a
+    Gateways need time to rewrite gateway_state.json, so a single 2s sleep
+    reported "no rows" on healthy restarts. A "down" row may be a
     detached replacement still booting: poll until none remain or the deadline passes.
     Pre-restart PIDs make a gateway stopped WITHOUT verified replacement a DOWN row (exit 1)
     instead of no row at all. An ``unknown`` row whose pid is NOT a pre-restart pid is a successor
@@ -1716,7 +1707,7 @@ def _restarted_units_gone(scoped_units) -> bool:
     return True
 
 
-def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):
+def _verify_fleet_after_update(restart, *, _pre_update_plan, node_failures, update_complete):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
@@ -1760,16 +1751,15 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     _fleet_snapshot: list = []
     with _best_effort('Fleet version verification failed: %s'):
         from hermes_cli.update_receipt import print_fleet_version_matrix
-        # Cross-platform "rows expected" signal: (restarted_services or killed_pids)
-        # never fires on Windows (pause/resume populates neither), so a healthy
-        # resumed gateway yielded zero rows and exit 0.
+        # "Rows expected" signal: (restarted_services or killed_pids), the
+        # pre-restart PID snapshot, or the plan inventory.
         # See #93406.
         # A gateway stopped WITHOUT a successor ("Restart manually") publishes no row by design,
         # so it must not count as an expected one — otherwise an update whose only live gateways
         # were unmapped exits 1 with "no rows" after correctly stopping them.
         _pre_restart, _killed = restart.fleet_probe_signals()
         _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
-            _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
+            _pre_update_plan, _pre_restart, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
         if print_fleet_version_matrix(_fleet_snapshot):
@@ -1779,8 +1769,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).
             print(
                 # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
-                # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
-                # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
+                # been live pre-update — restart bookkeeping, the pre-restart PID snapshot, or the
+                # pre-update plan inventory all count as that signal.
                 # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
                 # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
                 # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
@@ -1867,7 +1857,7 @@ def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
 
 
 def _fleet_probe_expected_runtimes(
-    pre_update_plan, pre_restart_pids, windows_resume_token, restarted_services, killed_pids,
+    pre_update_plan, pre_restart_pids, restarted_services, killed_pids,
 ) -> bool:
     """Whether the post-update fleet probe should have produced rows.
 
@@ -1875,19 +1865,11 @@ def _fleet_probe_expected_runtimes(
     healthy, so zero rows is only proof-of-safety when NOTHING says a gateway existed
     pre-update. Signals: ``restarted_services``/``killed_pids``; ``pre_restart_pids``
     non-empty or None (same contract as ``_restart_phase_failure_is_incomplete``); plan
-    inventoried ≥1 ``kind == "gateway"`` runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
-    pause/resume bookkeeping, not an inventory, and its entries don't map to probe rows
-    (``unmapped`` Scheduled-Task gateways never publish gateway_state.json; a paused
-    profile resumes DETACHED). Counting it made every Windows update that paused a
-    gateway exit 1 after a long silent wait; a live pre-update Windows gateway is already
-    covered by ``pre_restart_pids`` and the plan. The same condition gates the settle sleep.
+    inventoried ≥1 ``kind == "gateway"`` runtime.
 
     See #93406.
     See #78574.
-    See #93406.
     """
-    del windows_resume_token  # excluded on purpose — see docstring
-    # See #93406.
     if restarted_services or killed_pids:
         return True
     if pre_restart_pids is None or pre_restart_pids:
@@ -2762,7 +2744,7 @@ def _publish_no_update_repair_generation() -> tuple[bool, str]:
     """Publish a prepared generation for a *no-update* repair run.
 
     A repair on an already-current checkout (unhealthy venv, or the sync
-    handed off by the Windows shim) rewrote dependencies the running fleet
+    handed off by a repair run) rewrote dependencies the running fleet
     still has loaded, so it owes the same SHA-bound restart obligation a pull
     does — bound to the CURRENT HEAD, because no pull happened. Writing that
     obligation here is not inventing one: the repair demonstrably ran.

@@ -16,7 +16,6 @@ import logging
 import secrets
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
@@ -24,7 +23,6 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
-from hermes_cli.local_runtime.processes import spawn_server
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +136,6 @@ class LlamaServerSupervisor:
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
         self.proc: subprocess.Popen | None = None
-        self._job = None
         self.primary_model: str | None = None
         self._restarts = 0
         self._stopping = False
@@ -206,8 +203,8 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle,
-                                             stderr=subprocess.STDOUT, cwd=str(exe.parent))
+        self.proc = subprocess.Popen(cmd, stdout=self._log_handle,
+                                     stderr=subprocess.STDOUT, cwd=str(exe.parent))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -286,13 +283,8 @@ class LlamaServerSupervisor:
         with self._lifecycle_lock:
             self._stopping = True
             self._stop_event.set()
-            try:
-                if self.proc and self.proc.poll() is None:
-                    self._terminate_tree(self.proc)
-            finally:
-                if self._job is not None:
-                    self._job.close()
-                    self._job = None
+            if self.proc and self.proc.poll() is None:
+                self._terminate_tree(self.proc)
             # Retain state: deleting it could race a replacement publication.
             if self._log_handle:
                 self._log_handle.close()
@@ -302,8 +294,8 @@ class LlamaServerSupervisor:
     def _terminate_tree(proc: subprocess.Popen, *, verified_root: bool = False) -> None:
         """Terminate the router AND its model children.
 
-        Each child holds gigabytes of VRAM; terminating only the router (TerminateProcess on
-        Windows does no cleanup) orphans them with the weights still resident. Enumerate children
+        Each child holds gigabytes of VRAM; terminating only the router
+        orphans them with the weights still resident. Enumerate children
         FIRST (the parent must be alive to walk them), terminate all, escalate to kill.
         """
         children: list = []
@@ -339,12 +331,6 @@ class LlamaServerSupervisor:
         llama-server binary whose parent is gone is an orphan of a previous router. Its VRAM must
         come back before the new router loads models next to the ghosts.
         """
-        if self._job is not None:
-            self._job.close()
-            self._job = None
-            return
-        if sys.platform == "win32":
-            return  # Unrecorded processes are not ours merely because the binary matches.
         try:
             import psutil
 

@@ -65,55 +65,6 @@ def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bo
         raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
     return True
 
-# Windows has no bash/setsid chain: a tiny detached Python watcher waits for the gateway PID to
-# exit (bounded), then spawns ``hermes gateway restart``.
-_WINDOWS_RESTART_WATCHER = """
-import os, subprocess, sys, time
-from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
-pid = int(sys.argv[1])
-restart_after_s = float(sys.argv[2])
-cmd = sys.argv[3:]
-deadline = time.monotonic() + restart_after_s
-
-def _alive(p):
-    # On Windows, os.kill(pid, 0) is NOT a no-op — it maps to
-    # GenerateConsoleCtrlEvent(0, pid) (bpo-14484). Use the
-    # Win32 handle-based existence check instead.
-    if os.name == 'nt':
-        import ctypes
-        k32 = ctypes.windll.kernel32
-        k32.OpenProcess.restype = ctypes.c_void_p
-        k32.WaitForSingleObject.restype = ctypes.c_uint
-        k32.GetLastError.restype = ctypes.c_uint
-        h = k32.OpenProcess(0x1000 | 0x100000, False, int(p))
-        if not h:
-            return k32.GetLastError() != 87
-        try:
-            return k32.WaitForSingleObject(h, 0) == 0x102
-        finally:
-            k32.CloseHandle(h)
-    try:
-        os.kill(int(p), 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-
-while time.monotonic() < deadline:
-    if not _alive(pid):
-        break
-    time.sleep(0.2)
-subprocess.Popen(
-    cmd,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    creationflags=windows_detach_flags_without_breakaway(),
-)
-""".strip()
-
 
 @contextmanager
 def _log_suppressed(level: int, msg: str, *args, exc_info: bool = False):
@@ -1926,54 +1877,6 @@ class GatewayShutdownMixin:
         watcher_env.pop("_HERMES_GATEWAY", None)
         return watcher_env
 
-    @staticmethod
-    def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> None:
-        """Spawn the detached Windows watcher (``python -c``), retrying once without job breakaway."""
-        import subprocess
-        from hermes_cli._subprocess_compat import (
-            windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
-        )
-        watcher_env = GatewayShutdownMixin._restart_watcher_env()
-        project_root = Path(__file__).resolve().parent.parent
-        # Console python under CREATE_NO_WINDOW: nothing flashes. NOT pythonw.exe — a console-less
-        # watcher makes every console-subsystem descendant allocate a visible conhost (#54220/#56747).
-        # The watcher runs sys.executable (console python) under the CREATE_NO_WINDOW detach kwargs below:
-        # it owns one hidden console, inherited by the `hermes gateway restart` child, so nothing flashes.
-        # See #54220, #56747.
-        watcher_python = sys.executable
-        venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
-        site_packages = venv_dir / "Lib" / "site-packages"
-        if site_packages.exists():
-            watcher_env["VIRTUAL_ENV"] = str(venv_dir)
-            pythonpath = [str(project_root), str(site_packages)]
-            if watcher_env.get("PYTHONPATH"):
-                pythonpath.append(watcher_env["PYTHONPATH"])
-            watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-        watcher_argv = [
-            watcher_python, "-c", _WINDOWS_RESTART_WATCHER,
-            str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart",
-        ]
-        popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env)
-        # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
-        # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.
-        try:
-            subprocess.Popen(watcher_argv, **popen_kwargs, **windows_detach_popen_kwargs())
-        except OSError:
-            try:
-                subprocess.Popen(
-                    watcher_argv, **popen_kwargs, creationflags=windows_detach_flags_without_breakaway(),
-                )
-            except OSError as exc:
-                # Both spawns failed. Log only the interpreter basename and numeric errno — never
-                # argv, env, watcher source, or str(exc) (may carry a full path) — and return.
-                winerror = getattr(exc, "winerror", None)
-                logger.warning(
-                    "Detached restart watcher was not started after the "
-                    "no-breakaway retry (%s; %s=%r). The gateway will not "
-                    "be respawned by this restart attempt.", os.path.basename(watcher_python),
-                    "winerror" if winerror is not None else "errno",
-                    winerror if winerror is not None else exc.errno,
-                )
 
     async def _launch_detached_restart_command(self) -> None:
         from gateway.run import _resolve_hermes_bin
@@ -1988,9 +1891,6 @@ class GatewayShutdownMixin:
         self._detached_restart_helper_started = True
         current_pid = os.getpid()
         restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
-        if sys.platform == "win32":
-            GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
-            return
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "

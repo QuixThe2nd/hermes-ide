@@ -888,12 +888,10 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
 
 
 def _host_supports_migration() -> Optional[str]:
-    """Reason the host cannot be migrated by this command (s6 slots / Windows tasks), else None."""
+    """Reason the host cannot be migrated by this command (s6 slots), else None."""
     from hermes_cli import gateway as gw
     if gw._running_under_s6():
         return "s6-supervised container: per-profile gateways are s6 slots; set gateway.multiplex_profiles on the default profile and restart the container instead."
-    if gw.is_windows():
-        return "Windows Scheduled Tasks are not migrated automatically; set gateway.multiplex_profiles true, stop the per-profile tasks, and `hermes gateway restart`."
     return None
 
 

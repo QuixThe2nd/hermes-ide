@@ -548,7 +548,7 @@ def _prune_dead_supervised_pgids() -> set:
     It narrows, but cannot close, the window where a dead group's pgid is recycled before we
     notice (residual-risk note in ``tools/mcp_death_supervisor.py``)."""
     killpg = getattr(os, "killpg", None)
-    if killpg is None:  # windows-footgun: ok - POSIX-only, guarded
+    if killpg is None:
         return set()
     stale = set()
     for pgid in list(_supervised_pgids):

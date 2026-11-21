@@ -235,7 +235,6 @@ def load_validated_receipt(
         if stat.st_size > MAX_RECEIPT_BYTES:
             return None
         if hasattr(os, "getuid") and stat.st_uid != os.getuid():
-            # windows-footgun: ok — hasattr-gated POSIX uid check
             return None
         raw = path.read_text(encoding="utf-8-sig")
         if len(raw) > MAX_RECEIPT_BYTES:

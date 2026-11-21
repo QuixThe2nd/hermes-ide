@@ -11,8 +11,7 @@ Two version styles (``Package.version_style``):
           The update is the highest version every relevant target serves.
   minor  — the lockfile ``version`` field is major.minor; each target's
           exact patch lives in ITS artifact urls. Used when the package
-          has no shared release cadence across its sources (ffmpeg's posix
-          martin-riedl builds vs win32 BtbN autobuilds drift in patch).
+          has no shared release cadence across its sources.
           An update moves to the highest MAJOR.MINOR every relevant target
           serves; within it each target pins its own newest patch.
 
@@ -344,46 +343,6 @@ def martin_riedl_versions(target: str) -> list[str]:
     return list((martin_riedl_index().get(target) or {}).keys())
 
 
-def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
-    """Newest static GPL Windows asset per target/version, as (tag, name).
-
-    Releases also contain Linux, shared and LGPL builds. Retain target
-    identity here so discovery and pinning select the same artifact.
-    """
-    cached = _btbn_cache.get()
-    if cached is not None:
-        return cached
-    out: dict[str, dict[str, tuple[str, str]]] = {}
-    for page in range(1, 4):
-        data = _get_json(f"https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page={page}")
-        if not data:
-            break
-        for release in data:
-            if release.get("draft") or release.get("prerelease"):
-                continue
-            tag = release.get("tag_name", "")
-            if tag == "latest":
-                continue
-            for asset in release.get("assets", []):
-                name = asset.get("name", "")
-                m = re.fullmatch(
-                    r"ffmpeg-n(\d+\.\d+\.\d+)-.+-win(64|arm64)-gpl-\d+\.\d+\.zip", name
-                )
-                if m:
-                    version, arch = m.groups()
-                    target = "win32-x64" if arch == "64" else "win32-arm64"
-                    out.setdefault(target, {}).setdefault(version, (tag, name))
-        if len(data) < 30:
-            break
-    _btbn_cache.set(out)
-    return out
-
-
-def btbn_versions(target: str) -> list[str]:
-    """Release versions with a supported Windows asset for this target."""
-    return list(btbn_index().get(target, {}))
-
-
 def pbs_build_tags(minor: str, target: str) -> list[str]:
     """python-build-standalone release tags (20260814, ...) newest-first that
     actually ship the requested cpython <minor> install_only asset for
@@ -391,8 +350,6 @@ def pbs_build_tags(minor: str, target: str) -> list[str]:
     page is enough — scan newest-first and stop at the first tag with the
     asset (pbs builds every supported line per release)."""
     triple = {
-        "win32-x64": "x86_64-pc-windows-msvc",
-        "win32-arm64": "aarch64-pc-windows-msvc",
         "linux-x64": "x86_64-unknown-linux-gnu",
         "linux-arm64": "aarch64-unknown-linux-gnu",
         "darwin-x64": "x86_64-apple-darwin",
@@ -436,4 +393,3 @@ class _TTL:
 
 
 _martin_cache = _TTL()
-_btbn_cache = _TTL()

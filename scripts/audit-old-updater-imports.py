@@ -45,9 +45,8 @@ which are resolved here because they are all spelled with literals:
   ``hermes_cli.config`` and friends by name. Treated as a whole-module
   requirement.
 * ``getattr(module, "name")`` — a symbol requirement with no import
-  statement. ``managed_uv._windows_runtime_holders`` looks up
-  ``_detect_venv_python_processes`` on ``hermes_cli.main`` this way, and
-  silently refuses the update when it is absent.
+  statement. A getattr in the update path silently refuses the update
+  when the symbol is absent.
 * ``importlib.import_module(x)`` with a non-literal argument — cannot be
   resolved statically. Reported as UNRESOLVED rather than ignored.
 
@@ -648,7 +647,7 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
     if symbol is None:
         return True, ""
 
-    # `from hermes_cli import gateway_windows` names a SUBMODULE, not an
+    # `from hermes_cli import service_manager` names a SUBMODULE, not an
     # attribute of the package body.
     submodule = root / rel / symbol
     if submodule.with_suffix(".py").is_file() or (submodule / "__init__.py").is_file():

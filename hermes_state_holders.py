@@ -29,7 +29,6 @@ def read_only_db_uri(db_path) -> str:
 
 logger = logging.getLogger(__name__)
 
-_IS_WINDOWS = sys.platform == "win32"
 _HERMES_EXECUTABLES = frozenset({"hermes", "hermes-agent"})
 _HERMES_PYTHON_MODULES = frozenset({"hermes_cli.main"})
 _HERMES_PYTHON_SCRIPTS = frozenset({"hermes_cli/main.py", "run_agent.py"})
@@ -191,9 +190,6 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     must not assume quiescence when an old, unlinked SQLite generation may
     still be open by another process.
     """
-    if _IS_WINDOWS:
-        return []
-
     db_path_str = os.path.abspath(os.fspath(db_path))
     watched = {
         canonical_sqlite_path(db_path_str),

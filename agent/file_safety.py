@@ -131,10 +131,9 @@ def _homes_and_resolved(path: str) -> tuple[set[str], str]:
 #   * ``\\\\?\\GLOBALROOT...`` — re-entry into the NT namespace.
 #
 # Plain drive-letter extended-length paths (``\\\\?\\C:\\...``) stay ALLOWED:
-# they are a routine local form (see hermes_cli/windows_ssh_runtime.py) and
-# carry no remote-auth trigger. Plain UNC shares (``\\\\server\\share``) are
-# also unchanged here — blocking ordinary UNC reads is a policy question,
-# not part of this namespace-bypass guard.
+# they are a routine local form and carry no remote-auth trigger. Plain UNC
+# shares (``\\\\server\\share``) are also unchanged here — blocking ordinary
+# UNC reads is a policy question, not part of this namespace-bypass guard.
 #
 # The guard runs on every platform: these prefixes are never legitimate
 # inputs on POSIX either, and path strings can be relayed toward Windows

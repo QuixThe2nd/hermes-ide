@@ -17,7 +17,6 @@ runs the helper exactly ONCE with an empty key; POSIX-only (needs ``/bin/sh``).
 from __future__ import annotations
 
 import os
-import platform
 import re
 import signal as _signal
 import subprocess
@@ -36,10 +35,6 @@ _MAX_OUTPUT_BYTES = 1024 * 1024  # a misbehaving helper can't OOM us
 
 # Anchored; `.` does not cross newlines, so a multi-line blob never matches.
 _ENV_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-
-
-def _is_windows() -> bool:
-    return os.name == "nt" or platform.system() == "Windows"
 
 
 def _log(message: str) -> None:
@@ -65,10 +60,6 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
     (never inherited); stderr is discarded. Any failure logs structured fields
     only and returns None — never raises.
     """
-    if _is_windows():
-        _log("the 'command' provider is POSIX-only (needs /bin/sh); resolving no value on Windows")
-        return None
-
     # The helper legitimately gets the user's shell env (it may need any
     # credential to resolve the secret) — but a multiplex profile only its own.
     env = source_child_env()
@@ -90,7 +81,7 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
         # Kill the whole group: a helper may have forked children that would
         # otherwise keep the pipe open. POSIX-only by the early return above.
         try:
-            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
         try:
@@ -173,9 +164,6 @@ class CommandSource(SecretSource):
         if not command:
             return result.fail("secrets.command.enabled is true but secrets.command.command "
                                "is empty.  Set the helper command in config.yaml.", ErrorKind.NOT_CONFIGURED)
-        if _is_windows():
-            return result.fail("the 'command' secret source is POSIX-only (needs /bin/sh); skipping on Windows",
-                               ErrorKind.NOT_CONFIGURED)
 
         timeout = coerce_float(cfg.get("helper_timeout_seconds", _COMMAND_TIMEOUT_SECONDS),
                                _COMMAND_TIMEOUT_SECONDS)
@@ -219,13 +207,6 @@ def apply_command_secrets(
         result.error = (
             "secrets.command.enabled is true but secrets.command.command is "
             "empty.  Set the helper command in config.yaml."
-        )
-        return result
-
-    if _is_windows():
-        result.warnings.append(
-            "the 'command' secret source is POSIX-only (needs /bin/sh); "
-            "skipping on Windows"
         )
         return result
 

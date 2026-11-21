@@ -180,7 +180,7 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
 
     raise_if_read_blocked(source)
-    with open(os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
+    with open(os.path.expanduser(source), "rb") as fh:
         raw = fh.read()
     ext = (os.path.splitext(source)[1].lstrip(".") or "png").lower()
     if ext == "jpg":

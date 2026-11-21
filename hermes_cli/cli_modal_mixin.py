@@ -241,14 +241,7 @@ class CLIModalMixin:
         """Slash-command confirmation through the prompt_toolkit composer (raw input() fought
         prompt_toolkit's stdin ownership: prompt above the TUI, Enter read as EOF). All platforms
         drive the modal via ``self._app.loop`` + ``call_soon_threadsafe``; raw ``input()`` is kept
-        only for the safe cases (no app, no loop, scheduling failure) — on Windows a non-main-thread
-        input() deadlocks against prompt_toolkit, so that case cancels instead.
-
-        **Platform note (Windows — issue #33961):** Earlier code bypassed the modal on ``sys.platform ==
-        "win32"`` and fell back to a raw ``input()`` prompt. When the confirm was triggered from the
-        ``process_loop`` daemon thread (the normal case) that ``input()`` ran off the main thread and
-        deadlocked against prompt_toolkit's stdin ownership — the user saw a frozen cursor and Ctrl-C was
-        swallowed (bare ``/reset`` froze; ``/reset now`` worked only because it skips the prompt entirely).
+        only for the safe cases (no app, no loop, scheduling failure).
         """
         if not choices:
             return None
@@ -262,12 +255,6 @@ class CLIModalMixin:
         in_main_thread = threading.current_thread() is threading.main_thread()
 
         def _stdin_fallback() -> str | None:
-            # On native Windows a raw input() from a non-main thread deadlocks against prompt_toolkit's
-            # stdin ownership (#33961). With an app running we cannot safely prompt off the main thread, so
-            # cancel cleanly (None) rather than hang the terminal.
-            if sys.platform == "win32" and not in_main_thread:
-                self._invalidate()
-                return None
             return self._prompt_text_input("Choice [1/2/3]: ")
 
         if not in_main_thread and app_loop is None:

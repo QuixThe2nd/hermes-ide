@@ -260,7 +260,7 @@ def _load_json_file(path: Path) -> dict:
             owner_info = f"owner_uid={st.st_uid} mode={oct(st.st_mode)[-4:]}"
         except OSError:
             owner_info = "<stat failed>"
-        euid = os.geteuid() if hasattr(os, "geteuid") else "n/a"  # no geteuid on Windows
+        euid = os.geteuid()
         logger.warning(
             "Pairing file %s exists but is not readable as uid=%s (%s; %s). "
             "If you ran `docker exec <container> hermes pairing approve ...` as root, "

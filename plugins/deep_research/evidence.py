@@ -115,7 +115,7 @@ def _flock(handle: Any) -> None:
     try:
         import fcntl
 
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # windows-footgun: ok — POSIX only path
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
     except (ImportError, OSError):
         pass
 
@@ -124,7 +124,7 @@ def _funlock(handle: Any) -> None:
     try:
         import fcntl
 
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # windows-footgun: ok — POSIX only path
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except (ImportError, OSError):
         pass
 

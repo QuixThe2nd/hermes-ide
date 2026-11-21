@@ -36,10 +36,7 @@ def _application_roots() -> list[Path]:
     if sys.platform == "linux":
         return [Path("/usr/share/applications"), Path("/usr/local/share/applications"),
                 home / ".local/share/applications"]
-    if sys.platform == "win32":
-        return [Path(os.environ.get("ProgramFiles", "C:/Program Files")),
-                Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")),
-                Path(os.environ.get("LOCALAPPDATA", str(home / "AppData/Local"))) / "Programs"]
+
     return []
 
 
@@ -82,8 +79,6 @@ class _Scan:
                     if sys.platform == "darwin" and is_dir and child.name.lower().endswith(".app"):
                         self.record(child.name[:-4])
                         continue  # Never descend into bundles or run their executables.
-                    if sys.platform == "win32" and is_dir:
-                        self.record(child.name)
                     if sys.platform == "linux" and child.name.endswith(".desktop") and child.is_file(follow_symlinks=False):
                         self.desktop(Path(child.path))
                     if is_dir and depth < 2:
@@ -124,8 +119,6 @@ class _Scan:
                     self.readable = True
                 for label, spellings in candidates.items():
                     self.tick()
-                    # Passing an absolute candidate also prevents Windows which() from
-                    # silently prepending the current directory to an explicit PATH.
                     if any(shutil.which(str(Path(part) / candidate)) for candidate in spellings):
                         self.matched.add(label)
             except FileNotFoundError:
@@ -143,7 +136,7 @@ def discover_catalog_apps(applications: dict[str, list[str]]) -> dict:
     """
     criteria = {name: validate_applications(labels) for name, labels in applications.items()}
     labels = {label for values in criteria.values() for label in values}
-    supported = sys.platform in {"darwin", "linux", "win32"} and len(labels) <= 256
+    supported = sys.platform in {"darwin", "linux"} and len(labels) <= 256
     scan = _Scan(labels if supported else set())
     if supported:
         try:

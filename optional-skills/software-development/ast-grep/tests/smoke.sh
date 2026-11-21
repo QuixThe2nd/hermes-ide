@@ -31,7 +31,6 @@ pass() { echo "PASS: $*"; }
 omo_runtime_slug() {
   case "$(uname -s)" in
     Darwin) local os_slug="darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) local os_slug="win32" ;;
     *) local os_slug="linux" ;;
   esac
 
@@ -128,9 +127,6 @@ pass "OMO_AST_GREP_SG_PATH resolves first"
 RUNTIME_HOME="$OUTPUT_DIR/home"
 RUNTIME_SLUG="$(omo_runtime_slug)"
 RUNTIME_BIN="sg"
-case "$RUNTIME_SLUG" in
-  win32-*) RUNTIME_BIN="sg.exe" ;;
-esac
 FAKE_RUNTIME_SG="$RUNTIME_HOME/.omo/runtime/ast-grep/$RUNTIME_SLUG/$RUNTIME_BIN"
 fake_sg "$FAKE_RUNTIME_SG"
 HOME="$RUNTIME_HOME" CODEX_HOME= OMO_AST_GREP_SG_PATH= $HELPER doctor > "$OUTPUT_DIR/omo-runtime.out" 2>&1
@@ -191,7 +187,7 @@ hangul = re.compile(r"[\uac00-\ud7a3]")
 targets = [root / "SKILL.md", root / "README.md"]
 for d in ("references", "scripts", "tests", ".github"):
     targets.extend((root / d).rglob("*"))
-targets.extend([root / "install.sh", root / "install.ps1"])
+targets.append(root / "install.sh")
 hits = 0
 for p in targets:
     if not p.is_file():

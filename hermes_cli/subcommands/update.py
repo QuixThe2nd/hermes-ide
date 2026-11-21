@@ -72,22 +72,13 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "(a required step failed or only partially completed, the checkout "
             "moved, or the record could not be written and read back) exits "
             "nonzero and prepares nothing. Nothing is ever stopped, killed, or "
-            "paused either — on Windows the run refuses (nonzero) while another "
-            "process holds the venv instead of reaping it. A later "
-            "`hermes update` (or an idle auto-update activation, which "
+            "paused either. A later `hermes update` (or an idle auto-update "
+            "activation, which "
             "re-validates the record, receipt, checkout SHA and live fleet "
             "under the updater lock before restarting) performs the restart. "
             "On an already-up-to-date checkout this flag also skips the "
             "pending-restart catch-up."
         ),
-    )
-    update_parser.add_argument(
-        "--force", action="store_true", default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings. Does NOT bypass the venv-process guard (see --force-venv).",
-    )
-    update_parser.add_argument(
-        "--force-venv", action="store_true", default=False,
-        help="Windows: mutate the venv even while other processes are running from its interpreter (serve backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
     update_parser.add_argument(
         "--no-gateway-restart", action="store_true", default=False,

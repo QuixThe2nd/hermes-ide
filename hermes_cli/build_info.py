@@ -94,7 +94,7 @@ def get_code_identity(refresh: bool = False) -> dict:
     version: Optional[str] = None
     try:
         import tomllib
-        with open(project_root / "pyproject.toml", "rb") as fh:  # windows-footgun: ok — binary mode, tomllib requires bytes
+        with open(project_root / "pyproject.toml", "rb") as fh:
             raw_version = tomllib.load(fh).get("project", {}).get("version")
         version = str(raw_version) if raw_version else None
     except Exception:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import getpass
-import os
 import sys
 from collections.abc import Callable
 
@@ -52,9 +51,8 @@ def masked_secret_prompt(prompt: str, *, mask: str = "*") -> str:
     """
     if not _stream_is_tty(sys.stdin) or not _stream_is_tty(sys.stdout):
         return getpass.getpass(prompt)
-    masked = _masked_secret_prompt_windows if os.name == "nt" else _masked_secret_prompt_posix
     try:
-        return masked(prompt, mask=mask)
+        return _masked_secret_prompt_posix(prompt, mask=mask)
     except (KeyboardInterrupt, EOFError):
         raise
     except Exception:
@@ -71,19 +69,6 @@ def _stream_is_tty(stream) -> bool:
 def _write(text: str) -> None:
     sys.stdout.write(text)
     sys.stdout.flush()
-
-
-def _masked_secret_prompt_windows(prompt: str, *, mask: str) -> str:
-    import msvcrt
-
-    def read_char() -> str:
-        ch = msvcrt.getwch()
-        if ch in {"\x00", "\xe0"}:
-            msvcrt.getwch()
-            return "\x1b"
-        return ch
-
-    return _collect_masked_input(read_char, _write, prompt, mask=mask)
 
 
 def _masked_secret_prompt_posix(prompt: str, *, mask: str) -> str:

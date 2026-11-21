@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import shlex
-import sys
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
@@ -12,7 +11,6 @@ _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
-_IS_WINDOWS = sys.platform == "win32"
 
 
 def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
@@ -70,7 +68,7 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
             kind, j = "comment", text.find("\n", i, n)
             if j < 0:
                 j = n
-        elif (quote != "'" and ch == "\\" and not _IS_WINDOWS and i + 1 < n
+        elif (quote != "'" and ch == "\\" and i + 1 < n
               and not _is_windows_drive_relative_backslash(text, i)):
             kind, j = "esc", i + 2
         elif ch == quote or (quote is None and ch in "'\""):

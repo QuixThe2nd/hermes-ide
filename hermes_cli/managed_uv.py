@@ -1,11 +1,11 @@
 """Hermes-managed uv and Python runtime repair.
 
-Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
-Windows).  Every code path that needs uv resolves it from that single location.
-If the binary is missing, ``ensure_uv()`` bootstraps it via the official
-standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
-at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
-probing, no conda guards, no multi-location resolution chains.
+Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv``.  Every code path
+that needs uv resolves it from that single location. If the binary is missing,
+``ensure_uv()`` bootstraps it via the official standalone installer with
+``UV_UNMANAGED_INSTALL`` pointed at ``$HERMES_HOME/bin`` so the installer
+writes directly there — no PATH probing, no conda guards, no multi-location
+resolution chains.
 
 The Python backing the install is different: it is shared by every Hermes
 profile because the checkout's ``venv`` is shared.  Runtime repair therefore
@@ -25,7 +25,6 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
@@ -35,16 +34,13 @@ from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.runtime_repair import (
-    _cut_over_windows_runtime_config,
     _default_live_venv,
     _record_runtime_repair,
-    _reload_hermes_constants,
     _remove_tree,
     _rename_with_retry,
     _report_runtime_repair_failure,
     _sweep_stale_runtime_backups,
     _venv_python,
-    _windows_runtime_self_lock,
 )
 from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo, probe_sqlite_runtime
 
@@ -65,14 +61,10 @@ _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 def managed_uv_path() -> Path:
     """Return the path where Hermes keeps *its* uv binary.
 
-    ``$HERMES_HOME/bin/uv`` on POSIX, ``$HERMES_HOME\\bin\\uv.exe`` on
-    Windows.  The directory may not exist yet — callers should use
-    ``ensure_uv()`` to bootstrap it.
+    ``$HERMES_HOME/bin/uv``. The directory may not exist yet — callers
+    should use ``ensure_uv()`` to bootstrap it.
     """
-    home = get_hermes_home()
-    if platform.system() == "Windows":
-        return home / "bin" / "uv.exe"
-    return home / "bin" / "uv"
+    return get_hermes_home() / "bin" / "uv"
 
 
 def resolve_uv() -> Optional[str]:
@@ -243,9 +235,6 @@ class _UvResult(str):
     Missing uv is the empty string (falsy) instead of ``None`` so legacy
     2-target call sites can still unpack a failure without raising, while
     ``if not uv_bin`` keeps working for single-value callers.
-
-    POSIX only. This wrapper is **never** returned on Windows — see
-    ``ensure_uv()`` for why the ``__iter__`` override is unsafe there.
     """
 
     fresh_bootstrap: bool
@@ -326,33 +315,16 @@ def ensure_uv(
 ):
     """Return the managed uv path, installing it first if necessary.
 
-    On **POSIX** the result is a :class:`_UvResult` (a ``str`` subclass) that is
-    both usable directly as the path *and* unpackable as
-    ``(path, fresh_bootstrap)`` for older call sites parked on a 2-tuple
-    release — see :class:`_UvResult` for the update-boundary rationale.
-
-    On **Windows** we deliberately return a plain ``str``/``None`` instead.
-    ``subprocess`` there serializes the argv via ``subprocess.list2cmdline``,
-    which iterates every entry *as a string* (``for c in arg``). The dependency
-    installer passes uv straight into the command list (``[uv_bin, "pip", ...]``),
-    so a ``_UvResult`` — whose ``__iter__`` yields ``(path, fresh_bootstrap)``
-    rather than characters — would inject the bool into the command line and
-    crash the install with ``TypeError: sequence item 1: expected str instance,
-    bool found``. A plain ``str`` matches the historical Windows contract and is
-    subprocess-safe. (A single value cannot satisfy both 2-target unpacking and
-    Windows char-iteration: both use the iterator protocol, with contradictory
-    results.)
+    The result is a :class:`_UvResult` (a ``str`` subclass) that is both
+    usable directly as the path *and* unpackable as ``(path, fresh_bootstrap)``
+    for older call sites parked on a 2-tuple release — see :class:`_UvResult`
+    for the update-boundary rationale.
 
     On failure the result is falsy — never raises — so callers can fall back to
     pip gracefully. ``repair_observer``, when provided, receives the runtime
     repair result produced after a fresh uv bootstrap.
     """
-    result = _ensure_uv_path(repair_observer=repair_observer)
-    if platform.system() == "Windows":
-        # See docstring: a str subclass with an overridden __iter__ is unsafe as
-        # a Windows subprocess argument. Hand back the plain path (or None).
-        return result
-    return _UvResult(result)
+    return _UvResult(_ensure_uv_path(repair_observer=repair_observer))
 
 
 def _uv_self_update_is_fresh(now: float | None = None) -> bool:
@@ -1001,17 +973,9 @@ def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
         return None
 
     try:
-        if os.name == "nt":
-            import msvcrt
+        import fcntl
 
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (ImportError, OSError):
         os.close(fd)
         return None
@@ -1020,15 +984,9 @@ def _acquire_repair_lock(runtime_root: Path) -> _RepairLock | None:
 
 def _release_repair_lock(lock: _RepairLock) -> None:
     try:
-        if os.name == "nt":
-            import msvcrt
+        import fcntl
 
-            os.lseek(lock.fd, 0, os.SEEK_SET)
-            msvcrt.locking(lock.fd, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(lock.fd, fcntl.LOCK_UN)
+        fcntl.flock(lock.fd, fcntl.LOCK_UN)
     except (ImportError, OSError):
         pass
     finally:
@@ -1037,22 +995,6 @@ def _release_repair_lock(lock: _RepairLock) -> None:
         except OSError:
             pass
 
-
-def _windows_runtime_holders() -> tuple[bool, str]:
-    if platform.system() != "Windows":
-        return False, ""
-    main_module = sys.modules.get("hermes_cli.main")
-    detector = getattr(main_module, "_detect_venv_python_processes", None)
-    if detector is None:
-        return True, "cannot verify Windows venv holders from this update context"
-    try:
-        holders = detector()
-    except Exception as exc:
-        return True, f"could not verify Windows venv holders: {exc}"
-    if holders:
-        pids = ", ".join(str(item[0]) for item in holders[:6])
-        return True, f"other Hermes processes still hold the venv (PID {pids})"
-    return False, ""
 
 
 def _uv_version_string(uv_bin: str) -> str:
@@ -1148,43 +1090,6 @@ def repair_vulnerable_runtime(
             "safe",
             sqlite_before=current.sqlite_version_string,
             sqlite_after=current.sqlite_version_string,
-        )
-
-    blocked, detail = _windows_runtime_holders()
-    if blocked:
-        print(f"  ⚠ SQLite runtime repair deferred: {detail}")
-        return RuntimeRepairResult(
-            "skipped",
-            detail,
-            sqlite_before=current.sqlite_version_string,
-        )
-
-    self_locked, self_detail = _windows_runtime_self_lock(live)
-    if self_locked:
-        # Structural, not transient: this process maps the live venv's own
-        # executable, so the park rename fails the same way on every run and
-        # no number of retries converges. Defer BEFORE provisioning — a
-        # candidate staged for a cutover that can never run only leaks an
-        # incomplete generation (#93032).
-        print(f"  ⚠ SQLite runtime repair deferred: {self_detail}.")
-        print(
-            "    Retrying `hermes update` from inside this venv cannot help: "
-            "the mapped executable is released only when this process exits."
-        )
-        print(
-            "    To complete the repair, run the updater from an interpreter "
-            "that lives outside this venv, e.g.:"
-        )
-        print(f"      cd {root}")
-        print("      <system Python> -m hermes_cli.main update")
-        print(
-            "    Sessions stay protected meanwhile: Hermes keeps databases "
-            "out of WAL mode on this SQLite build."
-        )
-        return RuntimeRepairResult(
-            "skipped",
-            self_detail,
-            sqlite_before=current.sqlite_version_string,
         )
 
     runtime_root = root / _RUNTIME_DIR_NAME
@@ -1306,24 +1211,16 @@ def repair_vulnerable_runtime(
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.
 
-    Uses ``UV_UNMANAGED_INSTALL`` (POSIX) or ``UV_INSTALL_DIR`` (Windows)
-    so the astral installer writes the binary directly into
+    ``UV_UNMANAGED_INSTALL`` points the astral installer at
     ``$HERMES_HOME/bin/`` instead of ``~/.local/bin/``.
     """
-    system = platform.system()
     env = {
         **os.environ,
         # Tell the astral installer to drop the binary in our dir, not
-        # ~/.local/bin.  UV_UNMANAGED_INSTALL is the POSIX env var; Windows
-        # uses UV_INSTALL_DIR.
+        # ~/.local/bin/.
         "UV_UNMANAGED_INSTALL": str(target.parent),
-        "UV_INSTALL_DIR": str(target.parent),
     }
-
-    if system == "Windows":
-        _install_uv_windows(env)
-    else:
-        _install_uv_posix(env)
+    _install_uv_posix(env)
 
 
 def _install_uv_posix(env: dict[str, str]) -> None:
@@ -1348,17 +1245,6 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             os.unlink(installer_path)
         except OSError:
             pass
-
-
-def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
-    cmd = "irm https://astral.sh/uv/install.ps1 | iex"
-    subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
-        env=env,
-        check=True,
-        capture_output=True,
-    )
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

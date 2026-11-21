@@ -288,7 +288,7 @@ def _translate_stdio(config: Mapping[str, Any], plugin_root: Path, data_root: Pa
     env = config.get("env", {})
     if not _str_map(env):
         raise ValueError("env must map string keys to string values")
-    if {"PLUGIN_ROOT", "PLUGIN_DATA"} & {key.upper() if os.name == "nt" else key for key in env}:
+    if {"PLUGIN_ROOT", "PLUGIN_DATA"} & set(env):
         raise ValueError("PLUGIN_ROOT and PLUGIN_DATA are reserved")
     cwd = config.get("cwd")
     if cwd is not None and not isinstance(cwd, str):

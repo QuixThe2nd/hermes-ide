@@ -113,7 +113,7 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
             stdin_payload = password + "\n"
     on_line(f"$ {cmd}")
     env = {"DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
-    proc = subprocess.Popen(  # windows-footgun: ok — Linux-only (is_supported_host)
+    proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env={**os.environ, **env}, start_new_session=True)
     try:
@@ -171,16 +171,16 @@ def _kill_group(proc: subprocess.Popen) -> None:
     signal reaches a root-owned child, which is why the caller never waits on EOF."""
     def _group_gone() -> bool:
         try:
-            os.killpg(proc.pid, 0)  # windows-footgun: ok — Linux-only (is_supported_host)
+            os.killpg(proc.pid, 0)
         except ProcessLookupError:
             return True
         except PermissionError:
             return False  # a root-owned child is still there
         return False
 
-    for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, 1.0)):  # windows-footgun: ok — Linux-only (is_supported_host)
+    for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, 1.0)):
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, sig)  # windows-footgun: ok — Linux-only (is_supported_host)
+            os.killpg(proc.pid, sig)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=grace)
         # The leader (sudo / the package manager) going away is not the end: wait for the whole group so a

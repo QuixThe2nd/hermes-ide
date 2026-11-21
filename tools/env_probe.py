@@ -13,8 +13,6 @@ import tempfile
 import threading
 from typing import Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-
 logger = logging.getLogger(__name__)
 
 # Concurrency model: exactly ONE background worker runs the probe; ``_PROBE_DONE``
@@ -61,8 +59,7 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
             try:
                 result = subprocess.run(
                     cmd, stdout=out_f, stderr=err_f, timeout=timeout, check=False,
-                    # CREATE_NO_WINDOW (0 on POSIX): pythonw hosts would flash a console
-                    stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                    stdin=subprocess.DEVNULL)
             except subprocess.TimeoutExpired:
                 return -1, "", "timeout"
             out_f.seek(0)

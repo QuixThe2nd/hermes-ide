@@ -787,18 +787,9 @@ def _state_lock(timeout: float = 60.0):
         acquired = False
         while True:
             try:
-                if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                    import msvcrt
+                import fcntl
 
-                    # Byte zero, both ways: msvcrt locks *relative to the
-                    # current position*, so an EOF seek would lock a different
-                    # byte than the seek(0) unlock below releases.
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
                 break
             except OSError:
@@ -814,14 +805,9 @@ def _state_lock(timeout: float = 60.0):
                 yield
         finally:
             handle.seek(0)
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                import msvcrt
+            import fcntl
 
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
         handle.close()
 

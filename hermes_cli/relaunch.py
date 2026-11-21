@@ -97,7 +97,7 @@ def _shebang_escapes_running_env(shebang: str) -> bool:
     if not tokens:
         return True
     interp = pathlib.Path(tokens[0])
-    if interp.name in ("env", "env.exe"):
+    if interp.name == "env":
         rest = [t for t in tokens[1:] if not t.startswith("-")]
         if not (rest and pathlib.Path(rest[0]).is_absolute()):
             return True
@@ -110,20 +110,14 @@ def resolve_hermes_bin() -> Optional[str]:
     """Hermes entry point: ``sys.argv[0]`` if a real executable, else ``which hermes``, else ``None``
     (caller falls back to ``python -m hermes_cli.main``).
 
-    Python launchers are never returned: on Windows a ``.py`` can't be exec'd directly, and on
-    POSIX the git installer runs the extensionless source launcher under the managed venv
-    interpreter while its ``#!/usr/bin/env python3`` shebang would pick the system Python and
-    lose the venv. Falling through to ``sys.executable -m hermes_cli.main`` keeps the venv.
+    Python launchers are never returned: the git installer runs the extensionless source
+    launcher under the managed venv interpreter while its ``#!/usr/bin/env python3`` shebang
+    would pick the system Python and lose the venv. Falling through to
+    ``sys.executable -m hermes_cli.main`` keeps the venv.
     """
     argv0 = sys.argv[0]
-    _is_windows = sys.platform == "win32"
-
-    def _is_python_script(p: str) -> bool:
-        return p.lower().endswith((".py", ".pyc"))
 
     def _is_unsafe_python_launcher(p: str) -> bool:
-        if _is_windows:
-            return _is_python_script(p)
         # A console script pinned to the running venv (``#!<venv>/bin/python``) keeps the venv and
         # stays exec-able; a shebang that resolves elsewhere (``env python3``) loses it.
         return _needs_interpreter(pathlib.Path(p))
@@ -160,28 +154,7 @@ def build_relaunch_argv(
 def relaunch(
     extra_args: Sequence[str], *, preserve_inherited: bool = True, original_argv: Optional[Sequence[str]] = None
 ) -> None:
-    """Replace the current process with a fresh hermes invocation.
-
-    POSIX: ``os.execvp`` in place (same PID, no double-fork). Windows has no real exec — its
-    ``execvp`` emulation only works for a real Win32 executable, so spawn + exit instead.
-    """
+    """Replace the current process with a fresh hermes invocation (``os.execvp`` in place —
+    same PID, no double-fork)."""
     new_argv = build_relaunch_argv(extra_args, preserve_inherited=preserve_inherited, original_argv=original_argv)
-    if sys.platform == "win32":
-        import subprocess
-        try:
-            result = subprocess.run(new_argv)
-            sys.exit(result.returncode)
-        except KeyboardInterrupt:
-            sys.exit(130)
-        except OSError as exc:
-            # Raw ``[Errno 8] Exec format error`` is cryptic; usual causes are ``hermes`` not on
-            # PATH yet (install hasn't propagated User PATH into this shell) or a stale shim.
-            print(
-                f"\nHermes relaunch failed: {exc}\n"
-                f"Command: {' '.join(new_argv)}\n"
-                f"Fix: open a new terminal so PATH picks up, then re-run hermes.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    else:
-        os.execvp(new_argv[0], new_argv)
+    os.execvp(new_argv[0], new_argv)

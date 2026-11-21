@@ -117,23 +117,13 @@ _smi_path_cache: "tuple[str | None] | None" = None
 
 def _nvidia_smi_path() -> str | None:
     """Absolute path to nvidia-smi, or None. PATH first (respects user overrides), then the
-    driver's known install locations on Windows and WSL."""
+    WSL location."""
     global _smi_path_cache
     if _smi_path_cache is not None:
         return _smi_path_cache[0]
     found = shutil.which("nvidia-smi")
-    if found is None and os.name == "nt":
-        windir = os.environ.get("SystemRoot", r"C:\Windows")
-        candidates = (
-            # DCH drivers (every modern install) place it in System32.
-            Path(windir) / "System32" / "nvidia-smi.exe",
-            # Legacy standalone drivers used NVSMI, never on PATH.
-            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-            / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe",
-        )
-        found = next((str(c) for c in candidates if c.exists()), None)
-    elif found is None and sys.platform.startswith("linux"):
-        # The Windows display driver exposes nvidia-smi here inside WSL, but does not guarantee
+    if found is None and sys.platform.startswith("linux"):
+        # The host's display driver exposes nvidia-smi here inside WSL, but does not guarantee
         # that the directory is present on PATH.
         candidate = Path("/usr/lib/wsl/lib/nvidia-smi")
         if candidate.exists():

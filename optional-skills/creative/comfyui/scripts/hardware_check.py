@@ -9,7 +9,6 @@ Improvements over v1:
   - ROCm: prefers `rocm-smi --json` for new ROCm 6.x output
   - Disk space check: warns if /home or workspace volume has < 25 GB free
   - PyTorch verification (optional): tries to import torch and check device availability
-  - Windows: prefers PowerShell `Get-CimInstance` over deprecated `wmic`
   - More accurate VRAM thresholds and verdict reasons
 
 Emits a structured JSON report. Exit codes match `verdict`:
@@ -203,18 +202,12 @@ def detect_apple_silicon() -> dict | None:
 
 
 def detect_intel_arc() -> dict | None:
-    if platform.system() not in {"Linux", "Windows"}:
+    if platform.system() != "Linux":
         return None
     if shutil.which("clinfo"):
         out = _run(["clinfo", "--list"])
         if "Intel" in out and ("Arc" in out or "Xe" in out):
             return {"vendor": "intel", "name": "Intel Arc/Xe", "vram_gb": 0.0}
-    # Windows: try Get-CimInstance
-    if platform.system() == "Windows" and shutil.which("powershell"):
-        out = _run(["powershell", "-NoProfile",
-                    "Get-CimInstance Win32_VideoController | Select-Object Name | Format-List"])
-        if "Intel" in out and ("Arc" in out or "Iris Xe" in out):
-            return {"vendor": "intel", "name": "Intel Arc/Iris Xe", "vram_gb": 0.0}
     return None
 
 
@@ -234,20 +227,6 @@ def total_system_ram_gb() -> float:
                         return round(kb / (1024**2), 1)
         except OSError:
             return 0.0
-    if sysname == "Windows":
-        if shutil.which("powershell"):
-            out = _run([
-                "powershell", "-NoProfile",
-                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
-            ])
-            m = re.search(r"(\d{8,})", out)
-            if m:
-                return round(int(m.group(1)) / (1024**3), 1)
-        # Fall back to wmic for older Windows
-        out = _run(["wmic", "ComputerSystem", "get", "TotalPhysicalMemory"])
-        m = re.search(r"(\d{6,})", out)
-        if m:
-            return round(int(m.group(1)) / (1024**3), 1)
     return 0.0
 
 

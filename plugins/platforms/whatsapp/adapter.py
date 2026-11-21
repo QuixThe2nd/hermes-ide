@@ -5,7 +5,6 @@ import asyncio
 import logging
 import mimetypes
 import os
-import platform
 import re
 import signal
 import subprocess
@@ -21,10 +20,7 @@ from gateway.platforms._shared import (
     seed_extra_from_env as _seed_extra_from_env,
     send_error,
 )
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
-
-_IS_WINDOWS = platform.system() == "Windows"
 
 
 def _wenv(name: str, default: str = "") -> str:
@@ -61,12 +57,6 @@ def _safe_ints(tokens) -> list:
     return out
 
 
-def _windows_listener_pids(port: int) -> list:
-    """PIDs in LISTENING state on ``port`` via netstat (Windows)."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    result = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=5, creationflags=windows_hide_flags(), **_RUN_TEXT)
-    rows = (line.split() for line in result.stdout.splitlines())
-    return _safe_ints(p[4] for p in rows if len(p) >= 5 and p[3] == "LISTENING" and p[1].endswith(f":{port}"))
 
 
 def _pid_looks_like_node_bridge(pid: int) -> bool:
@@ -87,21 +77,15 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
 
 
 def _kill_port_process(port: int) -> None:
-    """Kill any node bridge *listening* on the given TCP port (never a client); SIGTERM on POSIX, taskkill /F on Windows."""
+    """Kill any node bridge *listening* on the given TCP port (never a client)."""
     with suppress(Exception):
-        for pid in (_windows_listener_pids(port) if _IS_WINDOWS else _listener_pids_on_port(port)):
+        for pid in _listener_pids_on_port(port):
             # Killing a mistyped or recycled PID is unrecoverable — verify first.
             if pid <= 0 or not _pid_looks_like_node_bridge(pid):
                 logger.warning("[whatsapp] Not killing PID %s on port %d: process is not a node bridge (or identity unverifiable)", pid, port)
                 continue
-            if _IS_WINDOWS:
-                from hermes_cli._subprocess_compat import windows_hide_flags
-                # Only SubprocessError is swallowed per-PID; an OSError (e.g. taskkill missing) aborts the scan.
-                with suppress(subprocess.SubprocessError):
-                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, stdin=subprocess.DEVNULL, timeout=5, creationflags=windows_hide_flags())
-            else:
-                with suppress(OSError):  # ProcessLookupError/PermissionError are OSError subclasses
-                    os.kill(pid, signal.SIGTERM)
+            with suppress(OSError):  # ProcessLookupError/PermissionError are OSError subclasses
+                os.kill(pid, signal.SIGTERM)
 
 
 def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
@@ -154,17 +138,6 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     action = "kill" if force else "terminate"
-    if _IS_WINDOWS:
-        try:
-            result = subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T"] + (["/F"] if force else []),
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
-            )
-        except FileNotFoundError:
-            return getattr(proc, action)()
-        if result.returncode != 0:
-            raise OSError((result.stderr or result.stdout or "").strip() or f"taskkill failed for PID {proc.pid}")
-        return
     import psutil
     with suppress(psutil.NoSuchProcess):
         parent = psutil.Process(proc.pid)
@@ -362,7 +335,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except OSError:
             pass
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-        # Hermes-managed portable Node's npm.cmd first (Windows), then PATH.
+        # Hermes-managed portable Node's npm first, then PATH.
         _npm_bin = find_node_executable("npm") or _pm_ensure_node("npm") or "npm"
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
@@ -533,7 +506,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_process = subprocess.Popen(
                 [find_node_executable("node") or "node", str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), start_new_session=True)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

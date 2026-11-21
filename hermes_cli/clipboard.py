@@ -1,8 +1,8 @@
-"""Clipboard image extraction and text write for macOS, Windows, Linux, and WSL2.
+"""Clipboard image extraction and text write for macOS, Linux, and WSL2.
 
 No Python deps — only OS-level CLI tools: macOS osascript (always present) / pngpaste (optional)
-plus a file-url fallback for Finder copies; Windows and WSL2 PowerShell via WinForms,
-Get-Clipboard, then a file-drop fallback; Linux wl-paste (Wayland), xclip (X11).
+plus a file-url fallback for Finder copies; WSL2 PowerShell via WinForms, Get-Clipboard, then a
+file-drop fallback; Linux wl-paste (Wayland), xclip (X11).
 """
 
 import base64
@@ -61,15 +61,13 @@ def save_clipboard_image(dest: Path) -> bool:
     if sys.platform == "darwin":
         # pngpaste first (fast, handles more formats); osascript is the always-present fallback.
         return _macos_pngpaste(dest) or _macos_osascript(dest)
-    return (_windows_save if sys.platform == "win32" else _linux_save)(dest)
+    return _linux_save(dest)
 
 
 def has_clipboard_image() -> bool:
     """Quick check: does the clipboard currently contain an image?"""
     if sys.platform == "darwin":
         return _macos_has_image()
-    if sys.platform == "win32":
-        return _windows_has_image()
     return any(enabled and has() for enabled, has, _ in _linux_backends())
 
 
@@ -84,10 +82,9 @@ def _write_clipboard_commands(data: bytes) -> list:
     ps_argv = [*_PS_FLAGS, "-Command", "Set-Clipboard -Value ([System.Text.Encoding]::UTF8"
                f".GetString([System.Convert]::FromBase64String('{b64}')))"]
     ps_kw, pipe = {"stdin": subprocess.DEVNULL}, {"input": data}
-    linux = sys.platform not in ("darwin", "win32")
+    linux = sys.platform != "darwin"
     return [(argv, kw) for enabled, argv, kw in (
         (sys.platform == "darwin", ["pbcopy"], pipe),
-        (sys.platform == "win32", ["powershell", *ps_argv], ps_kw),
         (linux and _is_wsl(), ["powershell.exe", *ps_argv], ps_kw),
         (linux and os.environ.get("WAYLAND_DISPLAY"), ["wl-copy", "--type", "text/plain"], pipe),
         (linux, ["xclip", "-selection", "clipboard", "-in"], pipe),
@@ -105,7 +102,7 @@ def is_remote_shell_session(env=None) -> bool:
 
 def write_clipboard_text(text: str) -> bool:
     """Write *text* to the clipboard via native tools; fallback order matches the TUI: pbcopy →
-    Windows/WSL PowerShell Set-Clipboard → wl-copy → xclip → xsel. Returns True if any backend
+    WSL PowerShell Set-Clipboard → wl-copy → xclip → xsel. Returns True if any backend
     succeeded; callers fall back to OSC 52 on False."""
     for argv, kw in _write_clipboard_commands(text.encode("utf-8")):
         try:
@@ -195,7 +192,7 @@ end try
     return False
 
 
-# ── PowerShell (native Windows powershell/pwsh + WSL2 powershell.exe) ─────
+# ── PowerShell (WSL2 powershell.exe) ───
 
 _FILEDROP_IMAGE_EXTS = ",".join(f"'{e}'" for e in sorted(_FILE_IMAGE_EXTS))
 _PS_FILEDROP_HIT = (
@@ -272,33 +269,6 @@ def _ps_clipboard(exe: str, timeout: int, label: str, dest: Path | None = None) 
             if dest is not None:
                 dest.unlink(missing_ok=True)
     return False
-
-
-_ps_exe: str | None | bool = False  # resolved PowerShell executable; False = not yet checked
-
-
-def _get_ps_exe() -> str | None:
-    """First working PowerShell — ``powershell`` (5.1, always present) or ``pwsh`` (7+,
-    optional) — cached per process; None when neither runs."""
-    global _ps_exe
-    if _ps_exe is False:
-        _ps_exe = next((name for name in ("powershell", "pwsh") if _probe(
-            [name, *_PS_FLAGS, "-Command", "echo ok"], 5,
-            lambda r: r.returncode == 0 and "ok" in r.stdout)), None)
-    return _ps_exe
-
-
-def _windows_has_image() -> bool:
-    ps = _get_ps_exe()
-    return ps is not None and _ps_clipboard(ps, 5, "Windows")
-
-
-def _windows_save(dest: Path) -> bool:
-    ps = _get_ps_exe()
-    if ps is None:
-        logger.debug("No PowerShell found — Windows clipboard image paste unavailable")
-        return False
-    return _ps_clipboard(ps, 15, "Windows", dest)
 
 
 # ── Linux: WSL (powershell.exe) → Wayland (wl-paste) → X11 (xclip) ───────

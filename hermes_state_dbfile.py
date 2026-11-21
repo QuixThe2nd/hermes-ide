@@ -75,15 +75,9 @@ _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 
 def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
-    """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
-    never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
-    advisory-lock cancellation is a POSIX-only hazard."""
-    from hermes_state import _IS_WINDOWS
-    if _IS_WINDOWS:
-        with contextlib.suppress(OSError), db_path.open("rb") as handle:
-            handle.seek(offset)
-            return handle.read(length)
-        return None
+    """Lock-safe raw read of a possibly-live SQLite database: preads from a cached,
+    never-closed fd (rebound when the path names a new inode) — closing the fd would drop
+    this process's advisory locks."""
     key = str(db_path)
     try:
         st = os.stat(db_path)
@@ -315,13 +309,10 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     macOS enumerates descriptors through libproc, because a retired generation there keeps its
     last pathname and no suffix marks it.  Either way the verdict is the same identity comparison:
     the fd must name a watched sidecar path while its ``(st_dev, st_ino)`` no longer matches what
-    that path holds.  Windows returns ``[]`` -- it cannot unlink a held sidecar, so no retired
-    generation can exist; any other platform returns ``[]`` as before.
+    that path holds.  Any other platform returns ``[]`` as before.
 
     Includes this process: on the open/write refuse path the in-process writer holding the orphan
     inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID)."""
-    if sys.platform == "win32":
-        return []
     holders: List[Tuple[int, str]] = []
     try:
         if sys.platform == "darwin":
@@ -378,9 +369,6 @@ class RetiredGenerationCaptureError(RuntimeError):
 def _fsync_path(path: Path) -> None:
     """fsync a file or directory we own. Never used on the live database: opening and closing a
     descriptor on a file SQLite has locked would cancel this process's POSIX advisory locks."""
-    from hermes_state import _IS_WINDOWS
-    if _IS_WINDOWS:
-        return  # directories cannot be opened; file writes fsync their own handle
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -595,24 +583,15 @@ def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, for
 @contextlib.contextmanager
 def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     """Acquire the cross-process lock for path.quarantine.lock."""
-    import platform
     lock_path = path.with_name(path.name + ".quarantine.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
     acquired = False
     try:
-        if platform.system() == "Windows":
-            import msvcrt
-            def _lock(mode):  # msvcrt locks a byte range from the current position
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), mode, 1)
+        import fcntl
 
-            _try_lock = lambda: _lock(msvcrt.LK_NBLCK)  # noqa: E731
-            _unlock = lambda: _lock(msvcrt.LK_UNLCK)  # noqa: E731
-        else:
-            import fcntl
-            _try_lock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # noqa: E731
-            _unlock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # noqa: E731
+        _try_lock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # noqa: E731
+        _unlock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # noqa: E731
         deadline = time.monotonic() + timeout
         while not acquired:
             try:

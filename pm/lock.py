@@ -5,9 +5,8 @@ lock.json:  {"schema": 1, "packages": {name: {"version": ..., "artifacts": {targ
 facts.json: {"schema": 1, "packages": {name: {"entry": ..., "version": ..., "env": ..., "stamp": ...}}}
 
 A target's value is one {"url", "sha256"} object, or a LIST of them when the
-package is split across several archives that must land in one directory
-(llama.cpp's engine zip and its cudart zip: Windows resolves a DLL from the
-loading executable's own directory). Both shapes read back as a list.
+package is split across several archives that must land in one directory.
+Both shapes read back as a list.
 
 lock.json artifacts carry the RESOLVED url beside the hash: the lockfile is
 the complete machine interface (nix reads it as pure data), and the python

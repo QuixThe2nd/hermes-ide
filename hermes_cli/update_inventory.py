@@ -23,7 +23,7 @@ class RuntimeRecord:
     kind: str                     # gateway | dashboard | serve
     profile: str
     pid: Optional[int] = None
-    supervisor: str = "manual"    # systemd | launchd | desktop | windows-service | service | manual | manual-serve
+    supervisor: str = "manual"    # systemd | launchd | desktop | manual | manual-serve
     code_sha: Optional[str] = None       # stamped running-code sha
     # See #91283.
     code_version: Optional[str] = None
@@ -59,13 +59,8 @@ class UpdatePlan:
         return plan
 
 
-def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids: set | None = None) -> str:
+def _detect_supervisor_for_pid(pid: int, service_pids: set) -> str:
     """Classify how a live gateway PID is supervised."""
-    if windows_service_pids and pid in windows_service_pids:
-        # SCM-supervised Windows gateway: the update pause machinery stops the SERVICE via sc.exe
-        # instead of killing the child, so reconciliation must plan it under its own mechanism id.
-        # See #91277.
-        return "windows-service"
     if pid not in service_pids:
         return "manual"
     with suppress(Exception):
@@ -75,7 +70,7 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
             return "systemd"
         if is_macos():
             return "launchd"
-    return "service"
+    return "manual"
 
 
 # THE restart policy table: restart execution consumes these ids via match_runtime_outcomes / the
@@ -83,14 +78,13 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
 # strings are derived by describe_restart_mechanism — never the other way around.
 _RESTART_MECHANISMS = {
     "systemd": "systemd", "launchd": "launchd", "desktop": "desktop",
-    "windows-service": "windows-service", "manual-serve": "respawn-argv",
+    "manual-serve": "respawn-argv",
 }
 
 _MECHANISM_DESCRIPTIONS = {
     "systemd": "systemctl restart (drain-first SIGUSR1 when supported)",
     "launchd": "launchctl kickstart -k (drain-first, per-label domain)",
     "desktop": "Desktop app respawns its serve backend",
-    "windows-service": "sc.exe stop before venv mutation, sc.exe start after update",
     "respawn-argv": "stop before code swap, relaunch with recorded launch args",
 }
 
@@ -234,17 +228,7 @@ def _supervisor_classifier() -> Callable[[int], str]:
         from hermes_cli.gateway import _get_service_pids
 
         service_pids = _get_service_pids(all_profiles=True) or set()
-    # Windows SCM services (no-op off Windows): the update's pause phase stops these via `sc.exe
-    # stop` / restarts via `sc.exe start`, so the plan must carry the matching mechanism id.
-    # --- SCM-supervised gateway PIDs (Windows) ------------------------------
-    # find_windows_gateway_services() maps validated gateway PIDs through process ancestry to running SCM
-    # service PIDs (no-op off Windows). See #91277.
-    windows_service_pids: set = set()
-    with _probe("Windows SCM service-ownership probe"):
-        from hermes_cli.gateway import find_windows_gateway_services
-
-        windows_service_pids = {int(service.gateway_pid) for service in find_windows_gateway_services()}
-    return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids)
+    return lambda pid: _detect_supervisor_for_pid(pid, service_pids)
 
 
 def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[int]) -> None:

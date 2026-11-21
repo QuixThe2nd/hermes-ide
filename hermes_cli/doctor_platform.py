@@ -90,9 +90,6 @@ def _report_database_holders(name: str, db_path: Path) -> None:
     offline journal-mode conversion; a partial or unavailable scan is reported as "cannot prove quiet", never as
     an all-clear (the scan is the same fail-closed authority repair/VACUUM/checkpoint admission uses)."""
     from hermes_state_holders import _read_proc_argv, foreign_state_db_holders, psutil
-    if sys.platform == "win32":
-        check_warn(f"{name}: cannot prove the database is quiet", "(holder scan is unavailable on Windows)")
-        return
     unknown: list[str] = []
     by_pid: dict[int, set[str]] = {}
     for pid, target in foreign_state_db_holders(db_path):
@@ -448,10 +445,8 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
 
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
-    """Venv entry point and the ~/.local/bin (or $PREFIX/bin) symlink; skipped on Windows."""
+    """Venv entry point and the ~/.local/bin (or $PREFIX/bin) symlink."""
     from hermes_cli.doctor import PROJECT_ROOT
-    if sys.platform == "win32":
-        return
     _section("Command Installation")
     venv_bin = next((c for c in (PROJECT_ROOT / n / "bin" / "hermes" for n in ("venv", ".venv")) if c.exists()), None)
     if venv_bin is None:
