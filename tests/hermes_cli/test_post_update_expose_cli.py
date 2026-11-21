@@ -14,17 +14,11 @@ gate gets its own test.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import post_update
-
-posix_only = pytest.mark.skipif(
-    sys.platform == "win32", reason="wrapper exposure is POSIX-only; Windows is installer-owned"
-)
-
 
 @pytest.fixture
 def fake_install(tmp_path, monkeypatch):
@@ -42,20 +36,10 @@ def fake_install(tmp_path, monkeypatch):
     return home, root
 
 
-def test_windows_is_installer_owned(monkeypatch):
-    if sys.platform != "win32":
-        monkeypatch.setattr(post_update.sys, "platform", "win32")
-    assert post_update.step_expose_cli() == {
-        "ok": True,
-        "skipped": "windows-installer-owned",
-    }
-
-
 def test_registered_as_a_home_step():
     assert ("expose_cli", post_update.step_expose_cli) in post_update.HOME_STEPS
 
 
-@posix_only
 class TestExposeCli:
     def test_writes_both_wrappers_fresh(self, fake_install):
         home, root = fake_install

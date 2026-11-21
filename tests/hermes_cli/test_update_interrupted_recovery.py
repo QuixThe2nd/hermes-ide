@@ -7,12 +7,9 @@ finished automatically on the next launch instead of leaving a half-built venv.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import hermes_cli.main as m
-import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
 
 
 def test_marker_round_trip(tmp_path, monkeypatch):
@@ -61,7 +58,7 @@ def _stub_install_env(monkeypatch, m, seen):
     )
 
 
-def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
+def test_core_marker_recovery_runs_full_reinstall(
     tmp_path, monkeypatch
 ):
     # ``.update-incomplete`` is the generic core-install marker: recovery
@@ -70,29 +67,6 @@ def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     m._write_update_incomplete_marker()
 
-    scripts_dir = tmp_path / "venv" / "Scripts"
-    scripts_dir.mkdir(parents=True)
-    shim = scripts_dir / "hermes.exe"
-    shim.write_text("")
-
-    monkeypatch.setattr(m, "_is_windows", lambda: True)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_venv_scripts_dir", lambda: scripts_dir)
-    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: [shim])
-
-    class FakeProc:
-        def __init__(self, exe_path):
-            self._exe = exe_path
-
-        def exe(self):
-            return self._exe
-
-        def parents(self):
-            return [FakeProc(str(shim))]
-
-    monkeypatch.setattr("psutil.Process", lambda: FakeProc(sys_executable_path()))
-
     seen = {"install": False}
     _stub_install_env(monkeypatch, m, seen)
 
@@ -100,14 +74,6 @@ def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
 
     assert seen["install"] is True, "core marker still requires full reinstall"
     assert not m._update_marker_path().exists(), "cleared only after full reinstall"
-
-
-
-
-def sys_executable_path():
-    import sys
-
-    return sys.executable
 
 
 def test_default_venv_install_target_follows_pm_uv_seam(tmp_path, monkeypatch):

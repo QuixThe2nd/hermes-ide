@@ -1,51 +1,20 @@
-"""Local CPR leak reproduction + classic-CLI Application output selection.
+"""Local CPR leak reproduction for the classic CLI.
 
 * Deterministic local-PTY proof that delayed CPR replies leak as
   ``ESC[row;colR`` / ``^[[row;colR`` when ``enable_cpr=True`` (no SSH).
-* Integration-level assertion that, with no SSH env vars, classic CLI
-  output selection wires a CPR-disabled Output into Application on POSIX.
-* Native Windows keeps prompt_toolkit's default output selection.
+* The CPR-disabled output builder emits no ``ESC[6n`` query at all.
 """
 
 from __future__ import annotations
 
 import os
 import select
-import sys
 import threading
 import time
 
 import pytest
 
-from cli import (
-    _build_cpr_disabled_output,
-    _select_classic_cli_pt_output,
-    _terminal_may_leak_cpr,
-)
-
-
-@pytest.fixture(autouse=True)
-def _clear_cpr_env(monkeypatch):
-    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):
-        monkeypatch.delenv(var, raising=False)
-
-
-class TestClassicCliOutputSelection:
-
-
-    @pytest.mark.platforms("windows")
-    def test_windows_preserves_default_output_selection(self):
-        assert _terminal_may_leak_cpr() is False
-        assert _select_classic_cli_pt_output(sys.stdout) is None
-
-    @pytest.mark.platforms("windows")
-    def test_windows_honors_explicit_no_cpr(self, monkeypatch):
-        monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
-        assert _terminal_may_leak_cpr() is True
-        out = _select_classic_cli_pt_output(sys.stdout)
-        # Build may return None if stdout is not a real tty in CI; if it
-        # succeeds it must be CPR-disabled.
-        assert out is None or out.enable_cpr is False
+from cli import _build_cpr_disabled_output
 
 
 def _openpty_or_skip():
@@ -57,7 +26,6 @@ def _openpty_or_skip():
         pytest.skip(f"no PTY devices available: {exc}")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY harness")
 class TestDelayedCprLocalPtyLeak:
     def test_delayed_cpr_reply_leaks_when_enable_cpr_true(self):
         """Local (no SSH) delayed ESC[6n reply lands as ESC[39;1R on stdin."""

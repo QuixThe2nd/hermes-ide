@@ -10,16 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
-from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
 
 from gateway.control_socket import (
     GatewayControlServer,
     pause_gateway_for_update,
-    query_gateway_control,
 )
 
 
@@ -56,7 +51,6 @@ def test_unknown_verb_still_lists_pause(tmp_path):
     assert "pause-for-update" in response["supported_verbs"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="unix socket transport")
 def test_pause_client_roundtrip_over_real_socket(tmp_path):
     """Full client→socket→handler→ACK path over a REAL unix socket."""
 
@@ -85,7 +79,6 @@ def test_pause_client_roundtrip_over_real_socket(tmp_path):
     assert result["pausing"] is True and result["drain_timeout"] == 12.5
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="unix socket transport")
 def test_pause_client_none_when_gateway_lacks_verb(tmp_path):
     """Back-compat: a step-1 gateway (identify/status only) answers ok:false
     for the unknown verb → the client returns None → caller keeps the legacy

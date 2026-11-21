@@ -28,7 +28,6 @@ the primitive and the behavior level.
 """
 
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -136,7 +135,6 @@ def test_repair_lock_fails_closed_when_lock_file_is_unopenable(tmp_path):
         assert holding is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="writable_schema corruption harness")
 def test_repair_skips_surgery_when_lock_file_is_unopenable(tmp_path):
     """Behavior: no writable_schema surgery, no forensic backup, DB untouched.
 

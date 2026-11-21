@@ -17,7 +17,6 @@ from deep inside ``_init_schema`` — naming no file and no fix.
 import os
 import sqlite3
 import stat
-import sys
 from pathlib import Path
 
 import pytest
@@ -26,7 +25,6 @@ import hermes_state
 from hermes_state import SessionDB, preflight_db_writability
 
 pytestmark = [
-    pytest.mark.skipif(sys.platform == "win32", reason="POSIX chmod semantics"),
     pytest.mark.skipif(
         hasattr(os, "geteuid") and os.geteuid() == 0,
         reason="root bypasses file permission checks",

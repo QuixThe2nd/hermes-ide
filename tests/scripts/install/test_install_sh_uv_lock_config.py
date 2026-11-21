@@ -30,11 +30,7 @@ def _locked_sync_helper(path: Path) -> str:
 
 
 def _bash_path(path: Path) -> str:
-    if os.name != "nt":
-        return str(path)
-    drive = path.drive.rstrip(":").lower()
-    tail = path.as_posix().split(":", 1)[1].lstrip("/")
-    return f"/mnt/{drive}/{tail}"
+    return str(path)
 
 
 def test_installers_keep_bootstrap_isolation_but_delegate_locked_sync_to_pm() -> None:
@@ -129,7 +125,6 @@ test "$XDG_CONFIG_DIRS" = /poison/system
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Unix installer behavior")
 def test_real_uv_accepts_lock_when_project_config_is_restored(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     if uv is None:

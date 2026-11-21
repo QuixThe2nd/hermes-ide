@@ -48,7 +48,6 @@ class TestCalledProcessErrorMessage:
         monkeypatch.setattr(update_cmd.sys, "exit", lambda code=0: (_ for _ in ()).throw(SystemExit(code)))
 
     def test_dep_install_failure_lead_and_next_step(self, capsys, no_exit, monkeypatch):
-        monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: False)
         exc = subprocess.CalledProcessError(1, ["uv", "pip", "install", "-e", ".[all]"], stderr="error: disk full")
         with pytest.raises(SystemExit) as info:
             update_cmd._handle_update_called_process_error(exc, object(), False)
@@ -63,7 +62,6 @@ class TestCalledProcessErrorMessage:
         assert "Re-downloading" not in out
 
     def test_non_dep_failure_moves_repr_to_details_line(self, capsys, no_exit, monkeypatch):
-        monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: False)
         exc = subprocess.CalledProcessError(128, ["git", "pull"], stderr="fatal: not a git repository")
         with pytest.raises(SystemExit):
             update_cmd._handle_update_called_process_error(exc, object(), False)

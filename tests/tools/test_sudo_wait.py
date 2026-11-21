@@ -44,7 +44,6 @@ def test_thread_join_path_preserves_wait_accounting(monkeypatch):
     session = "sudo-join-session"
     monkeypatch.setattr(session_context, "get_current_session_key", lambda default="": session)
     monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: None)
-    monkeypatch.setattr(terminal_tool, "_is_windows", False, raising=False)
     before = sudo_wait.human_wait_seconds(session)
 
     password = terminal_tool_sudo._prompt_for_sudo_password(timeout_seconds=1)

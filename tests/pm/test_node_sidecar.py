@@ -93,7 +93,7 @@ def test_real_npm_installs_locked_sidecar_and_keeps_parent_unchanged(tmp_path, l
     import shutil
     import subprocess
 
-    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    npm = shutil.which("npm")
     node = shutil.which("node")
     if not npm or not node:
         pytest.skip("npm and node are required")

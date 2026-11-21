@@ -36,12 +36,6 @@ def _install_stub_env(monkeypatch):
              "lifetime_seconds": 900},
     )
     monkeypatch.setattr(terminal_module, "_create_environment", _stub_create)
-    # Upstream's tests mock _run_approval_guards; on this fork the approval
-    # stage is the inline _check_all_guards call, so mock the same stage.
-    monkeypatch.setattr(
-        terminal_module, "_check_all_guards",
-        lambda *_a, **_k: {"approved": True},
-    )
     # Upstream's tests mock _run_foreground, which also skips the
     # transform_terminal_output plugin hook; on this fork that hook runs
     # inline and its first call scans the whole plugin tree (seconds).

@@ -288,12 +288,3 @@ def test_remote_roots_are_normalized_lexically_against_backend_cwd(monkeypatch):
     assert absolute == relative
 
 
-@pytest.mark.platforms("windows")
-def test_windows_local_root_spellings_share_one_normalized_key():
-    env = LocalEnvironment.__new__(LocalEnvironment)
-    env.cwd = "C:/Repo"
-
-    native = _normalized_filename_search_root(env, r"C:\Repo\src\..", "C:/ignored")
-    msys = _normalized_filename_search_root(env, "/c/Repo", "C:/ignored")
-
-    assert native == msys

@@ -21,11 +21,9 @@ def _git_argv_tail(cmd):
         tokens = [os.fsdecode(t) for t in cmd]
     else:
         try:
-            tokens = shlex.split(os.fsdecode(cmd), posix=os.name != "nt")
+            tokens = shlex.split(os.fsdecode(cmd), )
         except ValueError:
             return None
-        if os.name == "nt":
-            tokens = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
     if not tokens:
         return None
     head = _command_name(tokens[0])

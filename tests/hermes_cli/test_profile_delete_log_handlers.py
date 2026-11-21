@@ -2,11 +2,8 @@
 
 A long-lived multiplex process (the Desktop's ``hermes serve`` backend) routes records to every
 served profile's ``logs/*.log`` through ``_ProfileRoutingFileHandler``, which lazily opens one
-rotating handler per home. On Windows that handler is ``ConcurrentRotatingFileHandler`` and keeps
-``logs/.__<name>.lock`` open, so ``delete_profile`` run inside that process fails ``rmtree`` with
-``[WinError 32]``: the REST call returns 500, the Desktop drops the bot, the directory stays.
-The routing seam itself is platform-neutral, so the release and the directory removal are
-asserted on every OS (the lock-file symptom only reproduces on Windows).
+rotating handler per home. Those open handles make ``delete_profile`` run inside that process
+fail ``rmtree``: the REST call returns 500, the Desktop drops the bot, the directory stays.
 """
 
 import logging

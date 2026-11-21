@@ -257,46 +257,22 @@ class TestCreateProfile:
         return default_home, external
 
     @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
-    def test_clone_recreates_skill_junctions_and_skips_dangling_ones(self, profile_env, monkeypatch, clone_kwargs):
-        """A junctioned skill stays a link (one candidate with its external original), a dangling
-        junction is skipped without failing the clone. The reparse-point predicate and CreateJunction
-        are Windows-only; simulate both so the copy/re-create contract runs on every host."""
+    def test_clone_preserves_linked_skills_and_dangling_links(self, profile_env, clone_kwargs):
+        """A symlinked skill (the ``skills.external_dirs`` shape) stays a link into the
+        external tree, and a dangling link never fails the clone."""
         default_home, external = self._home_with_linked_skill(profile_env)
-        # copytree sees plain directories (what a junction looks like to os.stat on Windows).
-        (default_home / "skills" / "foo").mkdir()
-        (default_home / "skills" / "foo" / "SKILL.md").write_text("# a physical copy would come from here\n")
-        (default_home / "skills" / "gone").mkdir()
-        targets = {str(default_home / "skills" / "foo"): str(external / "foo"),
-                   str(default_home / "skills" / "gone"): str(profile_env / "nowhere")}
-        monkeypatch.setattr(profiles, "_junction_target", lambda path: targets.get(path), raising=False)
-
-        def _create_junction(target, dst):
-            if not os.path.isdir(target):
-                raise OSError("target missing")  # what _winapi.CreateJunction does for a dangling junction
-            os.symlink(target, dst, target_is_directory=True)
-        monkeypatch.setitem(sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=_create_junction))
+        (default_home / "skills" / "foo").symlink_to(external / "foo", target_is_directory=True)
+        (default_home / "skills" / "gone").symlink_to(profile_env / "nowhere", target_is_directory=True)
 
         clone = create_profile("clone", no_alias=True, **clone_kwargs)
         foo = clone / "skills" / "foo"
         assert foo.is_symlink() and foo.resolve() == (external / "foo").resolve()
         assert (foo / "SKILL.md").read_text(encoding="utf-8") == "# external foo\n"
         assert (clone / "skills" / "local" / "SKILL.md").is_file()
-        assert not (clone / "skills" / "gone").exists()
+        assert (clone / "skills" / "gone").is_symlink() and not (clone / "skills" / "gone").exists()
         from tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
-    @pytest.mark.windows_only
-    def test_clone_keeps_real_ntfs_junction(self, profile_env):
-        import _winapi
-        default_home, external = self._home_with_linked_skill(profile_env)
-        _winapi.CreateJunction(str(external / "foo"), str(default_home / "skills" / "foo"))
-
-        clone = create_profile("clone", clone_config=True, no_alias=True)
-        foo = clone / "skills" / "foo"
-        assert os.lstat(foo).st_reparse_tag == profiles.stat.IO_REPARSE_TAG_MOUNT_POINT
-        assert foo.resolve() == (external / "foo").resolve()
-        from tools.skills_tool import _collect_skill_candidates
-        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
     def test_sync_imports_requires_a_clone_source(self, profile_env):
         with pytest.raises(ValueError, match="--sync-imports requires"):
@@ -1038,19 +1014,6 @@ class TestAliasCollision:
 
 
 
-    @pytest.mark.platforms("windows")
-    def test_windows_checks_bat_extension(self, profile_env):
-        wrapper_dir = profile_env / ".local" / "bin"
-        wrapper_dir.mkdir(parents=True, exist_ok=True)
-        bat_path = wrapper_dir / "mybot.bat"
-        bat_path.write_text("@echo off\r\nhermes -p mybot %*\r\n")
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout=str(bat_path),
-            )
-            result = check_alias_collision("mybot")
-        assert result is None  # our own wrapper, safe to overwrite
-
     def test_traversal_alias_rejected_before_path_lookup(self, profile_env):
         """A path-traversal alias is rejected without ever shelling out to which/where."""
         with patch("subprocess.run") as mock_run:
@@ -1077,22 +1040,6 @@ class TestWrapperScript:
         content = wrapper.read_text()
         assert content.startswith("#!/bin/sh")
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
-
-
-    @pytest.mark.platforms("windows")
-    def test_remove_finds_bat_on_windows(self, profile_env):
-        from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
-        wrapper = create_wrapper_script("mybot")
-        assert wrapper is not None
-        assert wrapper.exists()
-        removed = remove_wrapper_script("mybot")
-        assert removed is True
-        assert not wrapper.exists()
-
-
-
-
-
 
 # ===================================================================
 # TestWrapperScriptSecurity — path-traversal hardening

@@ -1,13 +1,9 @@
 """``bounded_probe_run`` — deadlock-safe capture for fail-open probes (#87134).
 
-On Windows, ``subprocess.run(..., capture_output=True, timeout=N)`` can hang
-FOREVER after its timeout fires: run()'s cleanup kills the direct child and
-then joins the pipe reader threads with an unbounded ``communicate()``.  A
-descendant (``conhost.exe`` under wmic/powershell, ``git.exe`` under a
-launcher shim) holding duplicated pipe handles keeps the pipes from EOF and
-the join never returns.  ``hermes update`` wedged exactly there inside
-``_scan_gateway_pids`` on machines where the full ``Win32_Process`` scan
-exceeds its budget.
+``subprocess.run(..., capture_output=True, timeout=N)`` can hang FOREVER after
+its timeout fires: run()'s cleanup kills the direct child and then joins the
+pipe reader threads with an unbounded ``communicate()``.  A descendant holding
+duplicated pipe handles keeps the pipes from EOF and the join never returns.
 
 ``bounded_probe_run`` is the shared, generalized form of the fix that
 ``bounded_git_probe`` already proved for git probes (#68609 / #66037):
@@ -39,8 +35,7 @@ def test_success_returns_completed_process():
 
 
 def test_nonzero_exit_is_returned_not_swallowed():
-    """Unlike bounded_git_probe, callers see the real returncode — the gateway
-    scan branches on ``returncode != 0`` to trip the wmic→powershell fallback."""
+    """Unlike bounded_git_probe, callers see the real returncode."""
     result = bounded_probe_run([_PY, "-c", "print('partial'); import sys; sys.exit(3)"], timeout=30)
     assert result is not None
     assert result.returncode == 3
@@ -69,8 +64,8 @@ def test_timeout_returns_none_within_bounded_time():
 
 
 def test_decode_errors_configurable():
-    """The process scans pass errors='ignore' (wmic emits system code page);
-    undecodable bytes must not raise or None out stdout (#17049 class)."""
+    """The process scans pass errors='ignore'; undecodable bytes must not
+    raise or None out stdout (#17049 class)."""
     result = bounded_probe_run(
         [_PY, "-c", "import sys; sys.stdout.buffer.write(b'ok\\xff\\xfe')"],
         timeout=30,
@@ -100,7 +95,6 @@ def test_bounded_git_probe_delegates_same_contract():
     assert bounded_git_probe(["definitely-not-a-real-binary-87134"], timeout=5) == ""
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group check")
 def test_posix_child_gets_own_process_group():
     """POSIX spawns use process_group=0 so timeout cleanup can killpg the
     whole tree (same contract bounded_git_probe had)."""

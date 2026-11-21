@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -95,15 +94,7 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
 
 @pytest.mark.platforms("linux")
 def test_normalize_path_expands_tilde(monkeypatch):
-    # expanduser keys off USERPROFILE on native Windows, HOME elsewhere —
-    # set the var the running host actually consults (host-native rule:
-    # never fake the platform).
-    if sys.platform == "win32":
-        monkeypatch.setenv("USERPROFILE", r"C:\Users\fakeuser")
-        expected_base = r"C:\Users\fakeuser"
-    else:
-        monkeypatch.setenv("HOME", "/home/user")
-        expected_base = "/home/user"
+    monkeypatch.setenv("HOME", "/home/user")
     p = normalize_path("~/x.py")
     assert p == os.path.abspath("/home/user/x.py")
 

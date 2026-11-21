@@ -68,36 +68,6 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.platforms("windows")
-def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
-    """pip console scripts can land in Scripts/ on native Windows.
-
-    ``platforms("windows")``: the ``Scripts/`` layout and the ``.exe`` launcher are
-    what pip actually produces on Windows. Faking ``_is_windows()`` on Linux
-    made the test assert against a directory tree the test itself created, on
-    a host where pip would never lay it out that way.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    from agent.lsp import install as install_mod
-
-    def fake_run(cmd, **kwargs):
-        scripts_dir = install_mod.hermes_lsp_bin_dir().parent / "python-packages" / "Scripts"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        launcher = scripts_dir / "fake-language-server.exe"
-        launcher.write_text("launcher\n", encoding="utf-8")
-        launcher.chmod(0o755)
-        return MagicMock(returncode=0, stderr="")
-
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-
-    resolved = install_mod._install_pip("fake-lsp", "fake-language-server")
-
-    assert resolved is not None
-    assert resolved.endswith("fake-language-server.exe")
-    assert (install_mod.hermes_lsp_bin_dir() / "fake-language-server.exe").exists()
-
-
 # ---------------------------------------------------------------------------
 # Fix 2: ``hermes lsp status`` surfaces shellcheck-missing for bash
 # ---------------------------------------------------------------------------

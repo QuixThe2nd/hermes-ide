@@ -398,10 +398,9 @@ class TestStatusLockFailClosed:
     def test_degraded_mode_only_when_no_primitive_exists(
         self, home: Path, monkeypatch
     ) -> None:
-        # Neither fcntl nor msvcrt: the one documented degraded mode, where
+        # No fcntl: the one documented degraded mode, where
         # the in-process RLock still serializes same-process writers.
         monkeypatch.setattr(jobs, "fcntl", None)
-        monkeypatch.setattr(jobs, "msvcrt", None)
         _job_id, directory = _make_job(home)
         assert jobs.update_status(directory, mutate=lambda status: status.update(writer="B")) is not None
         assert jobs.read_status(directory)["writer"] == "B"

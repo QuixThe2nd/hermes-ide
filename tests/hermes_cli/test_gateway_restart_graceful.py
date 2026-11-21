@@ -75,7 +75,7 @@ def test_cmd_restart_forwards_explicit_force_to_systemd(monkeypatch):
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
-    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: "systemd")
+    monkeypatch.setattr(gw, "_installed_service_kind", lambda: "systemd")
     service_call = MagicMock()
     monkeypatch.setattr(gw, "_service_call", service_call)
 

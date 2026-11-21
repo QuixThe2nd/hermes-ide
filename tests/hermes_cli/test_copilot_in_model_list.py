@@ -55,7 +55,7 @@ def _no_other_copilot_creds(monkeypatch):
 
 
 def test_copilot_acp_listed_when_executable_resolves(tmp_path, monkeypatch, _no_other_copilot_creds):
-    fake = tmp_path / ("copilot.exe" if os.name == "nt" else "copilot")
+    fake = tmp_path / "copilot"
     fake.write_text("", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", str(fake))

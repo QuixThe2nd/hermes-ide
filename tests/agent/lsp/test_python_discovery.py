@@ -9,7 +9,6 @@ probing. pm's ``python`` fact (facts.json + store layout) is the authority.
 
 import json
 import os
-import sys
 from pathlib import Path
 
 from agent.lsp.servers import _detect_python, _pm_store_python
@@ -22,7 +21,7 @@ def _seed_pm_python(tmp_path, monkeypatch, entry="python-3.11.13"):
     store = payload / "tools"
     python_entry = store / entry
     python_entry.mkdir(parents=True)
-    exe = python_entry / ("python.exe" if sys.platform == "win32" else "bin/python3")
+    exe = python_entry / "bin/python3"
     exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_text("", encoding="utf-8")
     (payload / "manifest.json").write_text("{}", encoding="utf-8")

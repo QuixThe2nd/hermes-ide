@@ -253,17 +253,9 @@ class TestPromptToolkitTerminalCompatibility:
 
         Some thin POSIX PTYs deliver plain Enter as LF/c-j instead of CR/enter.
         The default keeps c-j free for multiline input; disabling multiline
-        shortcuts restores c-j → submit on bare local POSIX terminals. Windows,
-        WSL, SSH sessions, Windows Terminal, and Ghostty always reserve c-j for
-        the Ctrl+Enter/Ctrl+J newline binding. See issue #22379.
-
-        The native-Windows arm of this behaviour is
-        ``test_windows_leaves_ctrl_j_unbound`` below — it has to run on a real
-        Windows host, because ``_bind_prompt_submit_keys`` delegates to
-        ``_preserve_ctrl_enter_newline()``, which short-circuits on
-        ``sys.platform == "win32"``. Faking that here would assert the literal
-        in the ``if`` and nothing about how prompt_toolkit actually delivers
-        keys on a Windows console.
+        shortcuts restores c-j → submit on bare local POSIX terminals; SSH
+        sessions and Ghostty always reserve c-j for the Ctrl+Enter/Ctrl+J
+        newline binding. See issue #22379.
         """
         import os as _os
         from unittest.mock import patch as _patch
@@ -316,22 +308,6 @@ class TestPromptToolkitTerminalCompatibility:
             assert bindings[("c-m",)] is submit_handler
             assert ("c-j",) not in bindings
 
-    @pytest.mark.platforms("windows")
-    def test_windows_leaves_ctrl_j_unbound(self):
-        """On native Windows only enter submits; c-j is free for the newline
-        binding added separately in the prompt setup."""
-        from prompt_toolkit.key_binding import KeyBindings
-
-        from cli import _bind_prompt_submit_keys
-
-        def submit_handler(event):
-            return None
-
-        kb = KeyBindings()
-        _bind_prompt_submit_keys(kb, submit_handler)
-        bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
-        assert bindings[("c-m",)] is submit_handler
-        assert ("c-j",) not in bindings
 
     def test_cpr_warning_callback_is_disabled(self):
         from cli import _disable_prompt_toolkit_cpr_warning
@@ -347,13 +323,7 @@ class TestPromptToolkitTerminalCompatibility:
 
     @pytest.mark.platforms("linux")
     def test_cpr_gating_posix_suppresses_without_ssh(self, monkeypatch):
-        """POSIX suppresses CPR without SSH.
-
-        The native-Windows arm (``_terminal_may_leak_cpr() is False``, plus
-        the ``PROMPT_TOOLKIT_NO_CPR`` override that outranks it) lives in
-        ``tests/hermes_cli/test_cpr_local_leak.py`` under ``platforms("windows")``, where it
-        runs against a real Windows console.
-        """
+        """POSIX suppresses CPR without SSH."""
         from cli import _terminal_may_leak_cpr
 
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):

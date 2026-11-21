@@ -107,7 +107,7 @@ def test_real_uv_builds_separate_environment_before_selection(tmp_path, monkeypa
     assert selected_venv(core) == base
     candidate = prepared["environment"]
     assert candidate != base and (candidate / "pyvenv.cfg").is_file()
-    python = candidate / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python = candidate / "bin/python"
     probe = subprocess.run([str(python), "-c", "import sys; print(sys.prefix)"], capture_output=True, text=True, check=True)
     assert Path(probe.stdout.strip()).resolve() == candidate.resolve()
     assert (core / "uv.lock").read_bytes() == original_lock

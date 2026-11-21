@@ -187,7 +187,6 @@ async def test_sigusr1_requests_the_same_overlap_flow(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.resource_limits.apply_nofile_soft_limit", lambda: None)
     monkeypatch.setattr("gateway.code_skew.record_boot_fingerprint", lambda: None)
     monkeypatch.setattr("gateway.run._run_planned_stop_watcher", lambda *args: None)
-    monkeypatch.setattr("gateway.run._ensure_windows_gateway_venv_imports", lambda: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda *args, **kwargs: None)
 
     async def no_control_socket(_runner):

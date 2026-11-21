@@ -70,7 +70,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
         "OPENAI_API_KEY": "sk", "GITHUB_TOKEN": "ghp",
         "PATH": "/usr/bin", "RANDOM_X": "y",
     }
-    out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
+    out = _scrub_child_env(env, is_passthrough=lambda _: False)
 
     for kept in (
         "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
@@ -90,7 +90,6 @@ def test_env_scrub_passthrough_overrides_secret_block():
     out = _scrub_child_env(
         {"MY_SERVICE_DSN": "value"},
         is_passthrough=lambda key: key == "MY_SERVICE_DSN",
-        is_windows=False,
     )
 
     assert out.get("MY_SERVICE_DSN") == "value"
@@ -105,6 +104,5 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
         _scrub_child_env(
             {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
             is_passthrough=lambda _: False,
-            is_windows=False,
         )
     assert "dropped" not in "\n".join(record.getMessage() for record in caplog.records)

@@ -153,7 +153,6 @@ class TestFindStaleDashboardPids:
 
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -185,7 +184,6 @@ class TestFindStaleDashboardPids:
 
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:
     """Kill path on Linux / macOS: SIGTERM then SIGKILL any survivors."""
 
@@ -274,40 +272,6 @@ class TestKillStaleDashboardPosix:
 
 
 
-class TestKillStaleDashboardWindows:
-    """Kill path on Windows: taskkill /F."""
-
-    @pytest.mark.platforms("windows")
-    def test_taskkill_invoked_for_each_pid(self, capsys):
-        """``platforms("windows")``: ``taskkill.exe`` only exists on Windows, and the
-        faked platform also silently skipped the POSIX-only cgroup/argv
-        snapshot the real Windows path must not take.
-        """
-
-        def fake_run(args, *a, **kw):
-            # taskkill returns 0 on success
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("hermes_cli.dashboard_procs._find_stale_dashboard_pids",
-                   return_value=[12345, 12346]), \
-             patch("gateway.status.get_process_start_time", return_value=123), \
-             patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
-             patch("subprocess.run", side_effect=fake_run) as mock_run:
-            _kill_stale_dashboard_processes()
-
-        # Each PID triggered a taskkill /PID <n> /F invocation.
-        taskkill_calls = [
-            c for c in mock_run.call_args_list
-            if c.args and isinstance(c.args[0], list) and c.args[0][:1] == ["taskkill"]
-        ]
-        assert len(taskkill_calls) == 2
-        assert ["taskkill", "/PID", "12345", "/F"] in [c.args[0] for c in taskkill_calls]
-        assert ["taskkill", "/PID", "12346", "/F"] in [c.args[0] for c in taskkill_calls]
-
-        out = capsys.readouterr().out
-        assert "✓ stopped PID 12345" in out
-        assert "✓ stopped PID 12346" in out
-
 
 class TestBackCompatAlias:
     """``_warn_stale_dashboard_processes`` is kept as an alias for the
@@ -318,7 +282,7 @@ class TestBackCompatAlias:
 
 
 class TestDashboardUpdateCleanup:
-    """The git and Windows ZIP update paths share this final cleanup."""
+    """The git update path's final cleanup."""
 
     def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys, monkeypatch, tmp_path):
         own_home = tmp_path / "profiles" / "work"
@@ -335,59 +299,6 @@ class TestDashboardUpdateCleanup:
         assert "stopped during update" not in capsys.readouterr().out
 
 
-class TestWindowsWmicEncoding:
-    """Regression tests for #17049 — the Windows wmic branch must not crash
-    `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
-    """
-
-    def test_wmic_routed_through_bounded_probe_run_with_ignore_errors(self):
-        """The wmic scan must go through ``bounded_probe_run`` — which owns
-        the deterministic UTF-8 decode (#17049) and the deadlock-safe
-        post-timeout cleanup (#87134) — with errors='ignore' so undecodable
-        bytes from a non-UTF-8 system code page (e.g. cp936 on zh-CN) don't
-        take down the reader thread, and with a finite timeout.
-
-        Cross-platform: nothing Windows-native executes once the probe is
-        mocked, so ``sys.platform`` is patched rather than gating the test
-        to the Windows-only CI job.
-        """
-        with patch("sys.platform", "win32"), \
-             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
-            mock_probe.return_value = subprocess.CompletedProcess(
-                args=["wmic"],
-                returncode=0,
-                stdout=(
-                    "CommandLine=python -m hermes_cli.main dashboard\n"
-                    "ProcessId=12345\n"
-                ),
-                stderr="",
-            )
-            pids = _find_stale_dashboard_pids()
-
-        assert mock_probe.called, "bounded_probe_run was not invoked"
-        wmic_call = mock_probe.call_args_list[0]
-        assert wmic_call.args[0][0] == "wmic"
-        kwargs = wmic_call.kwargs
-        assert kwargs.get("errors") == "ignore", (
-            "errors kwarg must be 'ignore' so undecodable bytes don't take "
-            "down the reader thread (#17049)."
-        )
-        assert kwargs.get("timeout"), (
-            "the scan must carry a finite timeout — bounded_probe_run "
-            "guarantees the post-timeout cleanup is bounded too (#87134)."
-        )
-        assert pids == [12345]
-
-    def test_probe_failure_fails_open_to_empty_list(self):
-        """A spawn failure or timeout (bounded_probe_run → None) must yield
-        an empty scan, not an AttributeError on result.stdout (#87134)."""
-        with patch("sys.platform", "win32"), \
-             patch("hermes_cli._subprocess_compat.bounded_probe_run",
-                   return_value=None):
-            assert _find_stale_dashboard_pids() == []
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")
 class TestSupervisedBackendRestart:
     """After the kill, systemd-supervised PIDs get their owning unit
     restarted (#68934) — SIGTERM reads as a clean stop to systemd, so
@@ -456,7 +367,6 @@ class TestManualBackendRespawn:
         return main_dashboard
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_argv_capture_failure_falls_back_to_hint(self, capsys):
         live = self._live()
 
@@ -478,7 +388,6 @@ class TestManualBackendRespawn:
         out = capsys.readouterr().out
         assert "Restart anything not auto-restarted" in out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_non_orphan_fixed_port_still_respawns(self, capsys):
         """A supervised-by-shell dashboard with a fixed port is still restarted."""
         live = self._live()
@@ -502,7 +411,6 @@ class TestManualBackendRespawn:
         respawn.assert_called_once_with([argv])
         assert "when you're ready" not in capsys.readouterr().out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_port_zero_serves_killed_without_respawn(self, capsys):
         """``serve --port 0`` backends are stopped but not resurrected (#78821)."""
         live = self._live()
@@ -533,7 +441,6 @@ class TestManualBackendRespawn:
         assert result["unrecovered"] == []
         assert "when you're ready" not in capsys.readouterr().out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_detached_fixed_port_still_respawns_after_prior_update(self, capsys):
         """PPID-1 fixed-port backends (prior start_new_session respawn) stay eligible."""
         live = self._live()
@@ -811,7 +718,6 @@ class TestCmdlineCapture:
     def _live(self):
         return main_dashboard
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /proc cmdline path")
     def test_reads_proc_cmdline_when_available(self, tmp_path, monkeypatch):
         live = self._live()
         proc_file = tmp_path / "cmdline"
@@ -837,7 +743,6 @@ class TestCmdlineCapture:
 
         assert argv == ["/usr/bin/python3", "-m", "hermes_cli.main", "serve"]
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps cmdline fallback")
     def test_falls_back_to_ps_without_proc(self, monkeypatch):
         live = self._live()
 
@@ -851,14 +756,6 @@ class TestCmdlineCapture:
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
-    @pytest.mark.platforms("windows")
-    def test_returns_none_on_windows(self):
-        """``platforms("windows")``: the contract is "no graceful-argv capture on a
-        real Windows host" — asserting it against a faked platform only
-        restated the branch condition.
-        """
-        live = self._live()
-        assert main_dashboard._dashboard_cmdline_for_pid(123) is None
 
 
 class TestPostUpdateDashboardCleanupIsolation:
@@ -923,7 +820,6 @@ class TestLaunchdSupervisedBackends:
             result = _kill_stale_dashboard_processes(restart_managed=restart_managed)
         return result, restart, respawn
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_launchd_owned_backend_restarts_through_launchd_never_as_a_detached_respawn(self, capsys):
         """The reporter's state: the job is loaded but has no live process (it keeps failing on the
         port) and a detached copy runs its exact ProgramArguments. The copy is stopped and the JOB

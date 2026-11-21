@@ -30,10 +30,6 @@ import hermes_state_common
 from hermes_state import SessionDB
 from hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX flock child-process harness"
-)
-
 
 _HOLD_LOCK_SCRIPT = """
 import sys, time, fcntl, pathlib

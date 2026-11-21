@@ -103,9 +103,8 @@ class TestStdlibOnly:
 def _fake_uv(tmp_path: Path, exit_code: int = 0) -> tuple:
     """A uv that records its invocation and exits as told.
 
-    Returns ``(binary_path, record_path)``; the binary shape is
-    platform-appropriate (a .bat trampoline on Windows, a shebang script
-    on POSIX) so subprocess can execute it directly.
+    Returns ``(binary_path, record_path)``; the binary is a shebang script
+    so subprocess can execute it directly.
     """
     record = tmp_path / "uv-calls.jsonl"
     recorder = tmp_path / "uv_recorder.py"
@@ -121,17 +120,11 @@ def _fake_uv(tmp_path: Path, exit_code: int = 0) -> tuple:
         f"raise SystemExit({exit_code})\n",
         encoding="utf-8",
     )
-    if os.name == "nt":
-        binary = tmp_path / "uv.bat"
-        binary.write_text(
-            f'@echo off\r\n"{sys.executable}" "{recorder}" %*\r\n', encoding="utf-8"
-        )
-    else:
-        binary = tmp_path / "uv"
-        binary.write_text(
-            f'#!/bin/sh\nexec "{sys.executable}" "{recorder}" "$@"\n', encoding="utf-8"
-        )
-        binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+    binary = tmp_path / "uv"
+    binary.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "{recorder}" "$@"\n', encoding="utf-8"
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
     return binary, record
 
 

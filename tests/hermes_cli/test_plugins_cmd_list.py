@@ -132,10 +132,9 @@ def test_declared_capabilities_for_entrypoint_uses_distribution_metadata(
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores file permissions")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tmp_path, caplog):
-    """One plugin directory the process cannot stat() into (Windows WinError 5, POSIX mode 000)
+    """One plugin directory the process cannot stat() into (POSIX mode 000)
     must be warned about and skipped — not abort discovery for every other plugin (#111804).
     Covers the loader scan (``scan_directory``) and the list/hub scan (``_scan_level``)."""
     from hermes_cli.plugins_discovery import scan_directory

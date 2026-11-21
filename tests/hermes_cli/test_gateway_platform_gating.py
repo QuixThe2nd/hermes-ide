@@ -1,63 +1,28 @@
-"""Host-specific gating in ``hermes_cli.gateway._all_platforms()``.
+"""Platform enumeration in ``hermes_cli.gateway._all_platforms()``.
 
-Some messaging platforms can't function on every host. The gate lives
-in one place — ``_all_platforms()`` — so the setup wizard, the curses
-gateway-config menu, and any future picker all see the same filtered
-list.
-
-Currently:
-- Matrix is hidden on Windows. The ``[matrix]`` extra pulls
-  ``mautrix[encryption]`` -> ``python-olm``, which has no Windows wheel
-  and needs ``make`` + libolm to build from sdist. There's no native
-  Windows path that works.
+The gate lives in one place — ``_all_platforms()`` — so the setup wizard, the
+curses gateway-config menu, and any future picker all see the same list.
 """
 
 import pytest
 
 
-class TestMatrixHiddenOnWindows:
-    @pytest.mark.platforms("linux")
-    def test_matrix_present_on_linux(self):
-        """Sanity: matrix is still in the picker on Linux.
-
-        Linux-gated because the assertion is the negative of the Windows
-        gate — it only means anything when the host really is not Windows.
-        """
+class TestPlatformEnumeration:
+    def test_matrix_present(self):
+        """Matrix ships everywhere: python-olm has wheels on Linux and macOS."""
         import hermes_cli.gateway as gateway_mod
 
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
-        assert "matrix" in keys, "matrix must be available on Linux"
+        assert "matrix" in keys, "matrix must be available"
 
-    @pytest.mark.platforms("windows")
-    def test_matrix_absent_on_windows(self):
-        """The gate itself: matrix must be dropped on a real Windows host.
-
-        A patched ``sys.platform`` proved only that the ``if`` branch runs;
-        on native Windows this also proves the picker the user actually sees
-        omits the platform whose dependency cannot build here.
-        """
+    def test_other_platforms_unaffected(self):
+        """Enumeration surfaces the full shipping set."""
         import hermes_cli.gateway as gateway_mod
 
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
-        assert "matrix" not in keys, "matrix must be hidden on Windows"
-
-    @pytest.mark.platforms("windows")
-    def test_other_platforms_unaffected_on_windows(self):
-        """Gating must only drop matrix, not collateral damage."""
-        import hermes_cli.gateway as gateway_mod
-
-        platforms = gateway_mod._all_platforms()
-        keys = {p["key"] for p in platforms}
-        # A representative sample of the platforms that still ship and have
-        # no Windows blockers — picker should still surface them. The full
-        # shipping set is discord, matrix, whatsapp, browser_sidebar; matrix
-        # is the one this gate hides on Windows (proven absent above), and
-        # #571 removed the telegram/slack adapters, so none of those are
-        # expected to appear.
+        # A representative sample of the platforms that ship; #571 removed the
+        # telegram/slack adapters, so none of those are expected to appear.
         for must_have in ("discord", "whatsapp", "browser_sidebar"):
-            assert must_have in keys, (
-                f"{must_have} disappeared from Windows picker — gate is "
-                "over-filtering"
-            )
+            assert must_have in keys, f"{must_have} disappeared from the picker"

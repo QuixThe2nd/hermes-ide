@@ -461,7 +461,6 @@ def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
         proc.wait(timeout=10)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
 def test_repair_skips_surgery_while_another_process_holds_the_lock(
     tmp_path, monkeypatch
 ):
@@ -482,7 +481,6 @@ def test_repair_skips_surgery_while_another_process_holds_the_lock(
     assert hermes_state_repair._db_opens_cleanly(db_path) is not None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
 def test_repair_reports_success_when_the_holder_already_healed_the_db(
     tmp_path, monkeypatch
 ):
@@ -517,7 +515,6 @@ def _release_header_probe_fds() -> None:
         hermes_state_dbfile._HEADER_PROBE_FDS.clear()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
 def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     """Concurrent repairers serialise; the loser sees a healed DB and stops.
 

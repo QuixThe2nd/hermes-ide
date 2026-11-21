@@ -34,7 +34,7 @@ class TestFrontmatter:
     def test_license_and_platforms(self):
         fm = _frontmatter()
         assert fm["license"] == "MIT"
-        assert set(fm["platforms"]) == {"linux", "macos", "windows"}
+        assert set(fm["platforms"]) == {"linux", "macos"}
 
 
 class TestBody:

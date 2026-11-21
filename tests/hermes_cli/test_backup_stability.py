@@ -85,7 +85,6 @@ def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> Non
     assert manifest["files"] == {"config.yaml": 10}
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_quick_snapshot_tree_is_owner_only_under_permissive_umask(tmp_path) -> None:
     """Recovery snapshots must never inherit world-readable default modes.
 

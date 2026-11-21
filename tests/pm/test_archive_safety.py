@@ -10,17 +10,13 @@ against path traversal, absolute paths, symlink escapes, and collisions
 
 Ported from the restack branch's runtime-archive-safety suite, rewritten
 against pm's real extraction surface (pm.store.extract / _extract_zip /
-flatten_single_dir). The traversal / absolute-path / never-clobber arms
-are host-independent and run on Windows; the arms that assert POSIX
-symlink or mode semantics are gated to POSIX, with a separate arm
-pinning pm's truthful win32 degradation.
+flatten_single_dir).
 """
 
 from __future__ import annotations
 
 import io
 import stat
-import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -28,14 +24,6 @@ from pathlib import Path
 import pytest
 
 from pm.store import extract, flatten_single_dir
-
-posix_only = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX symlink/mode semantics"
-)
-win_only = pytest.mark.skipif(
-    sys.platform != "win32", reason="pins win32 degradation specifically"
-)
-
 
 def _tar(path: Path, members: dict[str, bytes]) -> Path:
     staging = path.parent / f".stage-{path.stem}"
@@ -172,10 +160,8 @@ class TestZipModeHandling:
         extract(archive, tmp_path / "sub" / "dest")
 
         assert victim.read_text() == "untouched"
-        if sys.platform != "win32":
-            assert victim.stat().st_mode & 0o777 == 0o644
+        assert victim.stat().st_mode & 0o777 == 0o644
 
-    @posix_only
     def test_the_executable_bit_is_still_restored_for_real_entries(self, tmp_path):
         """zip drops the exec bit; an un-executable binary is a broken
         install, so the restore loop must keep working for honest entries."""

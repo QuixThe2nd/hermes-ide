@@ -1,5 +1,4 @@
 import json
-import sys
 import tempfile
 from pathlib import Path
 
@@ -162,10 +161,6 @@ def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Symlinks require elevated privileges on Windows",
-)
 def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     project = tmp_path / "project"

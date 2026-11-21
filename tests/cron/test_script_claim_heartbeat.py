@@ -10,42 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-_SPAWNABLE_PY: "str | None" = None
-
-
-def _spawnable_python() -> str:
-    global _SPAWNABLE_PY
-    if _SPAWNABLE_PY is not None:
-        return _SPAWNABLE_PY
-
-    """An interpreter that can actually CreateProcess children. The hermetic
-    runner's sys.executable can be an emulated x64 binary on an arm64 host
-    (WinError 5 on every spawn); the WindowsApps packaged python works by
-    full path. Falls back to sys.executable."""
-    import os
-    import subprocess as sp
-
-    for cand in (os.environ.get("HERMES_TEST_PYTHON"), sys.executable):
-        if not cand:
-            continue
-        try:
-            # The candidate must run AND spawn its own child — these tests
-            # execute scripts that Popen grandchildren, and an emulated
-            # interpreter can run -c while its own subprocess.Popen fails.
-            r = sp.run(
-                [cand, "-c", "import subprocess; subprocess.run(['cmd','/c','exit 0'] if __import__('os').name=='nt' else ['true'])"],
-                capture_output=True, timeout=30,
-            )
-            if r.returncode == 0:
-                _SPAWNABLE_PY = cand
-                return cand
-        except Exception:
-            continue
-    _SPAWNABLE_PY = sys.executable
-    return _SPAWNABLE_PY
-
-
-
 @pytest.mark.platforms("linux")
 def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     """Losing a fire claim must stop both the script and its descendants."""
@@ -53,13 +17,9 @@ def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     from cron import scheduler_script as sched_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    # Under the hermetic runner sys.executable can be an emulated binary
-    # whose children fail to spawn; cron resolves the script interpreter
-    # from sys.executable, so pin it to one that actually works here.
-    monkeypatch.setattr(scheduler.sys, "executable", _spawnable_python())
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
-    PY = _spawnable_python()  # interpreter the spawned script uses for grandchildren
+    PY = sys.executable  # interpreter the spawned script uses for grandchildren
     started = tmp_path / "started"
     child_done = tmp_path / "child-done"
     script = scripts_dir / "blocking.py"
@@ -118,7 +78,6 @@ def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
     assert not child_done.exists(), "script descendant survived cancellation"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
 def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
     """A SIGTERM-ignoring grandchild must not wedge the cancellation path:
     the tree kill escalates to SIGKILL for surviving group members, and the
@@ -127,13 +86,9 @@ def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
     from cron import scheduler_script as sched_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    # Under the hermetic runner sys.executable can be an emulated binary
-    # whose children fail to spawn; cron resolves the script interpreter
-    # from sys.executable, so pin it to one that actually works here.
-    monkeypatch.setattr(scheduler.sys, "executable", _spawnable_python())
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
-    PY = _spawnable_python()  # interpreter the spawned script uses for grandchildren
+    PY = sys.executable  # interpreter the spawned script uses for grandchildren
     started = tmp_path / "started"
     script = scripts_dir / "stubborn.py"
     child_code = (

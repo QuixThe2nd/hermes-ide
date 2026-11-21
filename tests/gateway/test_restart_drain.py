@@ -579,107 +579,6 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
     )
 
 
-@pytest.mark.platforms("windows")
-@pytest.mark.asyncio
-async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
-    """Faking sys.platform="win32" on Linux could not reach the real Windows
-    detach branch (msvcrt/creationflags spawn, Lib/site-packages venv layout);
-    this runs on the Windows CI job instead."""
-    runner, _adapter = make_restart_runner()
-    popen_calls = []
-    venv_dir = tmp_path / "venv"
-    site_packages = venv_dir / "Lib" / "site-packages"
-    site_packages.mkdir(parents=True)
-
-    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
-    monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
-
-    import hermes_cli._subprocess_compat as subprocess_compat
-
-    monkeypatch.setattr(
-        subprocess_compat,
-        "windows_detach_popen_kwargs",
-        lambda: {},
-    )
-
-    def fake_popen(cmd, **kwargs):
-        popen_calls.append((cmd, kwargs))
-        return MagicMock()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    # Popen is a recording fake here, so run the real (non-isolated) watcher
-    # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
-    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
-
-    await runner._launch_detached_restart_watcher()
-
-    assert len(popen_calls) == 1
-    cmd, kwargs = popen_calls[0]
-    # The watcher is a direct Python bootstrap of the repository watcher
-    # body, never the legacy CLI: no "hermes", no "gateway"/"restart" argv
-    # words, no service manager.
-    assert cmd[0] == gateway_run.sys.executable
-    assert cmd[1] == "-c"
-    assert "run_detached_restart_watcher" in cmd[2]
-    assert cmd[-2:] == ["321", str(gateway_run.Path(gateway_run.__file__).resolve().parent.parent)]
-    assert "gateway restart" not in " ".join(cmd)
-    assert "--replace" not in cmd
-    assert kwargs["env"].get("_HERMES_GATEWAY") is None
-    assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
-    assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
-    assert kwargs["stdout"] is subprocess.DEVNULL
-    assert kwargs["stderr"] is subprocess.DEVNULL
-
-
-@pytest.mark.platforms("windows")
-@pytest.mark.asyncio
-async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
-    """The restart watcher must run sys.executable (console python) under the
-    hidden-console detach kwargs — NOT swap in GUI-subsystem pythonw.exe,
-    which would leave the watcher console-less and make its descendants
-    flash visible conhosts (#54220/#56747).
-
-    Faking sys.platform on Linux could not enter the Windows-only watcher
-    spawn branch this asserts on, so it runs on the Windows CI job.
-    """
-    runner, _adapter = make_restart_runner()
-    popen_calls = []
-    venv_dir = tmp_path / "venv"
-    site_packages = venv_dir / "Lib" / "site-packages"
-    site_packages.mkdir(parents=True)
-
-    monkeypatch.setattr(gateway_run.sys, "executable", r"C:\venv\Scripts\python.exe")
-    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
-    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
-
-    import hermes_cli._subprocess_compat as subprocess_compat
-
-    monkeypatch.setattr(
-        subprocess_compat,
-        "windows_detach_popen_kwargs",
-        lambda: {"creationflags": 0x08000200},
-    )
-
-    def fake_popen(cmd, **kwargs):
-        popen_calls.append((cmd, kwargs))
-        return MagicMock()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    # Popen is a recording fake here, so run the real (non-isolated) watcher
-    # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
-    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
-
-    await runner._launch_detached_restart_watcher()
-
-    assert len(popen_calls) == 1
-    cmd, kwargs = popen_calls[0]
-    assert cmd[0] == r"C:\venv\Scripts\python.exe"
-    assert cmd[1] == "-c"
-    assert "run_detached_restart_watcher" in cmd[2]
-    assert cmd[-2:] == ["321", str(gateway_run.Path(gateway_run.__file__).resolve().parent.parent)]
-    assert kwargs["creationflags"] == 0x08000200
-
 
 # ── Standalone detached watcher contract (Fix 3) ──────────────────────
 
@@ -899,10 +798,7 @@ def test_spawn_replacement_gateway_uses_direct_entry_point(tmp_path):
     assert kwargs["stderr"] is subprocess.DEVNULL
     assert "hermes" not in argv
     assert "systemctl" not in argv and "launchctl" not in argv
-    if gateway_run.os.name != "nt":
-        assert kwargs["start_new_session"] is True
-    else:
-        assert "creationflags" in kwargs
+    assert kwargs["start_new_session"] is True
 
 
 def test_run_detached_restart_watcher_replaces_only_after_absence(monkeypatch):

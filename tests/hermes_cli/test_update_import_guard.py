@@ -250,7 +250,6 @@ def test_import_guard_reports_bounded_probe_failure(monkeypatch, tmp_path):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX exec-bit PermissionError")
 def test_import_guard_is_non_fatal_when_probe_cannot_run(tmp_path):
     """A venv interpreter that exists but cannot be executed must not read as a hung probe:
     spawn failure stays advisory (real ``bounded_probe_run``, real ``Popen``)."""
@@ -296,12 +295,8 @@ def test_import_guard_prefers_the_project_venv_interpreter(monkeypatch, tmp_path
 
     Probing ``sys.executable`` would then validate a tree the user never
     actually runs -- the same reasoning behind ``_venv_core_imports_healthy``.
-    On Windows (the platform this guard exists for) the driving interpreter
-    and the venv interpreter routinely differ.
     """
-    bin_dir = "Scripts" if update_cmd._m()._is_windows() else "bin"
-    name = "python.exe" if update_cmd._m()._is_windows() else "python"
-    venv_python = tmp_path / "venv" / bin_dir / name
+    venv_python = tmp_path / "venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text("")
 
