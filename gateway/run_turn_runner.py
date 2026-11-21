@@ -2326,8 +2326,10 @@ class TurnRunner(_TurnRunnerCore):
         )
         ctx = self._ctx
         runner = self._runner
-        # Footer `setup`: pre-run work (model resolution, agent build, history load).
-        setup_started_at = time.perf_counter()
+        # Footer `setup`: inbound intake plus model resolution, agent build and history load.
+        setup_started_at = ctx.turn_started_at
+        if setup_started_at is None:
+            setup_started_at = time.perf_counter()
         # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
         # session_key is propagated via contextvars in _set_session_env() and
         # set_current_session_key(), both concurrency-safe and inherited by tool worker threads.

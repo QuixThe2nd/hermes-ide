@@ -2,6 +2,8 @@ package footerfmt
 
 import (
 	"math"
+	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -387,6 +389,217 @@ func TestFooterPhases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		assertPhases(t, "FooterPhases "+tc.name, FooterPhases(tc.result, tc.turnEndedAt), tc.want)
+	}
+}
+
+func assertTurnAccounted(t *testing.T, result map[string]float64,
+	turnStartedAt, turnEndedAt, apiTime, toolTime float64, wantTail string) {
+	t.Helper()
+	phases := FooterPhases(result, &turnEndedAt)
+	overhead := turnEndedAt - turnStartedAt - apiTime - toolTime
+	if got := PhaseTail(&overhead, phases); got != wantTail {
+		t.Errorf("PhaseTail = %q, want %q", got, wantTail)
+	}
+	accounted := apiTime + toolTime
+	for _, key := range phaseOrder {
+		accounted += phases[key]
+	}
+	turnTime := turnEndedAt - turnStartedAt
+	if math.Abs(accounted-turnTime) > 1e-9 {
+		t.Errorf("accounted time = %v, want turn time %v; phases=%v", accounted, turnTime, phases)
+	}
+}
+
+func TestFooterPhasesCoverIntakeAndFinalizerTail(t *testing.T) {
+	// turn start=10, gateway setup ends=17, conversation ends=34,
+	// response ends=38. Agent save already owns its 14s finalizer span.
+	result := map[string]float64{
+		"gateway_setup_time":    7,
+		"save_time":             14,
+		"conversation_ended_at": 34,
+	}
+	assertTurnAccounted(t, result, 10, 38, 3, 0, "setup 7.0s · save 18s")
+
+	in := LineInput{
+		Model:     "m",
+		TurnTime:  fp(28),
+		APITime:   fp(3),
+		ToolTime:  fp(0),
+		APICalls:  1,
+		Phases:    FooterPhases(result, fp(38)),
+		ToolCalls: ip(0),
+	}
+	want := "m · 28s · api 3.0s · tools 0 · setup 7.0s · save 18s · 1 call"
+	if got := FooterLine(in); got != want {
+		t.Errorf("FooterLine = %q, want %q", got, want)
+	}
+}
+
+func TestFooterLinePostLoopFallbackAPIIsNotSave(t *testing.T) {
+	// setup=2, fallback API=6, untimed cleanup=4, response tail=1.
+	// The API call remains outside both save components.
+	result := map[string]float64{
+		"gateway_setup_time":    2,
+		"save_time":             4,
+		"conversation_ended_at": 112,
+	}
+	assertTurnAccounted(t, result, 100, 113, 6, 0, "setup 2.0s · save 5.0s")
+
+	in := LineInput{
+		Model:     "m",
+		TurnTime:  fp(13),
+		APITime:   fp(6),
+		ToolTime:  fp(0),
+		APICalls:  1,
+		Phases:    FooterPhases(result, fp(113)),
+		ToolCalls: ip(0),
+	}
+	want := "m · 13s · api 6.0s · tools 0 · setup 2.0s · save 5.0s · 1 call"
+	if got := FooterLine(in); got != want {
+		t.Errorf("FooterLine = %q, want %q", got, want)
+	}
+}
+
+func TestFooterPhasesConcurrentTurnInputsStayIndependent(t *testing.T) {
+	tests := []struct {
+		name                       string
+		result                     map[string]float64
+		turnStartedAt, turnEndedAt float64
+		apiTime, toolTime          float64
+		wantTail                   string
+	}{
+		{
+			name: "first turn has longer intake and response drain",
+			result: map[string]float64{
+				"gateway_setup_time":    7,
+				"save_time":             9,
+				"mem_time":              5,
+				"conversation_ended_at": 34,
+			},
+			turnStartedAt: 10,
+			turnEndedAt:   38,
+			apiTime:       3,
+			wantTail:      "mem 5.0s · setup 7.0s · save 13s",
+		},
+		{
+			name: "second turn has a different origin and tool phase",
+			result: map[string]float64{
+				"gateway_setup_time":    12,
+				"save_time":             2,
+				"compress_time":         3,
+				"conversation_ended_at": 79,
+			},
+			turnStartedAt: 40,
+			turnEndedAt:   82,
+			apiTime:       15,
+			toolTime:      7,
+			wantTail:      "setup 12s · compress 3.0s · save 5.0s",
+		},
+	}
+
+	var wg sync.WaitGroup
+	for _, tc := range tests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assertTurnAccounted(t, tc.result, tc.turnStartedAt, tc.turnEndedAt,
+				tc.apiTime, tc.toolTime, tc.wantTail)
+		}()
+	}
+	wg.Wait()
+}
+
+func TestFooterLineWithoutResponseEndKeepsDeliveryTailOther(t *testing.T) {
+	result := map[string]float64{
+		"gateway_setup_time":    7,
+		"save_time":             14,
+		"conversation_ended_at": 34,
+	}
+	in := LineInput{
+		Model:     "m",
+		TurnTime:  fp(28),
+		APITime:   fp(3),
+		ToolTime:  fp(0),
+		APICalls:  1,
+		Phases:    FooterPhases(result, nil),
+		ToolCalls: ip(0),
+	}
+	want := "m · 28s · api 3.0s · tools 0 · setup 7.0s · save 14s · other 4.0s · 1 call"
+	if got := FooterLine(in); got != want {
+		t.Errorf("FooterLine = %q, want %q", got, want)
+	}
+}
+
+func TestFooterLineEarlyReturnHasNoPhaseAttribution(t *testing.T) {
+	result := map[string]float64{}
+	if phases := FooterPhases(result, fp(4)); phases != nil {
+		t.Fatalf("FooterPhases = %v, want nil for an early return", phases)
+	}
+	in := LineInput{
+		Model:    "m",
+		TurnTime: fp(4),
+		APITime:  fp(0),
+		ToolTime: fp(0),
+	}
+	want := "m · 4.0s · api 0.0s · tools 0 · other 4.0s"
+	if got := FooterLine(in); got != want {
+		t.Errorf("FooterLine = %q, want %q", got, want)
+	}
+}
+
+func TestFooterPhasesDoesNotMutateOrAliasTurnResult(t *testing.T) {
+	result := map[string]float64{
+		"gateway_setup_time":    2,
+		"save_time":             2,
+		"conversation_ended_at": 12,
+	}
+	original := make(map[string]float64, len(result))
+	for key, value := range result {
+		original[key] = value
+	}
+
+	phases := FooterPhases(result, fp(15))
+	if !reflect.DeepEqual(result, original) {
+		t.Fatalf("FooterPhases mutated result: got %v, want %v", result, original)
+	}
+	// A renderer may normalize its own phase map; that must not poison a
+	// later consumer of the same immutable per-turn result.
+	delete(phases, "setup")
+	phases["save"] = 99
+	fresh := FooterPhases(result, fp(15))
+	want := map[string]float64{"setup": 2, "save": 5}
+	if !reflect.DeepEqual(fresh, want) {
+		t.Errorf("fresh FooterPhases = %v, want %v", fresh, want)
+	}
+	line := LineInput{
+		Model: "m", TurnTime: fp(15), APITime: fp(8), ToolTime: fp(0),
+		APICalls: 1, Phases: fresh, ToolCalls: ip(0),
+	}
+	wantLine := "m · 15s · api 8.0s · tools 0 · setup 2.0s · save 5.0s · 1 call"
+	if got := FooterLine(line); got != wantLine {
+		t.Errorf("FooterLine = %q, want %q", got, wantLine)
+	}
+}
+
+func TestFooterLineNegativeIntakeFallsBackToOther(t *testing.T) {
+	result := map[string]float64{
+		"gateway_setup_time":    -4,
+		"conversation_ended_at": 10,
+	}
+	in := LineInput{
+		Model:     "m",
+		TurnTime:  fp(12),
+		APITime:   fp(6),
+		ToolTime:  fp(0),
+		APICalls:  1,
+		Phases:    FooterPhases(result, fp(12)),
+		ToolCalls: ip(0),
+	}
+	// Invalid clock data is omitted, not rendered as negative setup. The
+	// response tail is save; only the unclaimable four seconds stay in other.
+	want := "m · 12s · api 6.0s · tools 0 · save 2.0s · other 4.0s · 1 call"
+	if got := FooterLine(in); got != want {
+		t.Errorf("FooterLine = %q, want %q", got, want)
 	}
 }
 

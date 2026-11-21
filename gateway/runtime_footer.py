@@ -247,10 +247,11 @@ def phase_times_from_result(result: dict[str, Any] | None) -> Optional[dict]:
 
 
 def footer_phase_times(result: dict[str, Any] | None, *, turn_ended_at: Optional[float] = None) -> Optional[dict]:
-    """Agent phase buckets plus the gateway's spans outside ``run_conversation`` (so no api/tool
-    overlap): ``gateway_setup_time`` into ``setup``; ``conversation_ended_at`` → ``turn_ended_at``
-    (perf_counter, delivery drain) into ``save``. Per-key sum skipping missing, non-numeric and
-    negative values; ``None`` if nothing counted. Go twin: ``footerfmt.FooterPhases``."""
+    """Agent phase buckets plus gateway spans outside ``run_conversation`` (so no api/tool
+    overlap): inbound intake through ``gateway_setup_time`` into ``setup``;
+    ``conversation_ended_at`` → ``turn_ended_at`` (perf_counter, delivery drain) into ``save``.
+    Per-key sum skipping missing, non-numeric and negative values; ``None`` if nothing counted.
+    Go twin: ``footerfmt.FooterPhases``."""
     result = result or {}
     gateway = {"setup": result.get("gateway_setup_time")}
     ended_at = result.get("conversation_ended_at")
