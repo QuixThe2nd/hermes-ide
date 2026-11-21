@@ -3,7 +3,15 @@
 The four bundled specs are generic capability defaults and always register;
 ``delegation.lanes`` is a per-lane override overlay merged onto them field by
 field, never an opt-in switch.
-"""
+
+Go twin: ``internal/lanereach`` — the same harness-reachability and omp
+fallback contract, run by the shared-table contract test
+(``tests/tools/test_delegate_lane_reach_contract.py``) against the compiled
+Go command and by the Go module's own tests. The runtime gates lane tools
+with this module: lane check_fns are uncached boot probes and deployments
+(pip, docker) carry no Go toolchain, so there is no runtime Go bridge — the
+same arrangement as ``internal/servingidentity`` and friends.
+ """
 
 from __future__ import annotations
 import copy

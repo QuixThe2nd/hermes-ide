@@ -61,8 +61,8 @@ async def test_restart_with_external_supervisor_marker_uses_service_path(
 
     await runner._handle_restart_command(_make_restart_event())
 
-    # Routing contract only: the unified restart flow (#613) passes further
-    # kwargs (restart_platforms) that are not this test's subject.
+    # Routing contract only: the unified restart flow passes further drain
+    # kwargs that are not this test's subject.
     runner.request_restart.assert_called_once()
     kwargs = runner.request_restart.call_args.kwargs
     assert kwargs.get("detached") is False
