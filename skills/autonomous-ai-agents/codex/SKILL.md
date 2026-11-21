@@ -4,7 +4,7 @@ description: "Delegate coding to OpenAI Codex CLI (features, PRs)."
 version: 1.0.1
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Coding-Agent, Codex, OpenAI, Code-Review, Refactoring]

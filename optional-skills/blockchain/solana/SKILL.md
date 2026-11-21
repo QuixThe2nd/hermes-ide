@@ -4,7 +4,7 @@ description: Query Solana wallets, tokens, txs, and NFTs in USD.
 version: 0.2.0
 author: Deniz Alagoz (gizdusum), enhanced by Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Solana, Blockchain, Crypto, Web3, RPC, DeFi, NFT]

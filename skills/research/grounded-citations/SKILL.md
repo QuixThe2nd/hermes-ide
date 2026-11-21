@@ -4,7 +4,7 @@ description: "Ground answers and documents in cited, verifiable sources."
 version: 1.2.0
 author: Hermes Agent + Teknium
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Research, Citations, Grounding, Sources, Web, Reports]
@@ -66,14 +66,6 @@ PYTHON="$(command -v python3 || command -v python)"
 "$PYTHON" "$S" list                                   # ledger table
 "$PYTHON" "$S" render                                 # Sources: block
 "$PYTHON" "$S" verify draft.md                        # catch bad citations
-```
-
-Native Windows PowerShell uses the same selection rule:
-
-```powershell
-$PYTHON = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } elseif (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { throw "Python 3 is required" }
-$S = Join-Path $HOME ".hermes\skills\research\grounded-citations\scripts\sources.py"
-& $PYTHON $S reset
 ```
 
 `add` is idempotent and URL-normalized: the same page always returns the same

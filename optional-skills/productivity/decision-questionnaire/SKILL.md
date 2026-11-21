@@ -4,7 +4,7 @@ description: "Turn an unanswerable decision into a questionnaire doc."
 version: 1.0.0
 author: "Matt Pocock (mattpocock/skills, to-questionnaire) + Hermes Agent"
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [questionnaire, decision, async, stakeholder, discovery, communication]

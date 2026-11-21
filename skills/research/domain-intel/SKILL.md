@@ -4,7 +4,7 @@ description: Passive recon of subdomains, SSL certs, WHOIS, and DNS.
 version: 1.0.0
 author: FurkanL0, Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Domains, OSINT, DNS, Research]
@@ -14,7 +14,7 @@ metadata:
 # Domain Intelligence — Passive OSINT
 
 Passive domain reconnaissance using only Python stdlib.
-**Zero dependencies. Zero API keys. Works on Linux, macOS, and Windows.**
+**Zero dependencies. Zero API keys. Works on Linux and macOS.**
 
 ## Helper script
 
@@ -75,7 +75,7 @@ python SKILL_DIR/scripts/domain_intel.py bulk example.com github.com --checks ss
 ## Platform compatibility
 
 Pure Python stdlib (`socket`, `ssl`, `urllib`, `json`, `concurrent.futures`).
-Works identically on Linux, macOS, and Windows with no dependencies.
+Works identically on Linux and macOS with no dependencies.
 
 - **crt.sh queries** use HTTPS (port 443) — works behind most firewalls
 - **WHOIS queries** use TCP port 43 — may be blocked on restrictive networks

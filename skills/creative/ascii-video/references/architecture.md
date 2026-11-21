@@ -79,7 +79,6 @@ Don't hardcode a single font. Choose fonts to match the project's mood. Monospac
 | Monaco | Retro terminal, compact | macOS |
 | Courier New | Classic typewriter, wide | Cross-platform |
 | SF Mono | Modern, tight spacing | macOS |
-| Consolas | Windows native, clean | Windows |
 | JetBrains Mono | Developer, ligature-ready | Install |
 | Fira Code | Geometric, modern | Install |
 | IBM Plex Mono | Corporate, authoritative | Install |
@@ -109,20 +108,11 @@ FONT_PREFS_LINUX = [
     ("Noto Sans Mono", "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf"),
     ("Ubuntu Mono", "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf"),
 ]
-FONT_PREFS_WINDOWS = [
-    ("Consolas", r"C:\Windows\Fonts\consola.ttf"),
-    ("Courier New", r"C:\Windows\Fonts\cour.ttf"),
-    ("Lucida Console", r"C:\Windows\Fonts\lucon.ttf"),
-    ("Cascadia Code", os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts\CascadiaCode.ttf")),
-    ("Cascadia Mono", os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts\CascadiaMono.ttf")),
-]
 
 def _get_font_prefs():
     s = platform.system()
     if s == "Darwin":
         return FONT_PREFS_MACOS
-    elif s == "Windows":
-        return FONT_PREFS_WINDOWS
     return FONT_PREFS_LINUX
 
 FONT_PREFS = _get_font_prefs()

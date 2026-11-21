@@ -4,7 +4,7 @@ description: Author/validate/export Google's DESIGN.md token spec files.
 version: 1.1.0
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [design, design-system, tokens, ui, accessibility, wcag, tailwind, dtcg, google]
@@ -169,10 +169,6 @@ All commands accept `-` for stdin. `lint` returns exit 1 on errors (warnings
 alone exit 0). `export` exits 0 on a successful export regardless of lint
 findings in the source — run `lint` separately to gate on those. Output is
 JSON by default; parse it if you need to report findings structurally.
-
-On Windows, the `design.md` bin name can collide with the `.md` file
-association (silent no-op or the file opens in an editor). Use the dot-free
-alias: `npx -y -p @google/design.md designmd lint DESIGN.md`.
 
 ### Lint rule reference (the 9 rules, as of CLI 0.3.0)
 

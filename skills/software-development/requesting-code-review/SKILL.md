@@ -4,7 +4,7 @@ description: "Pre-commit review: security scan, quality gates, auto-fix."
 version: 2.1.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [code-review, security, verification, quality, pre-commit, auto-fix]

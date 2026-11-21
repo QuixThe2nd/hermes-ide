@@ -4,7 +4,7 @@ description: "Weekly reset: commitments, stalled work, next-week plan."
 version: 0.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Weekly-Review, Planning, Tasks, Calendar, Productivity]

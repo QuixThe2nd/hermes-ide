@@ -4,7 +4,7 @@ description: Locates automatically injected coding conventions.
 version: 1.0.0
 author: Parsa Yazdani (@QuixThe2nd), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [delegation, coding-conventions]

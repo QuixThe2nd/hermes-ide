@@ -4,7 +4,7 @@ description: Build auditable financial workbooks headless via openpyxl.
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [excel, openpyxl, finance, spreadsheet, modeling]

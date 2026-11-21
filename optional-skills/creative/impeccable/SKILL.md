@@ -4,7 +4,7 @@ description: Frontend design guidance, upstream-maintained (impeccable).
 version: 4.1.2
 author: Paul Bakaus (pbakaus)
 license: Apache-2.0
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [design, frontend, ui, ux, web-design, anti-slop]

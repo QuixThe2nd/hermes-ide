@@ -4,7 +4,7 @@ description: "Watch named companies for material news; cited digests."
 version: 0.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Competitors, News, Market-Research, Monitoring]

@@ -4,7 +4,7 @@ description: List, auth, and call MCP servers/tools from the terminal.
 version: 1.0.0
 author: community
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [MCP, Tools, API, Integrations, Interop]

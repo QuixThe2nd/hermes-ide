@@ -4,7 +4,7 @@ description: "Turn meeting notes into cited decisions, owners, tickets."
 version: 0.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Meetings, Action-Items, Follow-Up, Productivity]

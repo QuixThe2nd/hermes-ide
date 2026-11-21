@@ -5,7 +5,7 @@ version: 2.0.0
 supersedes: [agent-merge-conflict-arbiter]
 author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Multi-Agent, Git, Merge-Conflict, Arbitration]

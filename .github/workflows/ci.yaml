@@ -46,7 +46,6 @@ jobs:
       deps: ${{ steps.classify.outputs.deps }}
       uv_lock: ${{ steps.classify.outputs.uv_lock }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
-      installer: ${{ steps.classify.outputs.installer }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
