@@ -970,6 +970,13 @@ DEFAULT_CONFIG = {
         # restore the old contract where omitted always blocks inline.
         # Explicit background=true/false is never overridden by this key.
         "default_background": True,
+        # A user message arriving while the agent is BLOCKED on a synchronous
+        # delegation force-backgrounds the still-running children onto the
+        # async-delegation rail (never stopped; their results re-enter when
+        # they settle) and enters the live run as a steer. Sessions that
+        # cannot receive a late completion keep the queue-behind-the-run
+        # demotion. Set false to always queue behind the run instead.
+        "steer_force_background": True,
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

@@ -751,6 +751,30 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
+    def _force_background_entry(self, wait: Any) -> Dict[str, Any]:
+        """Entry for a wait released by a user steer: the worker was adopted onto the
+        async-delegation rail (never stopped) and its result reports back when it settles."""
+        from tools import delegate_tool_forcebg
+        child_api_calls = 0
+        with _quiet(None):
+            child_api_calls = int(self.child.get_activity_summary().get("api_call_count", 0) or 0)
+        duration = self.elapsed()
+        entry = {
+            "task_index": self.task_index, "status": "force_backgrounded", "summary": None,
+            "error": delegate_tool_forcebg.entry_notice(wait.delegation_id),
+            "exit_reason": "force_backgrounded",
+            "api_calls": child_api_calls, "duration_seconds": duration,
+            "timeout_seconds": None, "timed_out_after_seconds": None, "timeout_phase": None,
+            "_child_role": getattr(self.child, "_delegate_role", None), "diagnostic_path": None,
+            "delegation_id": wait.delegation_id,
+        }
+        self.finish_failed(
+            entry, None,
+            preview=f"Moved to background as {wait.delegation_id} after {duration:.1f}s",
+            summary="moved to background by a user steer",
+        )
+        return entry
+
     def _adopt_running_worker(self, future) -> Optional[str]:
         """Adopt a timed-out but STILL-RUNNING worker onto the async-delegation rail.
 
@@ -862,11 +886,20 @@ class _ChildRun:
         # inactivity watchdog (#109749).
         settled = self.heartbeat.settled if self.heartbeat is not None else threading.Event()
         future.add_done_callback(lambda _f: settled.set())
+        # Eligible waits are releasable by a user steer (force-backgrounding —
+        # tools.delegate_tool_forcebg); ineligible sessions keep today's plain wait.
+        from tools import delegate_tool_forcebg
+        force_bg_wait = delegate_tool_forcebg.register_blocking_wait(self, future, settled)
         # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
         stale_after: Optional[float] = None
         try:
-            settled.wait(timeout=child_timeout)
+            if force_bg_wait is not None:
+                delegate_tool_forcebg.wait_until_released(force_bg_wait, settled, child_timeout)
+            else:
+                settled.wait(timeout=child_timeout)
             if not future.done():
+                if force_bg_wait is not None and force_bg_wait.released_by_steer():
+                    return None, self._force_background_entry(force_bg_wait), True
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
                 raise FuturesTimeoutError()
             return future.result(), None, False
@@ -875,6 +908,7 @@ class _ChildRun:
         finally:
             # Shut down without waiting — a child stuck on blocking I/O would hang wait=True forever.
             executor.shutdown(wait=False)
+            delegate_tool_forcebg.unregister_blocking_wait(self, force_bg_wait)
 
         _late_pending_steer = self.close_steering()
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
@@ -883,7 +917,12 @@ class _ChildRun:
         # the stale-heartbeat verdict keeps the stop — that worker is making no progress.
         adopted_delegation_id: Optional[str] = None
         if is_timeout and stale_after is None and not future.done():
-            adopted_delegation_id = self._adopt_running_worker(future)
+            # Adopt through the wait when registered: a steer listener mid-adoption
+            # must join the SAME dispatch, never double-adopt.
+            adopted_delegation_id = (
+                delegate_tool_forcebg.adopt(force_bg_wait)
+                if force_bg_wait is not None else self._adopt_running_worker(future)
+            )
         if adopted_delegation_id is None:
             _signal_child_stop(child)
         # What actually ended the wait: the stale threshold pre-empts a longer configured cap.

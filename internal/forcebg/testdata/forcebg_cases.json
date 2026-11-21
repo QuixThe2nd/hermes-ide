@@ -1,0 +1,630 @@
+{
+  "cases": [
+    {
+      "name": "core_release_and_adopt",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_core_1"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "live",
+          "key": "p"
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "change of plans"
+        },
+        {
+          "op": "released",
+          "run": 0
+        },
+        {
+          "op": "notice",
+          "id": "deleg_core_1"
+        },
+        {
+          "op": "receipt",
+          "ids": [
+            "deleg_core_1"
+          ],
+          "injected": "change of plans"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "count": 1,
+          "key": "p",
+          "op": "live"
+        },
+        {
+          "accepted": true,
+          "ids": [
+            "deleg_core_1"
+          ],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; force-backgrounded 1 delegation(s): deleg_core_1"
+        },
+        {
+          "op": "released",
+          "value": true
+        },
+        {
+          "op": "notice",
+          "text": "The user sent a new message while this subagent was still running, so it was moved to the background as delegation deleg_core_1 - it was NOT stopped and its result will re-enter this conversation as a completion message when it finishes. The user's message follows as a steer; respond to it now rather than waiting for the background result."
+        },
+        {
+          "op": "receipt",
+          "text": "🌀 Your message moved the running agent to the background (delegation deleg_core_1).\nInjected into the agent's context:\n```\nchange of plans\n```"
+        }
+      ]
+    },
+    {
+      "name": "kill_switch_off_never_registers",
+      "steer_force_background": false,
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_off"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "live",
+          "key": "p"
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "nudge"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": false
+        },
+        {
+          "count": 0,
+          "key": "p",
+          "op": "live"
+        },
+        {
+          "accepted": true,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; adoption refused (children keep blocking)"
+        }
+      ]
+    },
+    {
+      "name": "child_depth_parent_not_eligible",
+      "agents": [
+        {
+          "key": "child",
+          "delegate_depth": 1,
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "child",
+          "adopt_id": "deleg_deep"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "live",
+          "key": "child"
+        },
+        {
+          "op": "steer",
+          "key": "child",
+          "text": "nudge"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": false
+        },
+        {
+          "count": 0,
+          "key": "child",
+          "op": "live"
+        },
+        {
+          "accepted": true,
+          "ids": [],
+          "key": "child",
+          "op": "steer",
+          "summary": "steer accepted; adoption refused (children keep blocking)"
+        }
+      ]
+    },
+    {
+      "name": "delivery_incapable_session_not_eligible",
+      "delivery_supported": false,
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_one_shot"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "live",
+          "key": "p"
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "nudge"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": false
+        },
+        {
+          "count": 0,
+          "key": "p",
+          "op": "live"
+        },
+        {
+          "accepted": true,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; adoption refused (children keep blocking)"
+        }
+      ]
+    },
+    {
+      "name": "rail_refusal_degrades_to_plain_steer",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": ""
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "when you get a chance"
+        },
+        {
+          "op": "released",
+          "run": 0
+        },
+        {
+          "op": "steered_receipt",
+          "status_detail": " (2 min elapsed)"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "accepted": true,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; adoption refused (children keep blocking)"
+        },
+        {
+          "op": "released",
+          "value": false
+        },
+        {
+          "op": "steered_receipt",
+          "text": "⏩ Steered into current run (2 min elapsed). Your message will be injected at a safe point in this run."
+        }
+      ]
+    },
+    {
+      "name": "steer_refused_adopts_nothing",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true,
+          "steer_refused": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_refused"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "too late"
+        },
+        {
+          "op": "live",
+          "key": "p"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "accepted": false,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer refused; nothing adopted"
+        },
+        {
+          "count": 1,
+          "key": "p",
+          "op": "live"
+        }
+      ]
+    },
+    {
+      "name": "blank_text_refused",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_blank"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "   "
+        },
+        {
+          "op": "live",
+          "key": "p"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "accepted": false,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer refused; nothing adopted"
+        },
+        {
+          "count": 1,
+          "key": "p",
+          "op": "live"
+        }
+      ]
+    },
+    {
+      "name": "batch_two_runs_one_steer",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_batch_1"
+        },
+        {
+          "parent": "p",
+          "adopt_id": "deleg_batch_2"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "register",
+          "run": 1
+        },
+        {
+          "op": "live",
+          "key": "p"
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "all of you, background"
+        },
+        {
+          "op": "receipt",
+          "ids": [
+            "deleg_batch_1",
+            "deleg_batch_2"
+          ],
+          "injected": "all of you, background"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "count": 2,
+          "key": "p",
+          "op": "live"
+        },
+        {
+          "accepted": true,
+          "ids": [
+            "deleg_batch_1",
+            "deleg_batch_2"
+          ],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; force-backgrounded 2 delegation(s): deleg_batch_1, deleg_batch_2"
+        },
+        {
+          "op": "receipt",
+          "text": "🌀 Your message moved the running agents to the background (delegations deleg_batch_1, deleg_batch_2).\nInjected into the agent's context:\n```\nall of you, background\n```"
+        }
+      ]
+    },
+    {
+      "name": "adopt_idempotent_two_callers",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_once"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "adopt",
+          "run": 0
+        },
+        {
+          "op": "adopt",
+          "run": 0
+        },
+        {
+          "op": "released",
+          "run": 0
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "id": "deleg_once",
+          "op": "adopt"
+        },
+        {
+          "id": "deleg_once",
+          "op": "adopt"
+        },
+        {
+          "op": "released",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "completed_wait_leaves_no_phantom",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [
+        {
+          "parent": "p",
+          "adopt_id": "deleg_done"
+        }
+      ],
+      "ops": [
+        {
+          "op": "register",
+          "run": 0
+        },
+        {
+          "op": "complete",
+          "run": 0
+        },
+        {
+          "op": "live",
+          "key": "p"
+        },
+        {
+          "op": "has_eligible",
+          "key": "p"
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "hello"
+        }
+      ],
+      "expect": [
+        {
+          "op": "register",
+          "registered": true
+        },
+        {
+          "op": "complete"
+        },
+        {
+          "count": 0,
+          "key": "p",
+          "op": "live"
+        },
+        {
+          "key": "p",
+          "op": "has_eligible",
+          "value": false
+        },
+        {
+          "accepted": true,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; adoption refused (children keep blocking)"
+        }
+      ]
+    },
+    {
+      "name": "no_waits_stash_only",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [],
+      "ops": [
+        {
+          "op": "has_eligible",
+          "key": "p"
+        },
+        {
+          "op": "steer",
+          "key": "p",
+          "text": "hello"
+        }
+      ],
+      "expect": [
+        {
+          "key": "p",
+          "op": "has_eligible",
+          "value": false
+        },
+        {
+          "accepted": true,
+          "ids": [],
+          "key": "p",
+          "op": "steer",
+          "summary": "steer accepted; adoption refused (children keep blocking)"
+        }
+      ]
+    },
+    {
+      "name": "receipt_caps_long_injected_echo",
+      "agents": [
+        {
+          "key": "p",
+          "has_steer": true
+        }
+      ],
+      "runs": [],
+      "ops": [
+        {
+          "op": "receipt",
+          "ids": [
+            "deleg_cap"
+          ],
+          "injected": "start:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        }
+      ],
+      "expect": [
+        {
+          "op": "receipt",
+          "text": "🌀 Your message moved the running agent to the background (delegation deleg_cap).\nInjected into the agent's context:\n```\nstart:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy...\n```"
+        }
+      ]
+    }
+  ]
+}

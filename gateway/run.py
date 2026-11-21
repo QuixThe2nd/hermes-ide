@@ -6883,6 +6883,11 @@ class GatewayRunner(
         redirected: bool
         steered: bool = False  # redirect() degraded to pending-steer delivery during tools
         steer_delivery: Any = dataclasses.field(default=None, repr=False, compare=False)
+        # Steer-driven force-backgrounding: the follow-up released blocking children
+        # onto the async-delegation rail (gateway/run_busy.py builds the receipt).
+        force_backgrounded: bool = False
+        force_background_ids: Tuple[str, ...] = ()
+        steered_text: str = ""  # exact text the accepted steer carried (receipt echo)
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn

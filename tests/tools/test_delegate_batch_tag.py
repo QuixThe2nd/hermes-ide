@@ -123,6 +123,9 @@ def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch,
         res = dt.delegate_task(
             tasks=[{"goal": f"batch of {n}: worker task number {i}"} for i in range(n)],
             parent_agent=parent,
+            background=False,  # the ✓ console lines this contract pins are the SYNC
+            # batch's; the omitted-argument default now detaches (async_delegation),
+            # and a detached batch never prints them to the caller.
         )
         assert "error" not in str(res)[:20], res
     headers = [re.match(r"\s*🔀 \[(set \d+)\] delegating (\d+) tasks", l) for l in lines]
