@@ -147,3 +147,16 @@ class TestTurnAccumulation:
         # seconds of the turn.
         for key in PHASE_KEYS:
             assert result.get(f"{key}_time", 0.0) < 1.0, (key, result.get(f"{key}_time"))
+
+    def test_slow_memory_sync_at_turn_end_lands_in_mem_not_other(self, phase_agent):
+        """The end-of-turn memory sync runs under timed_phase(mem) AFTER
+        finalize_turn builds the result dict; its seconds must still reach the
+        result instead of falling into the footer's unattributed `other`."""
+        def _slow_sync(**_kwargs):
+            time.sleep(0.25)
+
+        with patch.object(phase_agent, "_sync_external_memory_for_turn", side_effect=_slow_sync):
+            result = _run_text_turn(phase_agent, "the report is done")
+
+        assert result["final_response"] == "the report is done"
+        assert result["mem_time"] >= 0.2, result["mem_time"]

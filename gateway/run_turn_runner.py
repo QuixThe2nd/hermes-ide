@@ -2326,6 +2326,8 @@ class TurnRunner(_TurnRunnerCore):
         )
         ctx = self._ctx
         runner = self._runner
+        # Footer `setup`: pre-run work (model resolution, agent build, history load).
+        setup_started_at = time.perf_counter()
         # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
         # session_key is propagated via contextvars in _set_session_env() and
         # set_current_session_key(), both concurrency-safe and inherited by tool worker threads.
@@ -2385,12 +2387,15 @@ class TurnRunner(_TurnRunnerCore):
         agent_history = preparation.agent_history
         observed_group_context = preparation.observed_group_context
         history_media_paths = preparation.history_media_paths
+        gateway_setup_time = time.perf_counter() - setup_started_at
         result = self._run_conversation_with_session(
             agent, agent_history, observed_group_context,
             preparation.persist_user_message, preparation.persist_user_timestamp,
             continue_interrupted_turn=preparation.continue_interrupted_turn,
             forced_recovery_blocked=preparation.blocked_error,
         )
+        # Footer `save`: from here to the caller's perf_counter turn-time stamp (delivery drain).
+        conversation_ended_at = time.perf_counter()
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.
@@ -2413,6 +2418,7 @@ class TurnRunner(_TurnRunnerCore):
         # compression_exhausted so the gateway never auto-resets a session a concurrent compressor is
         # about to shrink.
         common = {
+            "gateway_setup_time": gateway_setup_time, "conversation_ended_at": conversation_ended_at,
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
             **turn_metrics(result),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),

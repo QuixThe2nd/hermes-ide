@@ -1,6 +1,9 @@
 package footerfmt
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestShortModel(t *testing.T) {
 	cases := []struct {
@@ -324,5 +327,94 @@ func TestPhaseTailResidualAtExactThreshold(t *testing.T) {
 	got := PhaseTail(fp(0.2), map[string]float64{"mem": 0.1})
 	if got != "mem 0.1s · other 0.1s" {
 		t.Errorf("PhaseTail = %q, want %q", got, "mem 0.1s · other 0.1s")
+	}
+}
+
+func TestMergePhases(t *testing.T) {
+	cases := []struct {
+		name           string
+		gateway, agent map[string]float64
+		want           map[string]float64
+	}{
+		{"sums shared keys", map[string]float64{"setup": 0.85, "save": 1.4},
+			map[string]float64{"mem": 1.9, "setup": 0.05, "save": 0.02},
+			map[string]float64{"mem": 1.9, "setup": 0.9, "save": 1.42}},
+		{"agent only", nil, map[string]float64{"mem": 0.4}, map[string]float64{"mem": 0.4}},
+		{"gateway only", map[string]float64{"save": 2.0}, nil, map[string]float64{"save": 2.0}},
+		{"negatives ignored", map[string]float64{"save": -0.3},
+			map[string]float64{"save": 0.5, "mem": -1}, map[string]float64{"save": 0.5}},
+		{"zero kept as measured", map[string]float64{"setup": 0}, nil, map[string]float64{"setup": 0}},
+		{"nothing measured", nil, map[string]float64{"mem": -0.1}, nil},
+		{"both nil", nil, nil, nil},
+	}
+	for _, tc := range cases {
+		assertPhases(t, "MergePhases "+tc.name, MergePhases(tc.gateway, tc.agent), tc.want)
+	}
+}
+
+// assertPhases compares phase maps within float tolerance; nil and empty
+// differ (nil keeps the legacy single-"other" render).
+func assertPhases(t *testing.T, label string, got, want map[string]float64) {
+	t.Helper()
+	if (got == nil) != (want == nil) || len(got) != len(want) {
+		t.Errorf("%s = %v, want %v", label, got, want)
+		return
+	}
+	for key, w := range want {
+		if math.Abs(got[key]-w) > 1e-9 {
+			t.Errorf("%s[%q] = %v, want %v", label, key, got[key], w)
+		}
+	}
+}
+
+func TestFooterPhases(t *testing.T) {
+	live := map[string]float64{"mem_time": 1.9, "setup_time": 0.05, "save_time": 0.02,
+		"gateway_setup_time": 0.85, "conversation_ended_at": 100}
+	cases := []struct {
+		name        string
+		result      map[string]float64
+		turnEndedAt *float64
+		want        map[string]float64
+	}{
+		{"gateway spans fold into setup and save", live, fp(102),
+			map[string]float64{"mem": 1.9, "setup": 0.9, "save": 2.02}},
+		{"no turn-end stamp measures no save span", live, nil,
+			map[string]float64{"mem": 1.9, "setup": 0.9, "save": 0.02}},
+		{"agent only", map[string]float64{"mem_time": 0.4}, fp(5), map[string]float64{"mem": 0.4}},
+		{"stamp after turn end is dropped",
+			map[string]float64{"conversation_ended_at": 6}, fp(5), nil},
+		{"nothing measured", nil, fp(5), nil},
+	}
+	for _, tc := range cases {
+		assertPhases(t, "FooterPhases "+tc.name, FooterPhases(tc.result, tc.turnEndedAt), tc.want)
+	}
+}
+
+func TestFooterLineWithGatewayPhases(t *testing.T) {
+	// The live footer's bare "other 4.4s" splits into mem/setup/save; every
+	// other segment is identical to the legacy render.
+	result := map[string]float64{"mem_time": 1.9, "setup_time": 0.05, "compress_time": 0,
+		"save_time": 0.02, "gateway_setup_time": 0.85, "conversation_ended_at": 50}
+	calls := 0
+	in := LineInput{Model: "claude-opus-5-5", ContextTokens: 1900, ContextLength: 10000,
+		TurnTime: fp(15.4), APITime: fp(11), ToolTime: fp(0), ToolCalls: &calls, APICalls: 1}
+	if got, want := FooterLine(in), "opus-5-5 · 19% · 15s · api 11s · tools 0 · other 4.4s · 1 call"; got != want {
+		t.Errorf("legacy FooterLine = %q, want %q", got, want)
+	}
+	in.Phases = FooterPhases(result, fp(51.4))
+	want := "opus-5-5 · 19% · 15s · api 11s · tools 0 · mem 1.9s · setup 0.9s · save 1.4s · other 0.2s · 1 call"
+	if got := FooterLine(in); got != want {
+		t.Errorf("FooterLine = %q, want %q", got, want)
+	}
+}
+
+func TestMergePhasesFeedsPhaseTail(t *testing.T) {
+	// The merged map attributes the gateway's spans; only the true residual
+	// stays "other" (15.4 turn - 11 api - 0 tools - 1.9 - 0.9 - 1.42).
+	phases := MergePhases(map[string]float64{"setup": 0.85, "save": 1.4},
+		map[string]float64{"mem": 1.9, "setup": 0.05, "compress": 0, "save": 0.02})
+	want := "mem 1.9s · setup 0.9s · save 1.4s · other 0.2s"
+	if got := PhaseTail(fp(4.4), phases); got != want {
+		t.Errorf("PhaseTail = %q, want %q", got, want)
 	}
 }

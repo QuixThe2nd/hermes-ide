@@ -538,8 +538,6 @@ def finalize_turn(
         "api_time": float(turn_api_time or 0.0),
         "tool_time": float(turn_tool_time or 0.0),
         "tool_calls": int(turn_tool_calls or 0),
-        # Measured phase buckets (agent/turn_timing.py): mem/setup/compress/save.
-        **{f"{key}_time": float(getattr(agent, f"_turn_{key}_time", 0.0) or 0.0) for key in PHASE_KEYS},
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
@@ -698,4 +696,8 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+
+    # Phase buckets snapshot at the EXIT so the timed mem sync above reaches the footer.
+    result.update({f"{key}_time": float(getattr(agent, f"_turn_{key}_time", 0.0) or 0.0)
+                   for key in PHASE_KEYS})
     return result
