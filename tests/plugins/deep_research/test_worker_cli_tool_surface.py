@@ -45,7 +45,6 @@ from plugins.deep_research.runner import (
     load_frozen_request,
 )
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX subprocess env plumbing")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKER_BASE_ARGV = [sys.executable, "-m", "hermes_cli.main"]

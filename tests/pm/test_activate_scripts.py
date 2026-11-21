@@ -32,73 +32,11 @@ def _posix(path: Path) -> str:
 
 
 def _bash() -> str:
-    """A bash CreateProcess can start. conftest blanks SystemRoot/ComSpec
-    and the hermetic runner's PATH may resolve `bash` to the MSIX payload
-    copy under ``C:\\Program Files\\WindowsApps\\...`` (WinError 5 outside
-    its package context) or miss entirely — prefer a conventional install
-    (same pattern as the bootstrap version-stamp tests' _git_exe)."""
-    found = shutil.which("bash")
-    if found and "windowsapps" not in str(found).lower():
-        return found
-    if sys.platform == "win32":
-        pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-        for rel in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
-            cand = pf.joinpath(*rel)
-            if cand.exists():
-                return str(cand)
-    return found or "bash"
+    return shutil.which("bash") or "bash"
 
 
 def _child_env() -> dict:
-    env = os.environ.copy()
-    if sys.platform == "win32":
-        env.setdefault("SystemRoot", r"C:\Windows")
-        env.setdefault("ComSpec", r"C:\Windows\system32\cmd.exe")
-        # PowerShell 5.1 silently fails to launch children through `&`
-        # without PATHEXT (empty output, exit 0) — the hermetic runner
-        # drops it, so every powershell-invoking child env needs it back.
-        env.setdefault(
-            "PATHEXT",
-            ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",
-        )
-    return env
-
-
-def _spawnable_python() -> Path:
-    """An interpreter this process can actually CreateProcess. The hermetic
-    runner's venv python can be an emulated x64 binary on an arm64 host
-    (WinError 5 on every spawn); the native pm-store python under
-    WindowsApps works when invoked by full path. Prefer whichever python
-    can run a trivial child; last resort is sys.executable."""
-    candidates: list[Path] = []
-    for env_name in ("HERMES_TEST_PYTHON",):
-        val = os.environ.get(env_name)
-        if val:
-            candidates.append(Path(val))
-    exe = Path(sys.executable)
-    if "windowsapps" in str(exe).lower():
-        candidates.append(exe)  # native packaged python — spawnable by path
-    else:
-        candidates.insert(0, exe)
-    candidates.append(exe)
-    for cand in candidates:
-        if _can_spawn(cand):
-            return cand
-    return exe
-
-
-def _can_spawn(python: Path) -> bool:
-    try:
-        r = subprocess.run(
-            [str(python), "-c", "print(1)"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_child_env(),
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+    return os.environ.copy()
 
 
 def _fake_store(tmp_path: Path) -> tuple[Path, Path]:
@@ -117,18 +55,11 @@ def _fake_store(tmp_path: Path) -> tuple[Path, Path]:
     entry.mkdir(parents=True)
 
     # The store interpreter only needs to run `python -m pm.cli env` —
-    # delegate to a real, spawnable interpreter via a #!/bin/sh wrapper (a
-    # copied CPython would miss its DLLs/stdlib; the wrapper is the honest
-    # minimal fake). sys.executable can be an emulated x64 python on an
-    # arm64 host that cannot CreateProcess children at all — resolve a
-    # spawnable interpreter instead (see _spawnable_python). The wrapper
-    # works even named python.exe because activate execs it through
-    # bash/MSYS, which honors #!-scripts regardless of suffix.
-    interpreter = entry / "bin" / (
-        "python.exe" if sys.platform.startswith("win") else "python"
-    )
+    # delegate to the real interpreter via a #!/bin/sh wrapper (a copied
+    # CPython would miss its stdlib; the wrapper is the honest minimal fake).
+    interpreter = entry / "bin" / "python"
     interpreter.parent.mkdir(parents=True)
-    real = _spawnable_python()
+    real = Path(sys.executable)
     wrapper = "#!/bin/sh\nexec '%s' \"$@\"\n" % _posix(real)
     interpreter.write_text(wrapper, encoding="utf-8")
     interpreter.chmod(0o755)

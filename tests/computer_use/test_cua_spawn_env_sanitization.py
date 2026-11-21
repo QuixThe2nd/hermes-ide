@@ -18,7 +18,6 @@ import os
 from unittest.mock import MagicMock
 
 SECRET = "sk-super-secret-should-not-leak"
-CREATE_NO_WINDOW = 0x08000000
 
 
 def _fake_completed_process(stdout: str) -> MagicMock:
@@ -33,7 +32,6 @@ def _capture_run(captured, stdout=""):
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
-        captured["creationflags"] = kwargs.get("creationflags")
         return _fake_completed_process(stdout)
     return fake_run
 
@@ -61,21 +59,6 @@ def _assert_path_preserved(env):
         assert path_val.startswith(hermes_bin + os.pathsep), path_val
 
 
-def _patch_windows_hide_flags(monkeypatch, module):
-    """Pin the ``windows_hide_flags()`` seam so the console-hiding assertion
-    is host-independent.
-
-    ``windows_hide_flags`` is our own platform probe (CREATE_NO_WINDOW on
-    Windows, ``0`` elsewhere). Patching that seam — rather than lying to the
-    interpreter about ``sys.platform`` — keeps the real subject of these
-    tests (does the spawn site forward its result to ``creationflags=``?)
-    covered on every host.
-    """
-    monkeypatch.setattr(
-        module, "windows_hide_flags", lambda: CREATE_NO_WINDOW, raising=False
-    )
-
-
 def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
@@ -85,7 +68,6 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     from tools.computer_use import cua_backend_driver
 
     captured = {}
-    _patch_windows_hide_flags(monkeypatch, cua_backend)
     manifest = json.dumps({"mcp_invocation": {"command": "cua-driver", "args": ["mcp"]}})
     monkeypatch.setattr(
         cua_backend.subprocess, "run", _capture_run(captured, stdout=manifest)
@@ -94,7 +76,6 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     cmd, args = cua_backend_driver._resolve_mcp_invocation("cua-driver")
     assert cmd == "cua-driver"
     _assert_sanitized(captured)
-    assert captured["creationflags"] == CREATE_NO_WINDOW
 
 
 def test_update_check_sanitizes_env(monkeypatch):
@@ -106,7 +87,6 @@ def test_update_check_sanitizes_env(monkeypatch):
     from tools.computer_use import cua_backend_driver
 
     captured = {}
-    _patch_windows_hide_flags(monkeypatch, cua_backend)
     payload = json.dumps({
         "current_version": "1.0.0",
         "latest_version": "1.0.0",
@@ -123,18 +103,16 @@ def test_update_check_sanitizes_env(monkeypatch):
 
     cua_backend_driver.cua_driver_update_check(timeout=1.0)
     _assert_sanitized(captured)
-    assert captured["creationflags"] == CREATE_NO_WINDOW
 
 
-def test_cli_fallback_sanitizes_env_and_hides_console_on_windows(monkeypatch):
+def test_cli_fallback_sanitizes_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import cua_backend, cua_backend_driver, cua_backend_session
+    from tools.computer_use import cua_backend, cua_backend_driver
 
     captured = {}
-    _patch_windows_hide_flags(monkeypatch, cua_backend_session)
     # Hermetic CI has no cua-driver binary; pin the resolver so the test
     # exercises the spawn-env path instead of the install-hint early exit.
     monkeypatch.setattr(
@@ -151,7 +129,6 @@ def test_cli_fallback_sanitizes_env_and_hides_console_on_windows(monkeypatch):
 
     assert result["isError"] is False
     _assert_sanitized(captured)
-    assert captured["creationflags"] == CREATE_NO_WINDOW
 
 
 def test_permissions_run_sanitizes_env(monkeypatch):
@@ -170,9 +147,7 @@ def test_permissions_run_sanitizes_env(monkeypatch):
     _assert_sanitized(captured)
 
 
-
-
-def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
+def test_doctor_spawn_sanitizes_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
@@ -180,7 +155,6 @@ def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
     from tools.computer_use import doctor
 
     captured = {}
-    _patch_windows_hide_flags(monkeypatch, doctor)
     proc = MagicMock()
     proc.stdout.readline.side_effect = [
         json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
@@ -200,7 +174,6 @@ def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
-        captured["creationflags"] = kwargs.get("creationflags")
         return proc
 
     monkeypatch.setattr(doctor.subprocess, "Popen", fake_popen)
@@ -209,7 +182,6 @@ def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
 
     assert report["overall"] == "ok"
     _assert_sanitized(captured)
-    assert captured["creationflags"] == CREATE_NO_WINDOW
 
 
 def test_doctor_sanitized_env_helper(monkeypatch):

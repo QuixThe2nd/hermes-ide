@@ -320,43 +320,6 @@ class TestRefreshActiveFeatures:
         monkeypatch.setattr(ld, "active_features", lambda: [])
         assert ld.refresh_active_features() == {}
 
-    def test_windows_matrix_refresh_is_skipped_before_pip(self, monkeypatch):
-        # Matrix E2EE pulls python-olm, which has no native Windows wheel/build
-        # path. `hermes update` must not retry that doomed install every run.
-        #
-        # The subject here is the *consumer* — refresh_active_features honouring
-        # the gate before pip — so we monkeypatch lazy_deps' own platform probe
-        # instead of faking the host, which keeps this covered on Linux too.
-        monkeypatch.setattr(
-            ld,
-            "_unsupported_feature_reason",
-            lambda feature: (
-                "unsupported on Windows: Matrix E2EE depends on python-olm"
-                if feature == "platform.matrix"
-                else None
-            ),
-        )
-        monkeypatch.setattr(ld, "active_features", lambda: ["platform.matrix"])
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
-        monkeypatch.setattr(
-            ld,
-            "_venv_pip_install",
-            lambda *a, **kw: pytest.fail("pip should not be called for unsupported Matrix on Windows"),
-        )
-
-        result = ld.refresh_active_features()
-
-        assert result["platform.matrix"].startswith("skipped:")
-        assert "unsupported on Windows" in result["platform.matrix"]
-
-    @pytest.mark.platforms("windows")
-    def test_matrix_probe_reports_unsupported_on_real_windows(self):
-        # The probe itself keys off the real host: patching sys.platform only
-        # proved the string, never that Windows actually hits this gate.
-        assert "unsupported on Windows" in (
-            ld._unsupported_feature_reason("platform.matrix") or ""
-        )
 
     def test_restore_snapshot_skips_discord_with_lazy_installs_disabled(
         self, monkeypatch

@@ -74,6 +74,5 @@ def test_named_gateway_is_never_the_default_profile_process(tmp_path, cmdline, m
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(gw, "_iter_proc_cmdlines", lambda exclude: iter([(424242, cmdline)]))
     monkeypatch.setattr(gw, "_get_ancestor_pids", set)
-    monkeypatch.setattr(gw, "is_windows", lambda: False)
     monkeypatch.setattr(gw.os.path, "isdir", lambda p: p == "/proc")
     assert gw._scan_gateway_pids(set()) == []

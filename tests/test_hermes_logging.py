@@ -13,10 +13,7 @@ import pytest
 import hermes_logging
 # Use whatever RotatingFileHandler class hermes_logging actually resolved so
 # the autouse fixture's isinstance checks (which strip rotating handlers
-# between tests) match the real handlers on every platform. hermes_logging
-# aliases concurrent-log-handler's ConcurrentRotatingFileHandler on Windows
-# (the #44873 fix) but keeps stdlib RotatingFileHandler on POSIX, so importing
-# the name from the module under test keeps the two in lockstep.
+# between tests) match the real handlers on every platform.
 from hermes_logging import RotatingFileHandler
 
 
@@ -360,8 +357,8 @@ class TestGuiMode:
     def test_gui_log_receives_only_gui_components(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
 
-        logging.getLogger("tui_gateway.server").info("tui online")
-        logging.getLogger("tui_gateway.ws").info("ws connected")
+        logging.getLogger("hermes_cli.desktop.bridge").info("desktop online")
+        logging.getLogger("hermes_cli.gateway").info("cli gateway event")
         logging.getLogger("gateway.run").info("gateway event")
 
         hermes_logging.flush_log_queue()
@@ -369,8 +366,7 @@ class TestGuiMode:
         gui_log = hermes_home / "logs" / "gui.log"
         assert gui_log.exists()
         content = gui_log.read_text()
-        assert "dashboard online" in content
-        assert "ws connected" in content
+        assert "desktop online" in content
         assert "gateway event" not in content
 
 
@@ -508,75 +504,6 @@ class TestAddRotatingHandler:
 
         assert log_path.exists()
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
-
-
-
-class TestWindowsConcurrentLogLockTimeout:
-    """Windows concurrent-log-handler lock timeouts stay inside logging."""
-
-    def _make_logger_and_handler(self, log_path: Path):
-        logger = logging.getLogger(f"_test_concurrent_lock_timeout_{log_path.stem}")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(logging.INFO)
-
-        handler = hermes_logging._ManagedRotatingFileHandler(
-            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8",
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-        return logger, handler
-
-    @pytest.mark.platforms("windows")
-    def test_helper_only_matches_windows_concurrent_lock_timeout(self):
-        # Windows-only: concurrent-log-handler (and therefore its cross-process
-        # lock timeout) is only installed on Windows — faking sys.platform
-        # exercised the string check without the handler that raises it.
-        assert hermes_logging._is_windows_concurrent_log_lock_timeout(
-            RuntimeError("Cannot acquire lock after 20 attempts")
-        )
-        assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
-            RuntimeError("some other logging failure")
-        )
-
-    @pytest.mark.platforms("linux")
-    def test_helper_never_matches_off_windows(self):
-        # On POSIX the suppression must stay inert: stdlib RotatingFileHandler
-        # is in use, so this RuntimeError text is never a CLH lock timeout.
-        assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
-            RuntimeError("Cannot acquire lock after 20 attempts")
-        )
-
-    @pytest.mark.platforms("windows")
-    def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
-        """Mirror CLH's real control flow.
-
-        ``concurrent-log-handler``'s ``emit()`` wraps its whole body in
-        ``try/except Exception: self.handleError(record)``, so the lock
-        RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
-        to ``handleError`` with the exception live in ``sys.exc_info()``.  We
-        invoke ``handleError`` the same way CLH would and assert no traceback
-        reaches stderr (the slash-worker surface).
-
-        Windows-only: the suppression is keyed on the real host, and only on
-        Windows is the base handler CLH at all — the fake platform gave us the
-        branch without the handler that raises."""
-        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
-        record = logger.makeRecord(
-            logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
-        )
-        try:
-            try:
-                raise RuntimeError("Cannot acquire lock after 20 attempts")
-            except RuntimeError:
-                handler.handleError(record)
-
-            captured = capsys.readouterr()
-            assert "Cannot acquire lock after 20 attempts" not in captured.err
-            assert "--- Logging error ---" not in captured.err
-        finally:
-            logger.removeHandler(handler)
-            handler.close()
 
 
 

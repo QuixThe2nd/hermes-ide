@@ -3,7 +3,6 @@
 import json
 import os
 import subprocess
-import sys
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -360,18 +359,7 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
 
 
 def _make_skills_redirect(link: Path, target: Path) -> bool:
-    """Make *link* a directory redirect (Windows junction or POSIX symlink)
-    pointing at *target*. Junctions need no admin rights, unlike symlinks."""
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                check=True,
-                capture_output=True,
-            )
-            return True
-        except (subprocess.CalledProcessError, OSError):
-            return False
+    """Make *link* a directory symlink pointing at *target*."""
     try:
         link.symlink_to(target, target_is_directory=True)
         return True

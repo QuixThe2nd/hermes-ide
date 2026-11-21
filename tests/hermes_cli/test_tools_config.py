@@ -507,7 +507,6 @@ class TestCamofoxPostSetup:
     def test_missing_camofox_package_uses_workspace_free_npm_install(self, tmp_path):
         with patch("hermes_cli.tools_config_post_setup.PROJECT_ROOT", tmp_path), \
              patch("hermes_constants.find_node_executable", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.tools_config_post_setup._post_setup_no_window_flags", return_value=0), \
              patch("hermes_cli.tools_config_post_setup._run_text", return_value=SimpleNamespace(returncode=0)) as run:
             _run_post_setup("camofox")
 
@@ -704,21 +703,6 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
 # Server-side truth for the GUI "Ready" pill (issue: Capabilities tab showed
 # Ready for every zero-env-var provider row, including never-installed
 # KittenTTS/Piper).
-
-
-# ── Windows console-flash guard for post-setup subprocess spawns ──────────────
-#
-# The desktop GUI runs post-setup hooks through a detached, console-less
-# `hermes tools post-setup <key>` child. On Windows each console child (npm,
-# npx, pip, powershell) spawned without CREATE_NO_WINDOW materializes a brand
-# new console window — the "terminal flash" reported on the Capabilities
-# browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
-# every hook spawn passes as `creationflags`.
-
-
-
-
-
 
 
 

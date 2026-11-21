@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 import pytest
 
@@ -33,7 +32,7 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     assert uv is not None
     monkeypatch.setattr(workspace, "_uv_binary", lambda: uv)
     workspace.lock_and_sync([], [], root=root, venv_dir=venv)
-    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python = venv / "bin/python"
     probe = subprocess.run([str(python), "-c", "import buildable_core; print(buildable_core.VALUE)"],
                            cwd=tmp_path, text=True, capture_output=True, check=True, timeout=30)
     assert probe.stdout.strip() == "from actual source"
@@ -96,7 +95,6 @@ def _wheel(directory, name, version, requirements=()):
 
 @pytest.mark.parametrize("exact", [False, True])
 def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_path, monkeypatch, exact):
-    import os
     import tomllib
 
     core = tmp_path / "core"
@@ -134,7 +132,7 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
         workspace.lock_and_sync([plugin], [], root=extended, venv_dir=candidate, seed_lock=baseline / "uv.lock")
         installed = tomllib.loads((extended / "uv.lock").read_text(encoding="utf-8"))["package"]
         assert next(p["version"] for p in installed if p["name"] == "pkgb") == "1.3"
-        python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python = candidate / "bin/python"
         result = subprocess.run([str(python), "-c", "import pkga, pkgb; print(pkga.__version__, pkgb.__version__)"],
                                 capture_output=True, text=True, check=True, timeout=30)
         assert result.stdout.strip() == "1.0 1.3"

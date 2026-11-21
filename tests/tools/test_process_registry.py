@@ -172,30 +172,6 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
-@pytest.mark.platforms("windows")
-def test_write_stdin_uses_str_for_windows_pty(registry):
-    """pywinpty expects str input; bytes raises a PyString conversion error.
-
-    Windows-only: the str-vs-bytes choice IS the ``_IS_WINDOWS`` branch, and
-    the real pty handle it must satisfy (pywinpty) does not exist elsewhere.
-    """
-    written = []
-
-    class _FakePty:
-        def write(self, value):
-            written.append(value)
-
-    session = _make_session(sid="pty-win")
-    session._pty = _FakePty()
-    registry._running[session.id] = session
-
-    result = registry.write_stdin(session.id, "hello\n")
-
-    assert result == {"status": "ok", "bytes_written": 6}
-    assert written == ["hello\n"]
-    assert isinstance(written[0], str)
-
-
 @pytest.mark.platforms("linux")
 def test_write_stdin_uses_bytes_for_posix_pty(registry):
     """The POSIX counterpart: ptyprocess expects bytes, not str."""
@@ -213,47 +189,6 @@ def test_write_stdin_uses_bytes_for_posix_pty(registry):
 
     assert result == {"status": "ok", "bytes_written": 6}
     assert written == [b"hello\n"]
-
-
-@pytest.mark.platforms("windows")
-def test_submit_stdin_uses_crlf_for_windows_pty(registry):
-    """Enter on a Windows PTY is a carriage return, not a bare LF.
-
-    ConPTY cooked input only ends a line on ``\\r``; a bare ``\\n`` through
-    pywinpty is never delivered to a blocking line read (Python readline,
-    Go bufio.Scanner — the exact hang seen live with ``gh auth login``'s
-    "Press Enter to open the browser" prompt). submit_stdin must append
-    ``\\r\\n`` for Windows PTY sessions.
-    """
-    written = []
-
-    class _FakePty:
-        def write(self, value):
-            written.append(value)
-
-    session = _make_session(sid="pty-win-submit")
-    session._pty = _FakePty()
-    registry._running[session.id] = session
-
-    result = registry.submit_stdin(session.id, "Y")
-
-    assert result["status"] == "ok"
-    assert written == ["Y\r\n"]
-
-
-@pytest.mark.platforms("windows")
-def test_submit_stdin_keeps_lf_for_windows_pipe(registry):
-    """Non-PTY (Popen pipe) sessions keep the plain LF on Windows."""
-    session = _make_session(sid="pipe-win-submit")
-    fake_stdin = MagicMock()
-    session.process = MagicMock()
-    session.process.stdin = fake_stdin
-    registry._running[session.id] = session
-
-    result = registry.submit_stdin(session.id, "Y")
-
-    assert result["status"] == "ok"
-    fake_stdin.write.assert_called_once_with("Y\n")
 
 
 # =========================================================================
@@ -513,7 +448,6 @@ def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uses setsid/fcntl")
 class TestOrphanedPipeReconciliation:
     """Regression tests for issue #17327.
 
@@ -906,7 +840,6 @@ class TestFinishedHandleRelease:
 
         assert session.id not in registry._finished
         assert pty_closed["closed"], "pruned session must release its PTY handle"
-
 
 
 # =========================================================================
@@ -1677,44 +1610,6 @@ def test_drain_notifications_owns_event_callback_beats_key_equality():
 # ---------------------------------------------------------------------------
 # _terminate_host_pid — cross-platform process-tree termination
 # ---------------------------------------------------------------------------
-
-
-class TestTerminateHostPidWindows:
-    """Windows branch uses ``taskkill /T /F`` — the documented MS tree-kill
-    primitive. We can't use psutil's ``children(recursive=True)`` /
-    ``.terminate()`` path on Windows because (1) Windows doesn't maintain
-    a Unix-style process tree so the walk is unreliable, and (2)
-    ``Process.terminate()`` on Windows is ``TerminateProcess()`` for the
-    target handle only, not the tree.
-    """
-
-    @pytest.mark.platforms("windows")
-    def test_windows_invokes_taskkill_with_tree_and_force_flags(self, monkeypatch):
-        """The Windows branch must shell out to ``taskkill /PID N /T /F``.
-
-        Windows-only: ``taskkill.exe`` is the thing under test and only exists
-        here — with a faked ``_IS_WINDOWS`` the argv was asserted against a
-        binary that could never have run.
-        """
-        from tools import process_registry as pr
-
-        captured = {}
-
-        def fake_run(args, **kwargs):
-            captured["args"] = args
-            captured["kwargs"] = kwargs
-            return MagicMock(returncode=0, stderr="", stdout="")
-
-        monkeypatch.setattr(pr.subprocess, "run", fake_run)
-
-        pr.ProcessRegistry._terminate_host_pid(12345)
-
-        assert captured["args"][0] == "taskkill"
-        assert "/PID" in captured["args"]
-        assert "12345" in captured["args"]
-        assert "/T" in captured["args"], "Tree flag required to reach descendants"
-        assert "/F" in captured["args"], "Force flag required for headless Chromium"
-
 class TestTerminateHostPidPosix:
     """POSIX branch gives a managed parent its shutdown window first."""
 
@@ -1754,7 +1649,6 @@ class TestTerminateHostPidPosix:
             "Parent must receive SIGTERM before any snapshot descendant"
         )
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal ordering; Windows uses taskkill")
     @pytest.mark.live_system_guard_bypass
     def test_posix_self_reaping_supervisor_child_is_never_signalled_by_registry(self, monkeypatch, tmp_path):
         """A parent that tears down its own children on SIGTERM keeps that job.
@@ -1856,8 +1750,6 @@ class TestPidReuseGuard:
         assert s.id in registry._finished
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="POSIX SIGTERM→SIGKILL escalation; Windows uses taskkill /F")
 class TestSigkillEscalation:
     """Bounded SIGTERM→SIGKILL escalation in _terminate_host_pid.
 
@@ -2075,7 +1967,6 @@ class TestHandleProcessRedaction:
 # Reader loop: orphaned grandchild holding the stdout pipe (issue #68915)
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: select() on pipes")
 class TestReaderLoopOrphanedPipe:
     """Regression tests for issue #68915.
 
@@ -2176,7 +2067,6 @@ class TestReaderLoopOrphanedPipe:
 # =========================================================================
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # =========================================================================
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
 class TestSystemdCgroupIsolation:
     """Verify spawn_local wraps the worker in ``systemd-run --user --scope``
     when running under a supervisor and systemd-run is available, and falls
@@ -2927,7 +2817,6 @@ class TestSystemdCgroupIsolation:
         fake_popen, captured = self._fake_popen_capture()
 
         monkeypatch.setattr(pr, "_IS_LINUX", False)
-        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(

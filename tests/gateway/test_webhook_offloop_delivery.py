@@ -15,7 +15,6 @@ it — on the blocking implementation it manages ~1 tick during a 1-second
 import asyncio
 import os
 import stat
-import sys
 
 import pytest
 
@@ -25,8 +24,6 @@ from gateway.platforms.webhook import WebhookAdapter
 @pytest.fixture()
 def fake_gh(tmp_path, monkeypatch):
     """A ``gh`` stub that sleeps 1s then succeeds, prepended to PATH."""
-    if sys.platform.startswith("win"):
-        pytest.skip("POSIX shell stub")
     gh = tmp_path / "gh"
     gh.write_text("#!/bin/bash\nsleep 1\necho posted\nexit 0\n", encoding="utf-8")
     gh.chmod(gh.stat().st_mode | stat.S_IXUSR)

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
@@ -1183,7 +1182,6 @@ def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
 # ── .recover stderr pipe must be drained while the child runs ──────────────
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="stub sqlite3 is a /bin/sh script")
 def test_recover_attempts_survive_dump_stderr_beyond_pipe_buffer(tmp_path: Path) -> None:
     """A heavily damaged source makes ``.recover`` emit per-page diagnostics on
     stderr. Past the OS pipe buffer (~64KB) an undrained stderr blocks the dump

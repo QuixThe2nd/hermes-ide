@@ -69,10 +69,6 @@ def hermes_home(tmp_path, monkeypatch):
          f"bws-x86_64-unknown-linux-musl-{bw._BWS_VERSION}.zip"),
         ("Linux", "aarch64", "",
          f"bws-aarch64-unknown-linux-gnu-{bw._BWS_VERSION}.zip"),
-        ("Windows", "AMD64", "",
-         f"bws-x86_64-pc-windows-msvc-{bw._BWS_VERSION}.zip"),
-        ("Windows", "ARM64", "",
-         f"bws-aarch64-pc-windows-msvc-{bw._BWS_VERSION}.zip"),
     ],
 )
 def test_platform_asset_name(system, machine, libc_text, expected):

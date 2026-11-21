@@ -27,7 +27,6 @@ import pytest
 
 from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
-import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
@@ -252,8 +251,6 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     """
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
@@ -266,10 +263,6 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None)
     monkeypatch.setattr(main_web_build, "_record_bytecode_fingerprint", lambda *a, **k: None)
     monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(
-        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
-    )
     monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
     monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
 

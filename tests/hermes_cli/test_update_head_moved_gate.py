@@ -21,13 +21,6 @@ import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
 
-@pytest.fixture(autouse=True)
-def _isolate_venv_holders(monkeypatch):
-    """The update flow's venv-holder guard sees the live gateway processes on
-    a dev machine and aborts with SystemExit 2 before reaching the HEAD-move
-    gate under test.  Isolate it so the test exercises the intended path."""
-    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", lambda: [])
-
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
@@ -94,8 +87,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resolve_update_branch", lambda args: "main"
     )
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
@@ -113,12 +104,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         hermes_main, "_run_pre_update_backup", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_pause_windows_gateways_for_update", lambda: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
@@ -214,9 +199,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # gateways on this dev machine).  Neutralize the kill itself so the phase
     # is a no-op regardless of what the re-imported discovery returns.
     monkeypatch.setattr(os, "kill", lambda *a, **k: None)
-    # ...and stop the purge from evicting the mocked module in the first place,
-    # so find_gateway_pids stays [] and the fleet-restart phase is a clean no-op.
-    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
 
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):

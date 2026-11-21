@@ -107,9 +107,9 @@ class TestSessionStatePersistence(unittest.TestCase):
 class TestKernelLifecycle(unittest.TestCase):
     def test_kernel_exits_when_its_backend_parent_dies(self):
         """A kernel must not outlive the host that spawned it, even when the
-        host dies without cleanup (SIGKILL/OOM/crash). Windows: inherited
-        SYNCHRONIZE handle; POSIX: inherited death pipe. Both are proven the
-        same way — kill the host mid-cell, the kernel is gone within seconds."""
+        host dies without cleanup (SIGKILL/OOM/crash): the inherited death
+        pipe is proven by killing the host mid-cell — the kernel is gone
+        within seconds."""
         import psutil
 
         repo_root = str(Path(__file__).resolve().parents[2])
@@ -122,7 +122,6 @@ class TestKernelLifecycle(unittest.TestCase):
             _spawn(k, task_id="parent-death", child_python=sys.executable,
                    child_cwd="", sandbox_tools=frozenset(), max_tool_calls=1)
             cell = json.dumps({{"id": "x", "code": "import os, time\\n"
-                "assert 'HERMES_KERNEL_PARENT_PROCESS_HANDLE' not in os.environ\\n"
                 "assert 'HERMES_KERNEL_PARENT_DEATH_FD' not in os.environ\\n"
                 "time.sleep(300)"}}) + "\\n"
             k.proc.stdin.write(cell.encode()); k.proc.stdin.flush()
@@ -133,7 +132,6 @@ class TestKernelLifecycle(unittest.TestCase):
             host = subprocess.Popen(
                 [sys.executable, "-c", host_src, home],
                 stdout=subprocess.PIPE, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             try:
                 kernel = psutil.Process(int(host.stdout.readline()))
@@ -337,14 +335,14 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertIn("2", still["output"])
 
     def test_session_clear_disposes_the_owners_kernels(self):
-        from tools.code_kernel import clear_tool_session_resources
+        from tools.code_kernel import shutdown_kernels_for_owner
 
         with _kernel_config():
             self._run_as("conv-a", "x = 41", task_id="turn-1")
             self.assertEqual(len(_KERNELS), 1)
             kernel = next(iter(_KERNELS.values()))
             self.assertTrue(kernel.alive())
-            clear_tool_session_resources("conv-a")
+            shutdown_kernels_for_owner("conv-a")
             self.assertEqual(len(_KERNELS), 0)
             kernel.proc.wait(timeout=10)
             self.assertFalse(kernel.alive())

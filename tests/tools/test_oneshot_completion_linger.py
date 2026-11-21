@@ -375,7 +375,6 @@ def _run_e2e_parent(tmp_path, *, linger: bool) -> Path:
     return marker
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe/session semantics")
 def test_e2e_lingering_parent_keeps_background_delivery_alive(tmp_path):
     """Real processes: parent lingers → the backgrounded delivery survives
     the parent's exit window and completes (marker file written)."""
@@ -390,7 +389,6 @@ def test_e2e_lingering_parent_keeps_background_delivery_alive(tmp_path):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe/session semantics")
 def test_e2e_control_immediate_exit_loses_delivery_without_linger(tmp_path):
     """Control proving the bug class: the same parent WITHOUT the linger may
     lose the delivery. We assert only the fixed path's contract here — the

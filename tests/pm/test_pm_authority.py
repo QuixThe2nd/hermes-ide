@@ -31,7 +31,7 @@ from pm.store import Store, current_target, tree_digest
 class FakeTool(BinaryPackage):
     name = "faketool"
     probe_version = False
-    binary_rel = {"win32": "bin/faketool", "posix": "bin/faketool"}
+    binary_rel = {"posix": "bin/faketool"}
 
     def fetch_url(self, version, target):
         return f"{FakeTool.base_url}/{self.name}-{version}.tar.gz"

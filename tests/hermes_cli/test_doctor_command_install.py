@@ -73,7 +73,6 @@ class TestDoctorCommandInstallation:
 
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_fix_repairs_wrong_symlink(self, monkeypatch, tmp_path):
         home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
 
@@ -94,7 +93,6 @@ class TestDoctorCommandInstallation:
         assert cmd_link.is_symlink()
         assert cmd_link.resolve() == hermes_bin.resolve()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_missing_venv_entry_point_shows_warn(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
@@ -132,7 +130,6 @@ class TestDoctorCommandInstallation:
 
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_termux_uses_prefix_bin(self, monkeypatch, tmp_path):
         """On Termux, the command link dir is $PREFIX/bin."""
         prefix_dir = tmp_path / "termux_prefix"

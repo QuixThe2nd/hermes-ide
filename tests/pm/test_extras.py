@@ -28,8 +28,8 @@ def test_extra_supported_ungated_extra_is_true():
 def test_extra_supported_gate_excludes_platform(monkeypatch):
     extras._PLATFORM_GATES = {"gated-extra": "sys_platform == 'linux'"}
     try:
-        # On this Windows host the linux gate must read False — unless the
-        # anchors happen to be installed (installed-override beats table).
+        # Off Linux the linux gate must read False — unless the anchors
+        # happen to be installed (installed-override beats table).
         if sys.platform == "linux":
             pytest.skip("host is linux — the linux gate is inclusive here")
         assert extras.extra_supported("gated-extra") is False

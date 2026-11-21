@@ -23,7 +23,6 @@ import pytest
 
 from plugins.deep_research import jobs, tool
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX detached-runner path")
 
 URL = "https://example.org/primary-source"
 BRIEF_MARKER = "BRIEF-MARKER-dfd7a1"
@@ -77,7 +76,7 @@ def home(tmp_path: Path, monkeypatch) -> Path:
         "deep_research:\n  runner_mode: fallback\n", encoding="utf-8"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Real spawn path (same opt-out the windows-native spawn tests use).
+    # Real spawn path (tests may opt out of the hermetic no-op).
     monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
     monkeypatch.delenv("HERMES_BIN", raising=False)
     return home

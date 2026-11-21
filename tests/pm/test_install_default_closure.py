@@ -1,7 +1,7 @@
 """The default `pm install` closure must stage the interpreter boot requires.
 
-A fresh source install emits boot launchers (scripts/install.sh stage_path,
-hermes_cli/_launchers.py) that exec the pm STORE interpreter. The `python`
+A fresh source install emits boot launchers (scripts/install.sh stage_path)
+that exec the pm STORE interpreter. The `python`
 package is marked optional (dev installs use their own venv; sealed bundles
 adopt a shipped one), so the old default closure — every non-optional
 lockfile package — skipped it and left `hermes` unbootable (audit C05).

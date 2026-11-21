@@ -13,12 +13,10 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
 
 _PRIVATE = stat.S_IRUSR | stat.S_IWUSR
 

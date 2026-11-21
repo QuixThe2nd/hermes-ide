@@ -8,13 +8,6 @@ Ctrl+Enter submits instead of inserting a newline.
 
 These tests pin the gating predicate and the resulting binding behavior.
 
-``_preserve_ctrl_enter_newline()`` short-circuits to True on native Windows
-before it ever looks at the environment, so the env-driven cases below are
-POSIX assertions and run on the Linux job. The native-Windows short-circuit
-is marked ``platforms("windows")`` and asserted on the real host — patching
-``sys.platform`` to ``"win32"`` here would only re-assert the literal in the
-``if``, on an interpreter where none of the Windows terminal behaviour it
-exists for is present.
 """
 
 from __future__ import annotations
@@ -50,13 +43,6 @@ def _bind_submit_keys_for_local_linux(cli_mod, *, multiline_shortcuts_enabled):
                     multiline_shortcuts_enabled=multiline_shortcuts_enabled,
                 )
                 return kb
-
-
-@pytest.mark.platforms("windows")
-def test_native_windows_preserves_newline():
-    import cli as cli_mod
-
-    assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
 def test_ssh_tty_alone_preserves_newline():

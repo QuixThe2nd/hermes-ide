@@ -7,7 +7,6 @@ on the tool being present.
 """
 from __future__ import annotations
 
-import sys
 
 from hermes_cli import doctor_tools
 
@@ -33,7 +32,7 @@ class TestPmToolPath:
         )
         entry = store / "ripgrep-15.0.0-test"
         entry.mkdir()
-        binary = entry / ("rg.exe" if sys.platform == "win32" else "rg")
+        binary = entry / "rg"
         binary.write_text("", encoding="utf-8")
 
         assert doctor_tools._pm_tool_path("ripgrep") == binary
@@ -64,7 +63,7 @@ class TestGitAndRgWiring:
         monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
         entry = store / "ripgrep-15.0.0-test"
         entry.mkdir()
-        (entry / ("rg.exe" if sys.platform == "win32" else "rg")).write_text("", encoding="utf-8")
+        (entry / "rg").write_text("", encoding="utf-8")
         # Nothing on PATH: the old probe alone reported "not found". Patched at
         # the real shutil.which boundary, not a doctor wrapper.
         monkeypatch.setattr(doctor_tools.shutil, "which", lambda _cmd: None)

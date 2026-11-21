@@ -120,7 +120,6 @@ class TestCrashDurability:
         assert "# Hermes Agent" not in real.read_text(encoding="utf-8")
         assert "export EDITOR=vim" in real.read_text(encoding="utf-8")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
     def test_existing_file_mode_is_preserved(self, fake_home: Path):
         """Shell rc files are normally 0644; uninstalling must not change that."""
         rc = fake_home / ".zshrc"

@@ -13,10 +13,8 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-import sys
 from pathlib import Path
 
-import pytest
 
 from tools.environments.base_session_env import _export_dump_excluding_session_vars
 
@@ -65,7 +63,6 @@ fi
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
 def test_multiline_session_chat_name_not_executed_via_snapshot(tmp_path: Path):
     """Continuation lines of HERMES_SESSION_CHAT_NAME must not run on source."""
     marker = tmp_path / "pwned"
@@ -82,7 +79,6 @@ def test_multiline_session_chat_name_not_executed_via_snapshot(tmp_path: Path):
     assert not marker.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
 def test_multiline_session_user_name_not_executed_via_snapshot(tmp_path: Path):
     """Same hole via HERMES_SESSION_USER_NAME (display-name path)."""
     marker = tmp_path / "pwned_user"

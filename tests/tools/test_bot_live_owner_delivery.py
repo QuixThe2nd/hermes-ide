@@ -44,9 +44,8 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
         mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
     assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id) == receipt
     assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    if os.name != "nt":
-        for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
-            assert path.stat().st_mode & 0o077 == 0
+    for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
+        assert path.stat().st_mode & 0o077 == 0
 
 
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
@@ -108,8 +107,8 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
     assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
 
 
-@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
-                    reason="needs POSIX file permissions for an unreadable ticket")
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root can read an unreadable ticket")
 def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     import logging
 
@@ -141,8 +140,8 @@ def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     assert len(denied) == 1, "one persistent bad ticket must warn once per process, not per scan"
 
 
-@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
-                    reason="needs POSIX file permissions for an unreadable ticket")
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root can read an unreadable ticket")
 def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
     from tools import bot_live_delivery as mailbox
 

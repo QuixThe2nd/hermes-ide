@@ -28,7 +28,7 @@ from pm.store import Store, current_target, flatten_single_dir
 class FakeTool(BinaryPackage):
     name = "faketool"
     probe_version = False
-    binary_rel = {"win32": "bin/faketool", "posix": "bin/faketool"}
+    binary_rel = {"posix": "bin/faketool"}
 
     def fetch_url(self, version, target):
         return f"{FakeTool.base_url}/{self.name}-{version}.tar.gz"
@@ -53,7 +53,7 @@ class MultiTool(BinaryPackage):
     name = "multitool"
     probe_version = False
     flatten = False
-    binary_rel = {"win32": "bin/multitool", "posix": "bin/multitool"}
+    binary_rel = {"posix": "bin/multitool"}
 
     def fetch_urls(self, version, target):
         return [f"{MultiTool.base_url}/{self.name}-{version}-a.tar.gz",
@@ -490,12 +490,12 @@ def test_python_package_url_carries_release_tag():
     from pm.registry import get_package
 
     python = get_package("python")
-    url = python.fetch_url("3.11.16+20260814", "win32-arm64")
+    url = python.fetch_url("3.11.16+20260814", "linux-arm64")
     assert "download/20260814/" in url
-    assert "cpython-3.11.16+20260814-aarch64-pc-windows-msvc-install_only" in url
+    assert "cpython-3.11.16+20260814-aarch64-unknown-linux-gnu-install_only" in url
 
     try:
-        python.fetch_url("3.11.16", "win32-arm64")
+        python.fetch_url("3.11.16", "linux-arm64")
         raise AssertionError("bare version must be rejected")
     except PmInstallError:
         pass
@@ -684,8 +684,7 @@ def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
     lock.save()
     monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
     names = _bundle_package_names()
-    # Browsers now ship in every payload (win32-arm64 runs the x64 build
-    # under emulation); nothing is excluded from the bundle.
+    # Browsers ship in every payload; nothing is excluded from the bundle.
     assert "chromium" in names
     assert "chromium-headless-shell" in names
     assert "python" in names
@@ -720,36 +719,6 @@ def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
 
 
 
-def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_path):
-    import pm.packages as packages
-    from pm.registry import get_package
-
-    staged = tmp_path / "staged"
-    staged.mkdir()
-    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
-    (staged / "vcruntime140.dll").write_bytes(b"arm64")
-
-    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
-    get_package("python").stage(None, staged, "3.11.16", "win32-arm64")
-
-    assert not (staged / "vcruntime140_1.dll").exists()
-    assert (staged / "vcruntime140.dll").is_file()
-
-
-def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
-    import pm.packages as packages
-    from pm.registry import get_package
-
-    staged = tmp_path / "staged"
-    staged.mkdir()
-    (staged / "vcruntime140_1.dll").write_bytes(b"x64")
-
-    monkeypatch.setattr(packages, "_macos_sign_managed_python", lambda p: False)
-    get_package("python").stage(None, staged, "3.11.16", "win32-x64")
-
-    assert (staged / "vcruntime140_1.dll").is_file()
-
-
 def test_verify_missing_binary_reports_path_and_listing(tmp_path):
     """A missing binary must say which path is missing and what the
     entry actually contains — the diagnosis that exposes a bad pin."""
@@ -776,7 +745,7 @@ def test_verify_probe_failure_reports_reason(tmp_path):
 
 
 def test_probe_args_override_used_by_verify(tmp_path):
-    """A binary that rejects `--version` (ffmpeg's BtbN autobuild does) can
+    """A binary that rejects `--version` (ffmpeg does) can
     override the probe argv; verify() must honor the override everywhere
     the probe is described, not just in the subprocess argv."""
 
@@ -794,7 +763,7 @@ def test_probe_args_override_used_by_verify(tmp_path):
 
 def test_ffmpeg_posix_layout_resolves_at_entry_root(tmp_path):
     """martin-riedl zips are a single `ffmpeg` file at the zip root — the
-    package must resolve it there (bin/ffmpeg is the BtbN win32 layout)."""
+    package must resolve it there."""
     from pm.registry import get_package
 
     ffmpeg = get_package("ffmpeg")

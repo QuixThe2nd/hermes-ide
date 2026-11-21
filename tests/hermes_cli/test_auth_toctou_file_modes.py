@@ -11,8 +11,7 @@ file is ``O_EXCL`` at 0600 on creation (the cross-writer invariant lives in
 ``tests/agent/test_private_credential_writers.py``).
 
 These tests stay green only while the token file and its parent directory
-end up at ``0o600`` / ``0o700`` after every write. POSIX-only — the mode-bit
-enforcement does not exist on Windows.
+end up at ``0o600`` / ``0o700`` after every write.
 """
 
 from __future__ import annotations
@@ -20,15 +19,10 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 
 import pytest
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform.startswith("win"),
-    reason="POSIX mode bits not enforced on Windows",
-)
 
 
 # ---------------------------------------------------------------------------

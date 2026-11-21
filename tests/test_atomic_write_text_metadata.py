@@ -16,17 +16,11 @@ from __future__ import annotations
 
 import os
 import stat
-import sys
 from pathlib import Path
 
 import pytest
 
 from utils import atomic_write_text, atomic_yaml_write
-
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX permission bits"
-)
 
 
 class TestPreserveMode:

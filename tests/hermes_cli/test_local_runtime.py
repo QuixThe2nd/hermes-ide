@@ -191,12 +191,6 @@ def _target(os_name: str, arch: str) -> str:
 
 
 @pytest.mark.parametrize("backend,target,ok", [
-    ("cuda", "win32-x64", True),
-    ("vulkan", "win32-x64", True),
-    ("cpu", "win32-x64", True),
-    ("cpu", "win32-arm64", True),
-    ("cuda", "win32-arm64", True),    # upstream ships these since ~b1036x (CUDA 13.4)
-    ("vulkan", "win32-arm64", False),  # upstream publishes no win-arm64 vulkan
     ("metal", "darwin-arm64", True),
     ("vulkan", "linux-x64", True),
     ("cpu", "linux-x64", True),
@@ -215,36 +209,15 @@ def test_backend_platform_matrix(backend, target, ok):
         assert pkg.missing_reason(target) is not None
 
 
-def test_windows_cuda_pairs_cudart():
-    """Windows CUDA must ship the cudart archive — users have no toolkit,
-    and Windows resolves a DLL from the executable's own directory."""
-    urls = _llama("cuda").fetch_urls("10362", "win32-x64")
-    assert len(urls) == 2
-    assert any("cudart-llama" in u for u in urls)
-    assert any("llama-b10362-bin" in u for u in urls)
-
-
-def test_windows_cuda_arm64_pairs_cudart_on_its_own_version():
-    """arm64 CUDA rides its own CUDA line (13.4 at b10362, verified live):
-    both archives must agree on version and name the arch."""
-    urls = _llama("cuda").fetch_urls("10362", "win32-arm64")
-    assert len(urls) == 2
-    assert all("arm64" in u for u in urls)
-    versions = {u.split("cuda-")[1].split("-")[0] for u in urls}
-    assert len(versions) == 1, f"paired zips disagree on CUDA version: {urls}"
-    assert any("cudart-" in u for u in urls)
-    assert any("llama-" in u for u in urls)
-
-
 def test_backend_ladder_falls_back_when_unavailable(monkeypatch):
     """An explicit backend this platform has no build for falls back down
     the ladder instead of failing (the hardware-aware boot path)."""
     import pm.store as store_mod
 
-    monkeypatch.setattr(store_mod, "current_target", lambda: "win32-arm64")
-    # vulkan has no win32-arm64 build; the ladder must walk to cuda (the
-    # next rung that IS built for this target), not fail.
-    assert resolve_backend("vulkan") == "cuda"
+    monkeypatch.setattr(store_mod, "current_target", lambda: "darwin-arm64")
+    # vulkan has no darwin build; the ladder must walk to metal (the next
+    # rung that IS built for this target), not fail.
+    assert resolve_backend("vulkan") == "metal"
 
 
 def test_backend_ladder_raises_when_nothing_available(monkeypatch):
@@ -258,11 +231,10 @@ def test_backend_ladder_raises_when_nothing_available(monkeypatch):
 
 
 @pytest.mark.parametrize("vendor,os_name,expected", [
-    ("NVIDIA GeForce RTX 5090", "win", "cuda"),
     ("nvidia", "ubuntu", "cuda"),
-    ("AMD Radeon RX 7900", "win", "vulkan"),
-    ("intel", "win", "vulkan"),
-    (None, "win", "cpu"),
+    ("AMD Radeon RX 7900", "ubuntu", "vulkan"),
+    ("intel", "ubuntu", "vulkan"),
+    (None, "ubuntu", "cpu"),
     ("", "ubuntu", "cpu"),
     ("nvidia", "macos", "metal"),   # macOS is Metal regardless
     (None, "macos", "metal"),
@@ -525,7 +497,7 @@ def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
 
         store = paths.store_root()
         name = f"llamacpp-{backend}"
-        entry = f"{name}-{version}-win32-x64"
+        entry = f"{name}-{version}-linux-x64"
         (store / entry).mkdir(parents=True, exist_ok=True)
         Facts(store / "facts.json").record(name, version, entry, {}, store)
 
@@ -815,7 +787,7 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
     from pm.lock import Facts
 
     store = paths.store_root()
-    entry = "llamacpp-cpu-10362-win32-x64"
+    entry = "llamacpp-cpu-10362-linux-x64"
     (store / entry).mkdir(parents=True, exist_ok=True)
     Facts(store / "facts.json").record("llamacpp-cpu", "10362", entry, {}, store)
 
@@ -862,12 +834,6 @@ def test_stop_state_server_uses_pid_exists_not_os_kill(monkeypatch):
 
 # ---- fork-only tests preserved through the a9be133aea import ----
 @pytest.mark.parametrize("os_name,arch,backend,ok", [
-    ("win", "x64", "cuda", True),
-    ("win", "x64", "vulkan", True),
-    ("win", "x64", "cpu", True),
-    ("win", "arm64", "cpu", True),
-    ("win", "arm64", "cuda", True),      # upstream ships these since ~b1036x (CUDA 13.4)
-    ("win", "arm64", "vulkan", False),
     ("macos", "arm64", "metal", True),
     ("ubuntu", "x64", "vulkan", True),
     ("ubuntu", "x64", "cpu", True),

@@ -593,14 +593,3 @@ class TestSyncBackWindowsHost:
         assert host_file.read_bytes() == b"v2"
         assert not seen["dest"].exists()  # staging tar removed after use
 
-    @pytest.mark.platforms("windows")
-    def test_posix_remote_keys_match_on_windows(self, tmp_path):
-        host_file = tmp_path / "host" / "skill.py"
-        _write_file(host_file, b"v1")
-        mapping = [(str(host_file), "/root/.hermes/skills/a/skill.py")]
-        mgr = _make_manager(tmp_path, mapping, bulk_download_fn=_make_download_fn({
-            "root/.hermes/skills/a/skill.py": b"v2", "root/.hermes/skills/a/new.md": b"new"}))
-        mgr._pushed_hashes["/root/.hermes/skills/a/skill.py"] = _sha256_bytes(b"v1")
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
-        assert host_file.read_bytes() == b"v2"  # relpath key was 'root\\.hermes\\...' → skipped
-        assert (tmp_path / "host" / "new.md").read_bytes() == b"new"  # _infer_host_path parent match

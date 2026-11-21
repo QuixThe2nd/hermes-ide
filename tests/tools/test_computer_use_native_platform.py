@@ -1,4 +1,4 @@
-"""Exercise existing computer-use actions on the actual Windows/macOS CI hosts."""
+"""Exercise existing computer-use actions on the actual macOS CI hosts."""
 
 import json
 import sys
@@ -18,7 +18,6 @@ def backend(monkeypatch):
 
 
 @pytest.mark.parametrize("host_platform", [
-    pytest.param("win32", marks=pytest.mark.windows_only),
     pytest.param("darwin", marks=pytest.mark.macos_only),
 ])
 @pytest.mark.parametrize("args, expected_call", [

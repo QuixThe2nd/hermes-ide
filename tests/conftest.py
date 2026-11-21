@@ -74,9 +74,9 @@ def _hermes_home_points_at_production(value: str) -> bool:
     if not value:
         return True
     try:
-        # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
-        # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
-        # "custom", pinning import-time paths (e.g. module-level home caches) to the live
+        # The platform-default root, not a hardcoded ``~/.hermes``: a dev shell
+        # exporting that path used to be honored as "custom", pinning
+        # import-time paths (e.g. module-level home caches) to the live
         # install so the state.db guard tripped on every store-touching test (#112692).
         from hermes_state_guard import _real_platform_state_root
 
@@ -95,8 +95,7 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
-# PYTHONPYCACHEPREFIX is a bytecode-mirror escape hatch: when set (the
-# bundled desktop app exports it as %LOCALAPPDATA%\hermes\pycache),
+# PYTHONPYCACHEPREFIX is a bytecode-mirror escape hatch: when set,
 # importlib/pytest write .pyc files to <prefix>/<absolute source path>
 # instead of next to the sources. Un-scrubbed, that mirror lands under
 # the REAL hermes home and trips the real-home tripwire on any module
@@ -696,7 +695,7 @@ def mock_config():
 #
 # The subprocess-per-test plugin enforces the configured ``isolate_timeout``
 # ini key by terminating the child if it overruns. The old SIGALRM-based
-# fixture (POSIX-only, didn't work on Windows) is gone.
+# fixture is gone.
 
 
 @pytest.fixture(autouse=True)
@@ -822,40 +821,34 @@ _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 # ---------------------------------------------------------------------------
 # OS gating
 #
-# Hermes runs on Linux, macOS and native Windows, and a lot of its behaviour
-# genuinely differs per host: PTY vs pywinpty, taskkill vs SIGTERM, launchd
-# vs systemd, Keychain vs libsecret, ``%LOCALAPPDATA%`` vs ``~/.hermes``.
+# Hermes runs on Linux and macOS, and a lot of its behaviour
+# genuinely differs per host: launchd
+# vs systemd, Keychain vs libsecret.
 #
 # Historically those code paths were tested by *faking* the host — patching
-# ``sys.platform`` to ``"win32"`` inside a Linux CI job. That gives a green
+# ``sys.platform`` inside a Linux CI job. That gives a green
 # test on a machine where the code under test could not actually run: the
-# fake covers the ``if sys.platform == "win32"`` branch selection but nothing
-# underneath it (``msvcrt`` still isn't importable, ``taskkill`` still isn't
-# on PATH, paths are still POSIX, ``signal.SIGKILL`` still exists). The
-# result was tests that pass on Linux and tell us nothing about Windows.
+# fake covers the branch selection but nothing underneath it.
 #
 # So: a test whose subject is genuinely OS-specific declares the OS it
 # belongs to and runs there for real —
 #
-#   @pytest.mark.platforms("windows")   → only on native Windows (``sys.platform == "win32"``)
 #   @pytest.mark.platforms("macos")     → only on macOS (``sys.platform == "darwin"``)
 #   @pytest.mark.platforms("linux")     → only on Linux (``sys.platform.startswith("linux")``)
 #
 # Elsewhere the test is skipped, not faked. CI runs a dedicated macOS job
-# (``-m platforms("macos")``) and a dedicated Windows job (``-m platforms("windows")``) so
+# (``-m platforms("macos")``) so
 # those markers are actually exercised on their own host rather than
 # quietly skipped everywhere.
 #
 # This does NOT mean every mention of another platform must be gated. Two
 # things are legitimately host-independent and stay on the Linux runner:
 #
-#   • Pure functions that TAKE a platform as data — e.g.
-#     ``hidden_windows_child_options(opts, is_windows=True)`` or a
-#     ``resolve_launcher(platform_name)`` helper. Passing "win32" as an
+#   • Pure functions that TAKE a platform as data — e.g. a
+#     ``resolve_launcher(platform_name)`` helper. Passing another OS name as an
 #     argument is not faking the host; the function's whole contract is
 #     that it maps input to output.
-#   • Declaration/packaging invariants — e.g. "pyproject declares tzdata
-#     with a ``sys_platform == 'win32'`` marker". That's an assertion about
+#   • Declaration/packaging invariants — an assertion about
 #     a file, not about runtime behaviour.
 #
 # The line is: if the test needs the interpreter to BELIEVE it is on
@@ -871,10 +864,6 @@ _OS_MARKS = {
         lambda: sys.platform == "darwin",
         "macOS",
     ),
-    "windows_only": (
-        lambda: sys.platform == "win32",
-        "native Windows",
-    ),
     "require_symlinks": (
         lambda: os.name == "posix" and _check_symlink_support(),
         "symlink-capable POSIX",
@@ -887,8 +876,8 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
 
     Every per-test sandbox is ``<basetemp>/.../hermes_test``. ``get_default_hermes_root()``
     prefers the platform-native home whenever ``HERMES_HOME`` sits *under* it, so a basetemp
-    inside ``~/.hermes`` (or ``%LOCALAPPDATA%\\hermes``, where ``TEMP`` commonly lives on
-    Windows) turns the sandbox back into the live install and ``get_profile_dir("default")``
+    inside ``~/.hermes`` turns the sandbox back into the live install
+    and ``get_profile_dir("default")``
     writes fixtures over the operator's config.yaml / .env / MEMORY.md (#111101).
     """
     from hermes_constants import _get_platform_default_hermes_home
@@ -901,7 +890,7 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
     )
     if not candidate.resolve().is_relative_to(native):
         return
-    # The system temp dir may itself be inside the home (Windows TEMP under the
+    # The system temp dir may itself be inside the home (TEMP under the
     # Hermes home). The repo is no escape either: the default install checks it
     # out *inside* the home (~/.hermes/hermes-agent). A sibling of the native
     # home is outside it by construction.
@@ -968,19 +957,18 @@ def require_mcp_2_sdk():
 
 
 # ── Composable platform gating ──────────────────────────────────────────────
-# The fixed trio above can only say "one OS, no qualifiers". Real host-gating
-# needs more: "anything except macOS", "Windows but only arm64", "POSIX-family
+# The fixed duo above can only say "one OS, no qualifiers". Real host-gating
+# needs more: "anything except macOS", "POSIX-family
 # behaviour". The ``platforms`` marker takes any number of spec strings plus
 # optional arch filters, and runs the test only where at least one spec
 # matches the host:
 #
 #   @pytest.mark.platforms("linux")                  only on Linux
 #   @pytest.mark.platforms("not macos")              anywhere except macOS
-#   @pytest.mark.platforms("windows", arch="arm64")  native Windows on arm64
 #   @pytest.mark.platforms("posix")                  linux or macOS
 #
 # Spec grammar (one per marker argument, case-insensitive):
-#   "linux" | "macos" | "windows"  — exact OS
+#   "linux" | "macos"  — exact OS
 #   "posix"                         — linux or macOS
 #   "not <spec>"                    — negation of a single spec
 #   "any"                           — always true (documentation form)
@@ -988,14 +976,13 @@ def require_mcp_2_sdk():
 # case-insensitively against platform.machine() aliases (amd64 → x86_64,
 # aarch64 → arm64). ``arch_negate=True`` inverts the arch filter.
 #
-# The old trio remains accepted as aliases routing through the same skip
+# The old duo remains accepted as aliases routing through the same skip
 # machinery; new tests should prefer ``platforms``. A mechanical rewrite of
 # the ~500 legacy call sites is a separate sweep.
 
 _PLATFORM_ALIASES = {
     "linux": ("linux",),
     "macos": ("darwin", "macos"),
-    "windows": ("win32", "windows"),
     "posix": ("linux", "darwin"),
     "any": (),
 }
@@ -1079,7 +1066,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     config.addinivalue_line(
         "markers",
         "platforms(*specs, arch=None, arch_negate=False): run only on hosts "
-        "matching at least one spec — linux/macos/windows/posix/any, "
+        "matching at least one spec — linux/macos/posix/any, "
         "'not X' negation, optional arch filter (e.g. arch='arm64')",
     )
     config.addinivalue_line(
@@ -1107,23 +1094,14 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     config.addinivalue_line(
         "markers",
         "require_symlinks: skip the test if symbolic links cannot be "
-        "created in the current environment (needs admin/developer mode "
-        "on Windows).",
+        "created in the current environment.",
     )
-    # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
+    # NOTE: platforms("linux") / platforms("macos") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
     # project's public marker vocabulary (``pytest --markers``, and the CI
     # lanes select on them), whereas the marks above are conftest-internal
     # guards. Declaring them in both places just meant two descriptions that
     # could drift apart.
-
-    # The pyproject addopts pin ``--timeout-method=signal`` relies on
-    # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
-    # raises AttributeError at timer setup and the whole run aborts before any
-    # test executes. Fall back to the thread-based timer on Windows so the
-    # suite runs natively there (POSIX keeps the more reliable signal method).
-    if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
-        config.option.timeout_method = "thread"
 
 
 _symlink_supported_cache = None
@@ -1151,8 +1129,7 @@ def pytest_runtest_setup(item):
     if item.get_closest_marker("require_symlinks"):
         if not _check_symlink_support():
             pytest.skip(
-                "Environment does not support symbolic links "
-                "(requires admin/developer mode on Windows)"
+                "Environment does not support symbolic links"
             )
 
 
@@ -1265,7 +1242,7 @@ def _live_system_guard(request, monkeypatch):
     Subprocess inspection looks at the WHOLE command string (not just
     tokens[0]), so ``bash -c "systemctl restart hermes-gateway"``,
     ``sudo systemctl ...``, ``env systemctl ...``, ``setsid systemctl ...``
-    are all caught. ``pkill``/``killall``/``taskkill`` invocations
+    are all caught. ``pkill``/``killall`` invocations
     targeting hermes/python patterns are also blocked. Bare ``git``
     commands may not mutate a protected checkout. Git writes against
     temporary repositories and read-only Git commands remain allowed.
@@ -1380,7 +1357,7 @@ def _live_system_guard(request, monkeypatch):
         "reset-failed", "enable", "disable", "mask", "unmask",
         "daemon-reload", "try-restart", "reload-or-restart",
     )
-    _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _PROCESS_KILLERS = ("pkill", "killall", "skill", "fuser")
     _CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
 
     def _first_token_basename(cmd_str: str) -> str:
@@ -1740,7 +1717,7 @@ _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 # the checkout itself (default install layout ~/.hermes/hermes-agent, harness
 # workspaces under ~/.hermes/cache — pytest's assertion rewriter writes .pyc
 # under its venv during the guarded fixture window) and the process temp dir
-# (TEMP lives under the home on Windows; harnesses set TMPDIR under it).
+# (harnesses set TMPDIR under it).
 # Production state (config.yaml, .env, state.db, sessions) lives directly
 # under the root, never in these subtrees — guarding them is a false positive
 # that fails test setup, not a leak.

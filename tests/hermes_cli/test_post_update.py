@@ -387,26 +387,3 @@ class TestResyncAndReexec:
         assert "--resumed-after-sync" in argv
         assert "--gateway-mode" in argv and "--assume-yes" in argv
         assert argv[argv.index("--pre-update-snapshot-id") + 1] == "snap-7"
-
-    def test_windows_spawns_and_propagates(self, monkeypatch):
-        """No exec on Windows: spawn + wait + propagate the child's code;
-        the child passes any update lock by ancestry."""
-        from hermes_cli import venv_sync
-
-        monkeypatch.setattr(
-            venv_sync, "sync", lambda *a, **k: {"state": "synced", "ok": True}
-        )
-        monkeypatch.setattr(post_update.os, "name", "nt")
-        seen = {}
-
-        class _Done:
-            returncode = 7
-
-        def fake_run(argv, **kwargs):
-            seen["argv"] = argv
-            return _Done()
-
-        monkeypatch.setattr(post_update.subprocess, "run", fake_run)
-
-        assert post_update.resync_and_reexec(_Args()) == 7
-        assert "--resumed-after-sync" in seen["argv"]

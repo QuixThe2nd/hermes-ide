@@ -17,17 +17,11 @@ Two behavior contracts are pinned here:
 """
 
 import os
-import sys
 import threading
 
 import pytest
 
 import cron.jobs as jobs
-
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only: uid/gid ownership semantics"
-)
 
 
 @pytest.fixture()

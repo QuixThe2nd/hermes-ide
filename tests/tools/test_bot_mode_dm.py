@@ -471,9 +471,9 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system
     install whose shebang picks the wrong interpreter and dies on import (#108628).
     Both transports must invoke the entrypoint beside this interpreter instead."""
-    venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    hermes_entry = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    hermes_entry = venv_bin / "hermes"
     hermes_entry.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
 
@@ -563,8 +563,8 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     assert _runner_author(calls[0]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
-def test_delivery_command_author_json_survives_quoting_and_windows_slash_rewrite(tmp_path, monkeypatch):
-    """The author JSON sits between ``--run-delivery`` and the mode, survives shlex, and the Windows slash rewrite skips it."""
+def test_delivery_command_author_json_survives_quoting(tmp_path):
+    """The author JSON sits between ``--run-delivery`` and the mode, and survives shlex."""
     author = {"id": "bot:default", "name": "hermes", "is_bot": True}
     command = bot_mode_dm._delivery_command(["hermes", "-p", "x"], str(tmp_path / "dm.txt"),
                                             stdin_file=False, author=author)
@@ -573,13 +573,6 @@ def test_delivery_command_author_json_survives_quoting_and_windows_slash_rewrite
     assert json.loads(parts[4]) == author
     assert parts[5] == "query-file"
     assert _runner_parts(command) == ("query-file", str(tmp_path / "dm.txt"), ["hermes", "-p", "x"])
-
-    monkeypatch.setattr(sys, "platform", "win32")
-    command = bot_mode_dm._delivery_command(["hermes", "-p", "x"], "C:\\Users\\me\\dm.txt",
-                                            stdin_file=False, author={"id": "bot:default", "name": 'q"q', "is_bot": True})
-    parts = shlex.split(command)
-    assert json.loads(parts[4]) == {"id": "bot:default", "name": 'q"q', "is_bot": True}
-    assert parts[6] == "C:/Users/me/dm.txt"
 
     # without an author the legacy shape is produced unchanged
     command = bot_mode_dm._delivery_command(["hermes"], "dm.txt", stdin_file=True)
@@ -922,38 +915,6 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     assert not dm_file.exists()
 
 
-@pytest.mark.platforms("windows")
-def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
-    """Native runner paths must survive the Git Bash process boundary."""
-    from tools.environments.local import _find_shell
-
-    dm_file = tmp_path / "message with spaces.txt"
-    dm_file.write_text("secret", encoding="utf-8")
-    observed = tmp_path / "observed with spaces.txt"
-    child = tmp_path / "child with spaces.py"
-    child.write_text(
-        "import pathlib, sys\n"
-        "pathlib.Path(sys.argv[1]).write_text('started', encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-    command = bot_mode_dm._delivery_command(
-        [sys.executable, str(child), str(observed)],
-        str(dm_file),
-        stdin_file=False,
-    )
-
-    result = subprocess.run(
-        [_find_shell(), "-lic", command],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr or result.stdout
-    assert observed.read_text(encoding="utf-8") == "started"
-    assert not dm_file.exists()
-
-
 @pytest.mark.parametrize(
     ("terminal_result", "raises"),
     [
@@ -1143,8 +1104,7 @@ def test_one_way_handoff_is_silent_and_query_file(monkeypatch):
     assert "$(" not in command
     # The payload rides a private temp file verbatim.
     assert Path(dm_file).read_text(encoding="utf-8") == secret
-    if os.name != "nt":
-        assert stat.S_IMODE(Path(dm_file).stat().st_mode) == 0o600
+    assert stat.S_IMODE(Path(dm_file).stat().st_mode) == 0o600
 
 
 def test_one_way_handoff_has_no_routing_parameters(monkeypatch):

@@ -14,13 +14,11 @@ import pytest
 
 # (manifest symbol, canonical definition, consuming compatibility surfaces)
 _GROUPS = (
-    ("_windows_runtime_self_lock", "hermes_cli.runtime_repair:_windows_runtime_self_lock", ("hermes_cli.managed_uv:_windows_runtime_self_lock",)),
     ("_sweep_stale_runtime_backups", "hermes_cli.runtime_repair:_sweep_stale_runtime_backups", ("hermes_cli.managed_uv:_sweep_stale_runtime_backups",)),
     ("_classify_is_enabled_probe", "plugins.auto_update.systemd:_classify_is_enabled_probe", ("plugins.drift_watch.systemd:_classify_is_enabled_probe",)),
     ("managed_gateway_auth_headers", "tools.managed_tool_gateway:managed_gateway_auth_headers", ("tools.managed_gateway_auth:managed_gateway_auth_headers",)),
     ("_classify_is_active_probe", "plugins.auto_update.systemd:_classify_is_active_probe", ("plugins.drift_watch.systemd:_classify_is_active_probe",)),
     ("_default_live_venv", "hermes_cli.runtime_repair:_default_live_venv", ("hermes_cli.managed_uv:_default_live_venv",)),
-    ("_reload_hermes_constants", "hermes_cli.runtime_repair:_reload_hermes_constants", ("hermes_cli.managed_uv:_reload_hermes_constants",)),
     ("_safe_getcwd", "tools.terminal_tool_config:_safe_getcwd", ("tools.terminal_tool:_safe_getcwd",)),
     ("write_units_if_changed", "plugins.auto_update.systemd:write_units_if_changed", ("plugins.drift_watch.systemd:write_units_if_changed",)),
     ("_reconcile_probe_fields", "plugins.auto_update.systemd:_reconcile_probe_fields", ("plugins.drift_watch.systemd:_reconcile_probe_fields",)),

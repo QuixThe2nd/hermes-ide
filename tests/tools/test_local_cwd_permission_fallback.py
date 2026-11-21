@@ -9,7 +9,6 @@ not enter. The fix checks X_OK and falls back to the nearest usable ancestor.
 """
 
 import os
-import sys
 import tempfile
 
 import pytest
@@ -28,8 +27,8 @@ def denied_dir(tmp_path):
 
 
 needs_posix_perms = pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="chmod-based access denial needs POSIX + non-root",
+    os.geteuid() == 0,
+    reason="chmod-based access denial needs non-root",
 )
 
 

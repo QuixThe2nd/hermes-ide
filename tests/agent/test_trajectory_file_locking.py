@@ -38,12 +38,9 @@ def test_append_honours_a_foreign_exclusive_lock(tmp_path):
     target.write_text("", encoding="utf-8")
     holder = subprocess.Popen(
         [sys.executable, "-c", textwrap.dedent(f"""
-            import os, sys, time
+            import fcntl, time
             f = open({str(target)!r}, "a")
-            if os.name == "nt":
-                import msvcrt; f.write(" "); f.flush(); f.seek(0); msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl; fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             print("locked", flush=True)
             time.sleep(1.5)
         """)],

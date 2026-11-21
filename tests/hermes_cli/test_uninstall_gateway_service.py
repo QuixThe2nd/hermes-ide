@@ -41,7 +41,6 @@ def _dispatch_table(calls: list) -> dict:
     return {
         "Linux": (remover("Linux"), "linux label"),
         "Darwin": (remover("Darwin"), "darwin label"),
-        "Windows": (remover("Windows"), "windows label"),
     }
 
 

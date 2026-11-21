@@ -854,7 +854,7 @@ class TestInstallReadabilityGate:
         monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
         monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: None)
 
-    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    @pytest.mark.skipif(os.geteuid() == 0, reason="POSIX mode bits, non-root")
     def test_unreadable_file_is_repaired_before_install(self, tmp_path, monkeypatch):
         from hermes_cli import plugins_cmd as pc
 
@@ -868,7 +868,7 @@ class TestInstallReadabilityGate:
         assert name == "badperm"  # manifest read after repair, not the URL fallback
         assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")
 
-    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    @pytest.mark.skipif(os.geteuid() == 0, reason="POSIX mode bits, non-root")
     def test_unrepairable_tree_rolls_back_and_names_the_fix(self, tmp_path, monkeypatch):
         from hermes_cli import plugins_cmd as pc
 

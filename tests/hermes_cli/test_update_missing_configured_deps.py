@@ -14,11 +14,8 @@ def _run_fallback_with_failed_extra(monkeypatch, capsys, *, extra_fails: str, mi
         if target in (".[all]", f".[{extra_fails}]"):
             raise subprocess.CalledProcessError(1, cmd)
 
-    monkeypatch.setattr(main_install_repair, "_run_quarantined_install", fake_install)
-    monkeypatch.setattr(main_install_repair, "_verify_console_scripts_installed", lambda *a, **k: None)
+    monkeypatch.setattr(main_install_repair, "_run_install_with_heartbeat", fake_install)
     monkeypatch.setattr(main_install_repair, "_verify_core_dependencies_installed", lambda *a, **k: None)
-    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(main_install_repair, "_load_installable_optional_extras", lambda group="all": [extra_fails, "mcp"])
     monkeypatch.setattr(main_install_repair, "_configured_features_missing_deps", lambda *a, **k: missing_features)
     main_install_repair._install_python_dependencies_with_optional_fallback(["uv", "pip"])

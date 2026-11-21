@@ -126,7 +126,6 @@ class TestPsFallbackBsdCompat:
     def test_ps_flags_are_bsd_compatible(self):
         """ps is called with ``-Aww``, not ``-A eww``."""
         with (
-            patch("hermes_cli.gateway.is_windows", return_value=False),
             patch("os.path.isdir", side_effect=lambda p: p != "/proc"),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_run,
@@ -156,7 +155,6 @@ class TestPsFallbackBsdCompat:
     def test_ps_command_includes_pid_and_command_columns(self):
         """The ps command requests ``pid=,command=`` output columns."""
         with (
-            patch("hermes_cli.gateway.is_windows", return_value=False),
             patch("os.path.isdir", side_effect=lambda p: p != "/proc"),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_run,

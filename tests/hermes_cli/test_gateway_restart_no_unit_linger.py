@@ -16,7 +16,7 @@ def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypat
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
-    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
+    monkeypatch.setattr(gw, "_installed_service_kind", lambda: None)
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gw, "get_systemd_linger_status", lambda *a, **k: (False, "Linger=no"))
     monkeypatch.setattr(gw, "stop_profile_gateway", lambda: True)
@@ -35,7 +35,7 @@ def test_restart_with_systemd_unit_still_reports_missing_linger(monkeypatch):
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
-    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: "systemd")
+    monkeypatch.setattr(gw, "_installed_service_kind", lambda: "systemd")
 
     def _failing_service_call(*a, **k):
         import subprocess

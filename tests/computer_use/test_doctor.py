@@ -20,7 +20,6 @@ shape.
 from __future__ import annotations
 
 import json
-import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -314,7 +313,6 @@ class TestDriverCmdResolution:
             doctor.run_doctor()
         which_mock.assert_called_with("/env/path/cua-driver")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
     def test_user_local_driver_is_found_when_path_omits_it(self, tmp_path, monkeypatch):
         """Doctor must inspect the same user-local driver as the runtime."""
         from tools.computer_use import doctor

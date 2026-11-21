@@ -35,22 +35,6 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
 
 
-def test_windows_managed_node_root_prefers_cmd_launchers(tmp_path):
-    """Managed Windows Node lives directly in ``<HERMES_HOME>/node`` (no ``bin``) as ``npx.cmd`` /
-    ``npm.cmd`` / ``node.exe``; a bare ``command: npx`` must resolve to those launchers (#111937).
-    The extensionless POSIX sibling is a shell script Windows cannot spawn, so it must never win."""
-    node_root = tmp_path / "node"
-    node_root.mkdir()
-    for name in ("npx", "npm", "npx.cmd", "npm.cmd", "node.exe"):
-        launcher = node_root / name
-        launcher.write_text("@echo off\r\n", encoding="utf-8")
-        launcher.chmod(0o755)
-
-    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
-        assert _node_fallback("npx", windows=True) == str(node_root / "npx.cmd")
-        assert _node_fallback("npm", windows=True) == str(node_root / "npm.cmd")
-        assert _node_fallback("node", windows=True) == str(node_root / "node.exe")
-
 
 def test_node_fallback_uses_active_profile_home(tmp_path, monkeypatch):
     """The managed-Node lookup follows ``get_hermes_home()`` (context override), not raw ``HERMES_HOME``:

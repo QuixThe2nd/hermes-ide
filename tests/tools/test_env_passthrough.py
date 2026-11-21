@@ -445,7 +445,6 @@ class TestTerminalIntegration:
                 "PATH": "/usr/bin",
             },
             is_passthrough=is_env_passthrough,
-            is_windows=False,
         )
         assert "OPENAI_API_KEY" not in child_env
         assert "ANTHROPIC_API_KEY" not in child_env

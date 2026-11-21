@@ -50,7 +50,7 @@ def test_classify_deleted_wal_separately_from_main_file_replacement():
 
 
 def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
-    monkeypatch.setattr(hermes_state.sys, "platform", "win32")
+    monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
     assert iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db") == []
 
 

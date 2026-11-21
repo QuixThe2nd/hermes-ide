@@ -336,6 +336,9 @@ def test_socket_reported_restart_is_attached_without_another_signal(tmp_path, mo
 def test_socket_reported_forwarded_restart_is_attached_without_another_signal(
     tmp_path, monkeypatch
 ):
+    """A restart the live generation forwarded to the newest generation is
+    owned by the generation array (#844 retired the chained status) — the
+    caller must not fire a second SIGUSR1 on top."""
     from hermes_cli import gateway_restart_progress as progress
 
     monkeypatch.setattr(progress, "_read_status", lambda home: {
