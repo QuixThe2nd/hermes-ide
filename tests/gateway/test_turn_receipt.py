@@ -1,9 +1,4 @@
-"""Turn receipt parity: the Python twin (runtime) and the Go renderer (canonical).
-
-Regression guard for the shared fixture internal/turnreceipt/testdata/receipt.json:
-every case must hold its invariants through the Python twin, and the RUNNING Go
-binary must emit the same bytes.
-"""
+"""Turn receipt parity: Python twin vs the running Go binary, over the shared fixture."""
 
 import json
 import shutil

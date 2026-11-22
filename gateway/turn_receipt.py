@@ -1,15 +1,8 @@
-"""Turn transcript receipt: the one-page HTML a finished turn leaves in chat.
-
-Python twin of internal/turnreceipt, the canonical renderer. The runtime uses
-this module; the Go package exists so tests can hold the two to the same
-bytes through testdata/receipt.json. Keep the two in step: the parity test
-fails on any drift, including in the stylesheet.
-"""
+"""Turn receipt page. Python twin of internal/turnreceipt; parity is tested, keep both in step."""
 
 from __future__ import annotations
 
 import datetime as _dt
-import logging
 import unicodedata
 import uuid
 from contextlib import suppress
@@ -17,8 +10,6 @@ from pathlib import Path
 from typing import Iterable
 
 from gateway.platforms.base import BasePlatformAdapter
-
-logger = logging.getLogger(__name__)
 
 _STYLESHEET = """
 body{margin:0;background:#313338;color:#dbdee1;font:15px/1.4 system-ui,sans-serif}
@@ -68,11 +59,7 @@ def render_turn_html(user_message: str, rows: Iterable[str], final_reply: str) -
 
 
 def write_turn_receipt(home: Path, user_message: str, rows: Iterable[str], final_reply: str) -> Path:
-    """Write the page under ``<home>/turn_receipts`` and return its path.
-
-    The name is a UTC timestamp plus a random suffix: unique, and it never
-    carries user text.
-    """
+    """Write the page under ``<home>/turn_receipts``; the name never carries user text."""
     folder = home / "turn_receipts"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -82,10 +69,7 @@ def write_turn_receipt(home: Path, user_message: str, rows: Iterable[str], final
 
 
 async def deliver_turn_receipt(adapter, chat_id: str, path: Path) -> None:
-    """Ship the page as a document when the adapter implements send_document.
-
-    Otherwise, or when the upload fails, the receipt line carries the local path.
-    """
+    """Ship the page as a document if the adapter has send_document; else name the path."""
     shipped = False
     if type(adapter).send_document is not BasePlatformAdapter.send_document:
         with suppress(Exception):
