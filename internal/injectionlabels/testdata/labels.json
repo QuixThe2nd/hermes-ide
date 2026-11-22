@@ -598,12 +598,12 @@
     {
       "name": "spillover_stub_sources_the_tool_result",
       "op": "spillover",
-      "stub": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
+      "stub": "<persisted-output>~tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
       "expect": {
         "kinds": [
           "spillover"
         ],
-        "content": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
+        "content": "<persisted-output>~tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
         "injected_chars": 86,
         "sources": [
           "tool_result"
@@ -824,8 +824,8 @@
     {
       "name": "string_stub_detected",
       "op": "string",
-      "text": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
-      "expect_stub": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
+      "text": "<persisted-output>~tmp/spill-1.txt</persisted-output>\nOutput too large; read the file.",
+      "expect_stub": "<persisted-output>~tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
     },
     {
       "name": "plain_string_is_not_a_stub",
@@ -843,10 +843,10 @@
         },
         {
           "type": "text",
-          "text": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
+          "text": "<persisted-output>~tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
         }
       ],
-      "expect_stub": "<persisted-output>/tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
+      "expect_stub": "<persisted-output>~tmp/spill-1.txt</persisted-output>\nOutput too large; read the file."
     },
     {
       "name": "multimodal_without_stub_stays_silent",
