@@ -6703,10 +6703,14 @@ class GatewayTurnMixin:
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.
 
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
+        Before deleting, the turn's transcript page is written and a single receipt line is posted.
+        Failed runs keep the bubbles and produce no page. Only on adapters with ``delete_message``;
+        failures swallowed."""
         from gateway.run import logger
 
         from gateway.run import safe_schedule_threadsafe
+        from gateway.turn_receipt import deliver_turn_receipt, write_turn_receipt
+        from hermes_constants import get_hermes_home
         _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
         if not (
             turn_ctx._cleanup_progress
@@ -6721,9 +6725,24 @@ class GatewayTurnMixin:
         _ids_snapshot = list(_cleanup_msg_ids)
         _chat_id_snapshot = turn_ctx.source.chat_id
         _loop_snapshot = asyncio.get_running_loop()
+        # Resolved on the turn's thread: the cleanup thread must not read profile state.
+        _home_snapshot = get_hermes_home()
+        _receipt_args = (
+            turn_ctx.message or "",
+            list(turn_ctx._receipt_rows),
+            str(response.get("final_response") or ""),
+        )
 
         def _cleanup_temp_bubbles() -> None:
+            receipt = None
+            try:
+                receipt = write_turn_receipt(_home_snapshot, *_receipt_args)
+            except Exception:
+                logger.warning("Turn receipt write failed; bubbles are still cleaned up", exc_info=True)
+
             async def _delete_all() -> None:
+                if receipt is not None:
+                    await deliver_turn_receipt(_cleanup_adapter, _chat_id_snapshot, receipt)
                 for _mid in _ids_snapshot:
                     with suppress(Exception):
                         await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
