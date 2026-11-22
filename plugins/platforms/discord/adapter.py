@@ -1085,6 +1085,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # other-profile) callback context. None ⇒ the gate is off and never consulted.
         self._response_gate: Optional[Dict[str, Any]] = None
         self._response_gate_credential: Optional[str] = None
+        self._response_gate_bot_name = "assistant"
         # Set by the Discord hub before connect() when this adapter is hub-attached:
         # the owning gateway resolved that profile's LITELLM_API_KEY under its own
         # secret scope and passed it in the attach payload. None ⇒ in-process adapter
@@ -1384,6 +1385,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
             @self._client.event
             async def on_ready():
+                # client.user exists only at READY; rebuild questions and judge state before dispatch opens.
+                adapter_self._response_gate_init()
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
@@ -1530,9 +1533,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if gate_cfg is None or not gate_cfg.enabled:
             self._response_gate = None
             return
-        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        bot_name = getattr(gate_cfg, "bot_name", None)
+        if bot_name is None:
+            user = getattr(self._client, "user", None)
+            bot_name = next(
+                (
+                    value
+                    for attribute in ("display_name", "username", "name")
+                    if (value := str(getattr(user, attribute, "") or "").strip())
+                ),
+                "assistant",
+            )
+        self._response_gate_bot_name = bot_name
         self._response_gate = GateRuntime.build(
-            gate_cfg, self._response_gate_credential, bot_name=bot_name, logger=logger,
+            gate_cfg, self._response_gate_credential,
+            bot_name=self._response_gate_bot_name, logger=logger,
         )
         if self._response_gate.client is None:
             # Enforce mode with no credential denies every ambient message; say so once,
@@ -1810,7 +1825,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self._response_gate_echoed_ids[message_id] = None
         decision = await gate.evaluate(
             message, channel=message.channel,
-            bot_name=str(getattr(getattr(self._client, "user", None), "display_name", "") or ""),
+            bot_name=self._response_gate_bot_name,
             bot_id=getattr(getattr(self._client, "user", None), "id", None),
         )
         if is_echo:
