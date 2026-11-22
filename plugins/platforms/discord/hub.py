@@ -485,7 +485,8 @@ class DiscordHubServer:
 
     async def _attach_adapter(self, generation_id: str, config_data: Dict[str, Any], profile: str,
                               profile_routes: Optional[list] = None,
-                              gate_credential: Optional[str] = None) -> None:
+                              gate_credential: Optional[str] = None,
+                              reaction_gate_reload: Optional[Dict[str, Any]] = None) -> None:
         from gateway.config import PlatformConfig
         from gateway.profile_routing import parse_profile_routes
         from plugins.platforms.discord.adapter import DiscordAdapter
@@ -517,6 +518,11 @@ class DiscordHubServer:
             # adapter never falls back to this hub process's (unscoped, possibly
             # default-profile) env. "" pins "no key" — fail closed, not env fallback.
             adapter._hub_gate_credential = str(gate_credential or "")
+            if reaction_gate_reload is not None:
+                # The owning gateway captured these under its profile scope. Once
+                # supplied, never substitute the hub process's default-profile home.
+                adapter._hub_reaction_gate_reload_scope = dict(reaction_gate_reload)
+                adapter._hub_reaction_gate_reload_scope["profile_name"] = profile_name
             adapter.gateway_runner = _HubProfileResolver(self, key)
             adapter.handle_message = self._make_inbound_handler(adapter, key)
             adapter._fatal_error_handler = (
@@ -648,7 +654,8 @@ class DiscordHubServer:
                             await self._attach_adapter(
                                 generation, config_data, str(params.get("profile") or "default"),
                                 params.get("profile_routes") or [],
-                                params.get("gate_credential"))
+                                params.get("gate_credential"),
+                                reaction_gate_reload=params.get("reaction_gate_reload"))
                             router = self._router_for(token_key)
                         else:
                             raise ValueError(f"unknown hub platform: {platform_name}")

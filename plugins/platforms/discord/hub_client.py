@@ -393,21 +393,32 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
             await self._open_socket()
             self._read_task = asyncio.create_task(self._read_loop())
             from hermes_cli.config_effective import load_user_config_effective
+            from hermes_cli import managed_scope
+            from hermes_constants import get_hermes_home
             from gateway.platforms._shared import platform_gate_env
             from gateway.overlap_restart import overlap_attachment
             profile_routes = (load_user_config_effective().get("gateway") or {}).get("profile_routes") or []
-            # connect() runs inside the owning profile's runtime scope, so this is
-            # the one place THIS profile's judge key can be resolved. The hub-side
-            # adapter has no profile scope (and must not trust the hub process's
-            # env), so the resolved value travels in the attach payload — over the
-            # same-user socket only, never logged or persisted.
+            # connect() runs inside the owning profile's runtime scope. The hub-side
+            # adapter has no profile scope, so its judge credential and everything its
+            # config watcher needs travel in this attach payload over the same-user
+            # socket; none of it is logged or persisted.
             gate_credential = platform_gate_env("LITELLM_API_KEY") or None
+            managed_dir = managed_scope.get_managed_dir()
+            reaction_gate_reload = {
+                "config_path": str(get_hermes_home() / "config.yaml"),
+                "managed_dir": str(managed_dir) if managed_dir is not None else None,
+                "managed_env": (
+                    managed_scope.managed_config_env_snapshot(managed_dir)
+                    if managed_dir is not None else None
+                ),
+            }
             result = await self._call("attach", {
                 "generation_id": self._generation_id,
                 "profile": self._owner_profile or "default",
                 "profile_routes": profile_routes,
                 "config": self.config.to_dict(),
                 "gate_credential": gate_credential,
+                "reaction_gate_reload": reaction_gate_reload,
                 **overlap_attachment(),
             })
             self.hub_pid = int(result["pid"])

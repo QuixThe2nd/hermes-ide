@@ -1,6 +1,7 @@
 """Focused ownership tests for the multi-generation Discord hub."""
 
 import asyncio
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -439,7 +440,8 @@ def test_unix_hub_supports_two_clients_rpc_and_detach(short_af_unix_path):
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -500,7 +502,8 @@ def test_overlap_admission_opens_only_after_successor_attaches(short_af_unix_pat
             async def disconnect(self):
                 pass
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
 
         server._attach_adapter = fake_attach
@@ -780,7 +783,8 @@ def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path, sh
             async def disconnect(self):
                 pass
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
 
         server._attach_adapter = fake_attach
@@ -1509,7 +1513,8 @@ def test_picker_callbacks_round_trip_to_the_attached_gateway(short_af_unix_path)
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -1597,7 +1602,8 @@ def test_sync_queries_use_the_hub(short_af_unix_path):
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -1819,3 +1825,119 @@ def test_default_socket_path_binds_when_hermes_root_exceeds_sun_path(tmp_path, m
             await server.stop()
 
     run(scenario())
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_attach_reaction_gate_reload_uses_owning_profile_after_client_scope_exits(
+    tmp_path, monkeypatch, short_af_unix_path,
+):
+    """The hub, not the gateway client, owns the config poll after attach."""
+    discord = pytest.importorskip("discord", reason="real Discord reaction-gate wiring")
+    del discord
+
+    from agent import secret_scope as ss
+    from gateway.config import ReactionGateConfig
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli import managed_scope
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    default_home = tmp_path / "default"
+    winnie_home = default_home / "profiles" / "Winnie"
+    managed_dir = tmp_path / "managed"
+    default_home.mkdir()
+    winnie_home.mkdir(parents=True)
+    managed_dir.mkdir()
+    (default_home / "config.yaml").write_text("discord:\n  enabled: true\n", encoding="utf-8")
+    winnie_config = winnie_home / "config.yaml"
+    winnie_config.write_text(
+        "discord:\n"
+        "  reaction_gate:\n"
+        "    enabled: true\n"
+        "    channels: ['winnie-channel']\n"
+        "    emojis: ['👍']\n",
+        encoding="utf-8",
+    )
+    (managed_dir / "config.yaml").write_text(
+        "discord:\n"
+        "  reaction_gate:\n"
+        "    criteria:\n"
+        "      👍: '${WINNIE_GATE_CRITERION}'\n",
+        encoding="utf-8",
+    )
+    managed_scope.invalidate_managed_cache()
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    monkeypatch.setenv("WINNIE_GATE_CRITERION", "default profile criterion")
+    monkeypatch.setattr(
+        "plugins.platforms.discord.reaction_gate_reload.REACTION_GATE_RELOAD_POLL_SECONDS", 0.02,
+    )
+
+    server = DiscordHubServer(short_af_unix_path)
+    created = []
+
+    class ReloadOnlyDiscordAdapter(DiscordAdapter):
+        async def connect(self):
+            self._reaction_gate_init()
+            original_reload = self._reaction_gate_reload
+
+            def record_reload(block):
+                result = original_reload(block)
+                self.reload_attempted.set()
+                return result
+
+            self.reload_attempted = asyncio.Event()
+            self._reaction_gate_reload = record_reload
+            self._reaction_gate_start_reload_watcher()
+            created.append(self)
+            return True
+
+        async def disconnect(self):
+            task = self._reaction_gate_reload_task
+            self._reaction_gate_reload_task = None
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            return True
+
+    monkeypatch.setattr("plugins.platforms.discord.adapter.DiscordAdapter", ReloadOnlyDiscordAdapter)
+    client = DiscordHubClientAdapter(PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        reaction_gate=ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["winnie-channel"], "emojis": ["👍"],
+        }),
+    ))
+    client._socket_path = short_af_unix_path
+    client._owner_profile = "Winnie"
+    ss.set_multiplex_active(True)
+    try:
+        await server.start()
+        with _profile_runtime_scope(
+            winnie_home,
+            prepared_secret_scope={"WINNIE_GATE_CRITERION": "Winnie managed criterion"},
+        ):
+            await client.connect()
+        assert len(created) == 1
+        adapter = created[0]
+        await asyncio.sleep(0)  # run the scheduled boot reconciliation
+
+        runtime = adapter._reaction_gate
+        assert runtime is not None and runtime.config.active
+        assert runtime.config.channels == ("winnie-channel",)
+        assert runtime.config.criteria == {"👍": "Winnie managed criterion"}
+        assert adapter._reaction_gate_config_path == winnie_config
+        assert adapter._reaction_gate_profile_name == "Winnie"
+        adapter.reload_attempted.clear()
+
+        previous_mtime = winnie_config.stat().st_mtime_ns
+        winnie_config.write_text("discord:\n  enabled: true\n", encoding="utf-8")
+        os.utime(winnie_config, ns=(previous_mtime + 2_000_000_000,) * 2)
+        await asyncio.wait_for(adapter.reload_attempted.wait(), timeout=3.0)
+        assert adapter._reaction_gate is None
+    finally:
+        await client.disconnect()
+        await server.stop()
+        ss.set_multiplex_active(False)
+        managed_scope.invalidate_managed_cache()

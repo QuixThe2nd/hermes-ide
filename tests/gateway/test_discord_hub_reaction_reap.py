@@ -48,7 +48,8 @@ def test_detach_reaps_processing_reaction_via_hub_rpc(tmp_path, short_af_unix_pa
         raw = FakeRawMessage()
         server._raw_messages[f"{token_key}:msg-1"] = raw
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[token_key] = connection
 
         server._attach_adapter = fake_attach
@@ -98,7 +99,8 @@ def test_processing_reaction_tracking_is_bounded_and_dropped_on_detach(tmp_path,
         connection = FakeDiscordConnection()
         token_key = _token_key("fake-token")
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[token_key] = connection
 
         server._attach_adapter = fake_attach
@@ -159,7 +161,8 @@ def test_detach_reap_only_removes_processing_emoji_not_completion(tmp_path, shor
         raw = FakeRawMessage()
         server._raw_messages[f"{token_key}:msg-1"] = raw
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[token_key] = connection
 
         server._attach_adapter = fake_attach
@@ -215,7 +218,8 @@ def test_successful_remove_reaction_clears_tracking_without_detach_reap(tmp_path
         raw = FakeRawMessage()
         server._raw_messages[f"{token_key}:msg-1"] = raw
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+        async def fake_attach(generation_id, config_data, profile, profile_routes,
+                              gate_credential=None, reaction_gate_reload=None):
             server._adapters[token_key] = connection
 
         server._attach_adapter = fake_attach
