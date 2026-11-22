@@ -622,7 +622,7 @@ def _ownership_refusal_warning(scope: InstallScope, current_home: Path) -> str |
     installed_body: str | None = None
     ownership_warning: str | None = None
     try:
-        installed_body = service_path.read_text(encoding="utf-8")
+        installed_body = service_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError as exc:
         if service_path.is_symlink():
             ownership_warning = _ambiguous_ownership_warning(service_path, exc)

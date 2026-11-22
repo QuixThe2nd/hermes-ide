@@ -661,9 +661,16 @@ def test_disabled_reconcile_refuses_foreign_owned_timer(
     assert timer_unit_path(user_scope).read_bytes() == timer_before
 
 
-def test_disabled_reconcile_disables_own_timer(user_scope, cfg, monkeypatch, tmp_path):
+@pytest.mark.parametrize("service_encoding", ["utf-8", "utf-8-sig"])
+def test_disabled_reconcile_disables_own_timer(
+    user_scope, cfg, monkeypatch, tmp_path, service_encoding
+):
     hermes_home = tmp_path / "disposable"
     _install_units(user_scope, hermes_home)
+    service_unit_path(user_scope).write_text(
+        f'[Service]\nEnvironment="HERMES_HOME={hermes_home}"\n',
+        encoding=service_encoding,
+    )
     calls, runner = _prepare_reconcile(monkeypatch, hermes_home)
 
     result = reconcile_units(cfg, enabled=False, scope=user_scope, run_systemctl=runner)
