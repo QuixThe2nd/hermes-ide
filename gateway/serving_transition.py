@@ -72,26 +72,6 @@ def _resolve_db(store: Any, session_id: Optional[str]) -> Any:
     return store if hasattr(store, "get_meta") and hasattr(store, "set_meta") else None
 
 
-def last_served_identity(store: Any, session_id: Optional[str]) -> Optional[dict]:
-    """The persisted ``{"pid", "start_time"}`` record, or ``None``.
-
-    ``None`` for absent, corrupt, or unreachable records: the absence of a
-    provable predecessor is "no transition", never an error.
-    """
-    if not _valid_session_id(session_id):
-        return None
-    db = _resolve_db(store, session_id)
-    if db is None:
-        return None
-    try:
-        raw = db.get_meta(_meta_key(session_id))
-        record = json.loads(raw) if isinstance(raw, str) else None
-    except Exception:
-        logger.debug("serving transition: last-served record unreadable", exc_info=True)
-        return None
-    return record if isinstance(record, dict) else None
-
-
 def record_served_identity(
     store: Any, session_id: Optional[str], identity: Mapping[str, Any]
 ) -> bool:
@@ -136,11 +116,18 @@ def session_turn_notes(
     """
     from gateway.serving_identity import serving_identity_snapshot, serving_turn_notes
 
-    try:
-        previous = last_served_identity(store, session_id)
-    except Exception:
-        logger.debug("serving transition: last-served read failed", exc_info=True)
-        previous = None
+    # The persisted last-served record, or ``None`` for absent, corrupt, or
+    # unreachable records: the absence of a provable predecessor is "no
+    # transition", never an error.
+    previous: Optional[dict] = None
+    db = _resolve_db(store, session_id) if _valid_session_id(session_id) else None
+    if db is not None:
+        try:
+            raw = db.get_meta(_meta_key(session_id))
+            record = json.loads(raw) if isinstance(raw, str) else None
+            previous = record if isinstance(record, dict) else None
+        except Exception:
+            logger.debug("serving transition: last-served record unreadable", exc_info=True)
     identity_note, transition_note = serving_turn_notes(runner, previous)
     try:
         record_served_identity(store, session_id, serving_identity_snapshot(runner))
