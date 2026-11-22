@@ -294,3 +294,103 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Turn receipt: one HTML transcript + one receipt line before bubbles go.
+# ---------------------------------------------------------------------------
+
+_RECEIPT_MARK = "Turn transcript"
+
+
+def _receipt_pages():
+    from hermes_constants import get_hermes_home
+
+    return sorted((get_hermes_home() / "turn_receipts").glob("*.html"))
+
+
+async def _run_turn_and_fire_cleanup(monkeypatch, adapter, agent_cls, *, cleanup_on=True):
+    """Run one turn, fire its post-delivery cleanup, and return the ordered event log."""
+    runner = _make_runner(adapter)
+    _install_fakes(monkeypatch, agent_cls, cleanup_on=cleanup_on)
+    events = []
+    real_send, real_delete = adapter.send, adapter.delete_message
+
+    async def _send(chat_id, content, **kwargs):
+        events.append(("send", content))
+        return await real_send(chat_id, content, **kwargs)
+
+    async def _delete(chat_id, message_id):
+        events.append(("delete", str(message_id)))
+        return await real_delete(chat_id, message_id)
+
+    adapter.send, adapter.delete_message = _send, _delete
+    source = SessionSource(platform=Platform.DISCORD, chat_id="-1001")
+    session_key = "agent:main:discord:group:-1001"
+    await runner._run_agent(
+        message="hello there", context_prompt="", history=[], source=source,
+        session_id="sess-1", session_key=session_key,
+    )
+    cb = adapter.pop_post_delivery_callback(session_key)
+    if cb is not None:
+        await _fire_post_delivery_cb(cb)
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if any(kind == "delete" for kind, _ in events):
+                break
+    return events
+
+
+@pytest.mark.asyncio
+async def test_successful_turn_writes_one_receipt_before_deleting_bubbles(monkeypatch):
+    adapter = CleanupCaptureAdapter()
+    events = await _run_turn_and_fire_cleanup(monkeypatch, adapter, ProgressAgent)
+
+    receipts = [i for i, (kind, text) in enumerate(events) if kind == "send" and _RECEIPT_MARK in text]
+    deletes = [i for i, (kind, _) in enumerate(events) if kind == "delete"]
+    assert len(receipts) == 1
+    assert deletes and receipts[0] < min(deletes)  # receipt lands while bubbles still exist
+
+    pages = _receipt_pages()
+    assert len(pages) == 1
+    assert pages[0].name in events[receipts[0]][1]  # receipt names the transcript
+    html = pages[0].read_text(encoding="utf-8")
+    assert html.index("hello there") < html.index("pwd") < html.index(">done<")
+
+
+@pytest.mark.asyncio
+async def test_document_adapter_ships_the_page_as_a_file(monkeypatch):
+    class DocumentAdapter(CleanupCaptureAdapter):
+        def __init__(self):
+            super().__init__()
+            self.documents = []
+
+        async def send_document(self, chat_id, file_path, caption=None, file_name=None, **kwargs):
+            self.documents.append({"file_path": file_path, "file_name": file_name})
+            return SendResult(success=True, message_id=self._mint_id())
+
+    adapter = DocumentAdapter()
+    await _run_turn_and_fire_cleanup(monkeypatch, adapter, ProgressAgent)
+
+    pages = _receipt_pages()
+    assert [d["file_path"] for d in adapter.documents] == [str(pages[0])]
+    assert adapter.documents[0]["file_name"] == pages[0].name
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_keeps_bubbles_and_writes_no_page(monkeypatch):
+    adapter = CleanupCaptureAdapter()
+    events = await _run_turn_and_fire_cleanup(monkeypatch, adapter, FailingAgent)
+
+    assert not any(kind == "delete" for kind, _ in events)
+    assert _receipt_pages() == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_off_writes_no_page_and_sends_no_receipt(monkeypatch):
+    adapter = CleanupCaptureAdapter()
+    events = await _run_turn_and_fire_cleanup(monkeypatch, adapter, ProgressAgent, cleanup_on=False)
+
+    assert not any(_RECEIPT_MARK in text for kind, text in events if kind == "send")
+    assert not any(kind == "delete" for kind, _ in events)
+    assert _receipt_pages() == []
