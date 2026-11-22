@@ -111,3 +111,39 @@ func TestBlankPartsAreOmittedAndPageStillValid(t *testing.T) {
 		t.Fatal("page must still be a complete document")
 	}
 }
+
+func TestEachMarkupCharacterEscapesToItsEntity(t *testing.T) {
+	entities := map[string]string{"&": "&amp;", "<": "&lt;", ">": "&gt;", `"`: "&quot;", "'": "&#39;"}
+	for raw, want := range entities {
+		if got := clean(raw); got != want {
+			t.Fatalf("clean(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestControlCharactersAreStrippedExceptNewlineAndTab(t *testing.T) {
+	var controls []rune
+	for r := rune(0); r <= 0x1f; r++ {
+		controls = append(controls, r)
+	}
+	for r := rune(0x7f); r <= 0x9f; r++ {
+		controls = append(controls, r)
+	}
+	for _, r := range controls {
+		got := clean("a" + string(r) + "b")
+		want := "ab"
+		if r == '\n' || r == '\t' {
+			want = "a" + string(r) + "b"
+		}
+		if got != want {
+			t.Fatalf("clean with control %U = %q, want %q", r, got, want)
+		}
+	}
+}
+
+func TestMultilineRowKeepsItsLineBreaks(t *testing.T) {
+	page := Render(Input{Rows: []string{"first line\nsecond line"}})
+	if !strings.Contains(page, "first line\nsecond line") {
+		t.Fatal("row line breaks must survive; the CSS preserves them with pre-wrap")
+	}
+}

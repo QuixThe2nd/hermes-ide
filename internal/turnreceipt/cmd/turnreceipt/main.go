@@ -16,13 +16,17 @@ import (
 )
 
 func main() {
+	if err := run(os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "turnreceipt: %v\n", err)
+		os.Exit(2)
+	}
+}
+
+func run(stdin io.Reader, stdout io.Writer) error {
 	var in turnreceipt.Input
-	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
-		fmt.Fprintf(os.Stderr, "turnreceipt: unreadable request: %v\n", err)
-		os.Exit(2)
+	if err := json.NewDecoder(stdin).Decode(&in); err != nil {
+		return fmt.Errorf("unreadable request: %w", err)
 	}
-	if _, err := io.WriteString(os.Stdout, turnreceipt.Render(in)); err != nil {
-		fmt.Fprintf(os.Stderr, "turnreceipt: write failed: %v\n", err)
-		os.Exit(2)
-	}
+	_, err := io.WriteString(stdout, turnreceipt.Render(in))
+	return err
 }
