@@ -91,6 +91,14 @@ func TestEmptyRowsRenderNoProgressBubble(t *testing.T) {
 	}
 }
 
+func TestOneProgressBubblePerRow(t *testing.T) {
+	rows := []string{"one", "two", "three", "four", "five"}
+	page := Render(Input{Rows: rows})
+	if got := strings.Count(page, `bubble progress"`); got != len(rows) {
+		t.Fatalf("got %d progress bubbles for %d rows", got, len(rows))
+	}
+}
+
 func TestPageIsStandaloneWithNoExternalReferences(t *testing.T) {
 	page := Render(Input{UserMessage: "u", Rows: []string{"r1"}, FinalReply: "f"})
 	for _, ref := range []string{"<script", "src=", "href=", "http://", "https://", "url(", "@import"} {
