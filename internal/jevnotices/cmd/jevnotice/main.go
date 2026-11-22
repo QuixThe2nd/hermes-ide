@@ -1,19 +1,18 @@
-// Command jevnotice is the executable form of the canonical Go formatter:
-// it reads one notice record as JSON on stdin (the same record shape as
-// testdata/notice_cases.json — purpose, subject, author, attempt, attempts,
-// label, confidence, allowed, scores, emoji, abstain, error) and writes the
-// rendered notice line to stdout — or nothing when the record's "notices"
-// field (the owning profile's display.jev_notices) turns notices off.
+// Command jevnotice is the shared executable boundary for Jev notices and
+// retrospective goal-intent classification. With no "op", it reads one notice
+// record as JSON on stdin and writes the rendered line (or nothing when the
+// owning profile disables notices). With op=classify_retrospective, it reads
+// one completed exchange and its scoped credential on stdin and writes a
+// structured RetrospectiveResult; classification and formatting stay in Go.
 //
-// This is the executable the production gateway runs for every Jev notice:
-// gateway/jev_notice.py resolves or builds this binary (content-hash-keyed
-// cache under $HERMES_HOME/cache/jevnotices) and pipes each record through
-// it — there is no Python formatter. The contract test in
-// tests/gateway/test_jev_notice_contract.py drives the same bridge over the
-// shared table in testdata/notice_cases.json.
+// The production gateway resolves this binary from a content-hash-keyed cache
+// under $HERMES_HOME/cache/jevnotices and builds it from the repo checkout when
+// missing. tests/gateway/test_jev_notice_contract.py drives the formatting
+// contract over testdata/notice_cases.json.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,8 +31,28 @@ func main() {
 // nothing for a silenced record), and the process exit code returned
 // (2 = unreadable record).
 func run(stdin io.Reader, stdout, stderr io.Writer) int {
+	data, err := io.ReadAll(io.LimitReader(stdin, (8<<20)+1))
+	if err != nil || len(data) > 8<<20 {
+		fmt.Fprintln(stderr, "jevnotice: unreadable record")
+		return 2
+	}
+	var envelope struct {
+		Op string `json:"op"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		fmt.Fprintf(stderr, "jevnotice: unreadable record: %v\n", err)
+		return 2
+	}
+	switch envelope.Op {
+	case "":
+	case "classify_retrospective":
+		return runRetrospective(data, stdout, stderr)
+	default:
+		fmt.Fprintln(stderr, "jevnotice: unsupported operation")
+		return 2
+	}
 	var record map[string]any
-	if err := json.NewDecoder(stdin).Decode(&record); err != nil {
+	if err := json.Unmarshal(data, &record); err != nil {
 		fmt.Fprintf(stderr, "jevnotice: unreadable record: %v\n", err)
 		return 2
 	}
@@ -41,6 +60,22 @@ func run(stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0 // the owning profile turned notices off: no line, not an error
 	}
 	fmt.Fprintln(stdout, jevnotices.Format(noticeFromRecord(record)))
+	return 0
+}
+
+func runRetrospective(data []byte, stdout, stderr io.Writer) int {
+	var request jevnotices.RetrospectiveRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		fmt.Fprintf(stderr, "jevnotice: unreadable retrospective request: %v\n", err)
+		return 2
+	}
+	result := jevnotices.ClassifyRetrospective(
+		context.Background(), jevnotices.DefaultRetrospectiveClient(), jevnotices.JEVDecisionsURL, request,
+	)
+	if err := json.NewEncoder(stdout).Encode(result); err != nil {
+		fmt.Fprintln(stderr, "jevnotice: could not encode retrospective result")
+		return 2
+	}
 	return 0
 }
 
