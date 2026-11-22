@@ -886,6 +886,8 @@ def _describe_delegate_agent_phrase(tool_name: str, args: dict) -> str | None:
         if reason:
             return f"Delegated to Claude agent: {reason}"
         return _describe_delegate_child_phrase("Delegating to a Claude agent")(tool_name, args)
+    if reason and _describe_action_key(args) is None:
+        return f"Delegated to subagent: {reason}"
     return _describe_delegate_phrase(tool_name, args)
 
 
