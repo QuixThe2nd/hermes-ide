@@ -33,9 +33,9 @@ CONTEXT_INJECTION_KIND_LABELS = {
     "compaction": "🗜️ Injecting conversation summary",
     "steer": "🧭 Injecting steering update",
     "subdirectory": "🗂️ Injecting directory context",
-    "spillover": "📦 Injecting persisted output",
+    "spillover": "📦 Large tool result saved to disk",
 }
-
+CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL = "📄 Large tool result saved to disk (continued)"
 CONTEXT_INJECTION_GENERIC_LABEL = "🧠 Injecting context"
 
 # Memory is special-cased: it keeps its dedicated heading (with an optional

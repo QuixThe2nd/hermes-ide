@@ -34,6 +34,12 @@ func TestRunDecodesEveryOpShape(t *testing.T) {
 			`["📚 Injecting skill (research)"]`,
 		},
 		{
+			"continuation",
+			`{"op":"continuation","kinds":["spillover"],"meta":{"spillover":"result.txt"},` +
+				`"default":"📦 Large tool result saved to disk (result.txt)"}`,
+			`"📄 Large tool result saved to disk (continued)"`,
+		},
+		{
 			"classify",
 			`{"op":"classify","text":"[Continuing toward your standing goal]\nGoal: x"}`,
 			`{"kind":"goal","detail":""}`,

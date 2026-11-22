@@ -5684,7 +5684,7 @@ def _format_context_injection_progress(
 
     from gateway.context_injection_labels import (
         context_injection_heading_lines,
-        triggering_message_id_kind,
+        triggering_message_id_kind, CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL,
     )
 
     # Kind-tagged heading lines: one per classified segment, in payload
@@ -5730,7 +5730,7 @@ def _format_context_injection_progress(
     visible = visible.replace("@", "@\u200b")
 
     header = heading
-    continuation = heading
+    continuation = CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL if _heading_kinds == ["spillover"] else heading
     measure = message_len_fn if callable(message_len_fn) else len
 
     try:
