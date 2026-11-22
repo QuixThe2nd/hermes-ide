@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "name": "full_turn_orders_user_rows_reply",
+      "input": {
+        "user_message": "list the files",
+        "rows": ["💻 terminal: ls", "🔍 search_files: *.py"],
+        "final_reply": "Found 2 files."
+      },
+      "in_order": ["list the files", "💻 terminal: ls", "🔍 search_files: *.py", "Found 2 files."],
+      "absent": ["<script", "http://", "https://", "<link", "@import", "url("]
+    },
+    {
+      "name": "markup_in_every_field_is_escaped",
+      "input": {
+        "user_message": "<img src=x onerror=alert(1)>",
+        "rows": ["a & \"b\" 'c' <d>"],
+        "final_reply": "</div><script>alert(2)</script>"
+      },
+      "in_order": ["&lt;img src=x onerror=alert(1)&gt;", "a &amp; &quot;b&quot; &#39;c&#39; &lt;d&gt;", "&lt;/div&gt;&lt;script&gt;"],
+      "absent": ["<img", "<script", "</div><script", "<d>"]
+    },
+    {
+      "name": "control_bytes_are_stripped_but_newlines_kept",
+      "input": {
+        "user_message": "a\u0000b\u001b[31mc\rd\te\nf",
+        "rows": [],
+        "final_reply": ""
+      },
+      "in_order": ["ab[31mcd\te\nf"],
+      "absent": ["\u0000", "\u001b", "\r"]
+    },
+    {
+      "name": "blank_parts_are_omitted",
+      "input": {
+        "user_message": "   ",
+        "rows": ["", "  "],
+        "final_reply": ""
+      },
+      "in_order": ["Turn transcript"],
+      "absent": ["bubble user", "bubble progress", "bubble reply"]
+    }
+  ]
+}
