@@ -1,13 +1,15 @@
 """Discord response-gate bot identity must follow config and the connected user."""
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.config import Platform, PlatformConfig, ResponseGateConfig, load_gateway_config
 from plugins.platforms.discord.adapter import DiscordAdapter
 import plugins.platforms.discord.adapter as discord_platform
 from plugins.platforms.discord.response_gate import (
@@ -366,3 +368,65 @@ async def test_real_connect_resolves_ready_identity_and_refreshes_reconnect(
                 task.cancel()
         await asyncio.gather(*connect_tasks, return_exceptions=True)
         await adapter.disconnect()
+
+
+_IDENTITY_CONTRACT = json.loads(
+    (
+        Path(__file__).resolve().parents[3]
+        / "internal"
+        / "responsegateidentity"
+        / "testdata"
+        / "identity_cases.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+def _contract_user(case):
+    user = case["user"]
+    return SimpleNamespace(
+        display_name=user["display_name"],
+        username=user["username"],
+        name=user["name"],
+    )
+
+
+@pytest.mark.parametrize(
+    "case", _IDENTITY_CONTRACT["automatic"], ids=lambda case: case["name"]
+)
+def test_automatic_identity_matches_go_shared_contract(case):
+    adapter = _adapter(_contract_user(case))
+
+    assert adapter._response_gate_bot_name == case["want"]
+    questions = adapter._response_gate.client._questions
+    examples = questions[ADDRESSES_BOT_KEY]["criteria"]
+    assert examples["true"]["examples"][0] == f"hey {case['want']} whats up"
+    assert examples["false"]["examples"][0] == (
+        f"i saw {case['want']} in the other channel"
+    )
+
+
+@pytest.mark.parametrize(
+    "case", _IDENTITY_CONTRACT["configured"], ids=lambda case: case["name"]
+)
+def test_configured_identity_matches_go_shared_contract(case):
+    adapter = _adapter(_contract_user(case), bot_name=case["configured"])
+
+    assert adapter._response_gate_bot_name == case["want"]
+    adapter._client.user.display_name = "Changed After Connect"
+    adapter._response_gate_init()
+    assert adapter._response_gate_bot_name == case["want"]
+
+
+@pytest.mark.parametrize("invalid", _IDENTITY_CONTRACT["invalid_overrides"])
+def test_blank_identity_override_matches_go_shared_contract(invalid):
+    with pytest.raises(ValueError, match="response_gate.bot_name"):
+        ResponseGateConfig.from_dict({"bot_name": invalid})
+
+
+def test_address_examples_match_go_shared_contract():
+    expected = _IDENTITY_CONTRACT["examples"]
+    questions = build_gate_questions(expected["name"])
+
+    criteria = questions[ADDRESSES_BOT_KEY]["criteria"]
+    assert criteria["true"]["examples"] == expected["true"]
+    assert criteria["false"]["examples"] == expected["false"]
