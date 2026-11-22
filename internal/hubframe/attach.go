@@ -49,3 +49,29 @@ func DecodeAttachParams(frame []byte) (AttachParams, error) {
 	}
 	return params, nil
 }
+
+// ShouldAdoptReactionGateScope reports whether a cached Discord adapter may
+// replace its reaction-gate watcher with an explicitly supplied owner scope.
+// Legacy attaches without a scope never rebind. A named profile may take over
+// a default-owned adapter (including a legacy adapter with no captured name),
+// while default and sibling-profile reconnects cannot steal a named owner.
+func ShouldAdoptReactionGateScope(
+	currentProfile string,
+	incomingProfile string,
+	incomingScope *ReactionGateReloadScope,
+) bool {
+	if incomingScope == nil {
+		return false
+	}
+	current := normalizeReactionGateProfile(currentProfile)
+	incoming := normalizeReactionGateProfile(incomingProfile)
+	return current == incoming || current == "default" && incoming != "default"
+}
+
+func normalizeReactionGateProfile(profile string) string {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return "default"
+	}
+	return profile
+}

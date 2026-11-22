@@ -1828,10 +1828,11 @@ def test_default_socket_path_binds_when_hermes_root_exceeds_sun_path(tmp_path, m
 
 @pytest.mark.platforms("posix")
 @pytest.mark.asyncio
-async def test_attach_reaction_gate_reload_uses_owning_profile_after_client_scope_exits(
-    tmp_path, monkeypatch, short_af_unix_path,
+@pytest.mark.parametrize("attach_order", [("default", "Winnie"), ("Winnie", "default")])
+async def test_cached_attach_adopts_named_reaction_gate_scope_in_either_order(
+    tmp_path, monkeypatch, short_af_unix_path, attach_order,
 ):
-    """The hub, not the gateway client, owns the config poll after attach."""
+    """A cached shared-token transport must finish with the named profile's watcher."""
     discord = pytest.importorskip("discord", reason="real Discord reaction-gate wiring")
     del discord
 
@@ -1868,6 +1869,7 @@ async def test_attach_reaction_gate_reload_uses_owning_profile_after_client_scop
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
     monkeypatch.setenv("WINNIE_GATE_CRITERION", "default profile criterion")
+    monkeypatch.setenv("LITELLM_API_KEY", "default judge key")
     monkeypatch.setattr(
         "plugins.platforms.discord.reaction_gate_reload.REACTION_GATE_RELOAD_POLL_SECONDS", 0.02,
     )
@@ -1877,6 +1879,7 @@ async def test_attach_reaction_gate_reload_uses_owning_profile_after_client_scop
 
     class ReloadOnlyDiscordAdapter(DiscordAdapter):
         async def connect(self):
+            self._capture_response_gate_credential()
             self._reaction_gate_init()
             original_reload = self._reaction_gate_reload
 
@@ -1901,31 +1904,52 @@ async def test_attach_reaction_gate_reload_uses_owning_profile_after_client_scop
             return True
 
     monkeypatch.setattr("plugins.platforms.discord.adapter.DiscordAdapter", ReloadOnlyDiscordAdapter)
-    client = DiscordHubClientAdapter(PlatformConfig(
-        enabled=True,
-        token="fake-token",
-        reaction_gate=ReactionGateConfig.from_dict({
-            "enabled": True, "channels": ["winnie-channel"], "emojis": ["👍"],
-        }),
-    ))
-    client._socket_path = short_af_unix_path
-    client._owner_profile = "Winnie"
     ss.set_multiplex_active(True)
-    try:
-        await server.start()
-        with _profile_runtime_scope(
-            winnie_home,
-            prepared_secret_scope={"WINNIE_GATE_CRITERION": "Winnie managed criterion"},
-        ):
-            await client.connect()
-        assert len(created) == 1
-        adapter = created[0]
+    clients = {}
+
+    async def attach(profile):
+        client = DiscordHubClientAdapter(PlatformConfig(
+            enabled=True,
+            token="fake-token",
+            reaction_gate=ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["winnie-channel"], "emojis": ["👍"],
+            }),
+        ))
+        client._socket_path = short_af_unix_path
+        client._owner_profile = profile
+        clients[profile] = client
+        if profile == "Winnie":
+            with _profile_runtime_scope(
+                winnie_home,
+                prepared_secret_scope={
+                    "LITELLM_API_KEY": "Winnie judge key",
+                    "WINNIE_GATE_CRITERION": "Winnie managed criterion",
+                },
+            ):
+                assert await client.connect()
+        else:
+            # The primary reconnect watcher runs without a profile scope; HERMES_HOME
+            # therefore captures the default root, exactly as in the hub-bounce incident.
+            assert await client.connect()
         await asyncio.sleep(0)  # run the scheduled boot reconciliation
 
+    try:
+        await server.start()
+        for profile in attach_order:
+            await attach(profile)
+            if profile == "default" and attach_order[0] == "default":
+                # Fail-before: the default file validly removes the gate, then the
+                # cached-adapter early return ignores Winnie's subsequent scope.
+                assert created[0]._reaction_gate is None
+
+        assert len(created) == 1  # token reuse still shares one Discord transport
+        adapter = created[0]
         runtime = adapter._reaction_gate
         assert runtime is not None and runtime.config.active
         assert runtime.config.channels == ("winnie-channel",)
         assert runtime.config.criteria == {"👍": "Winnie managed criterion"}
+        assert runtime.client is not None
+        assert runtime.client._credential == "Winnie judge key"
         assert adapter._reaction_gate_config_path == winnie_config
         assert adapter._reaction_gate_profile_name == "Winnie"
         adapter.reload_attempted.clear()
@@ -1936,7 +1960,8 @@ async def test_attach_reaction_gate_reload_uses_owning_profile_after_client_scop
         await asyncio.wait_for(adapter.reload_attempted.wait(), timeout=3.0)
         assert adapter._reaction_gate is None
     finally:
-        await client.disconnect()
+        for client in clients.values():
+            await client.disconnect()
         await server.stop()
         ss.set_multiplex_active(False)
         managed_scope.invalidate_managed_cache()
