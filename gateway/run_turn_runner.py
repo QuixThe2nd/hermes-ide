@@ -1786,13 +1786,11 @@ class TurnRunner(_TurnRunnerCore):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        # The serving-identity runtime note rides the same channel: during an overlap restart every
-        # externally visible pid (systemd MainPID, pid file, gateway_state.json) names the draining
-        # predecessor, so each turn must be able to trust which process is actually serving it.
-        # When the session's DURABLE last-served record names a different process, a transition
-        # note rides beside it: persisted conversation/task context carried over (not a new task),
-        # process-local state (terminals, background processes, kernels, caches, pids) did not and
-        # must be revalidated.
+        # The serving-identity runtime note rides the same channel — suppressed when the session's
+        # durable served-by record proves it was already seen, riding whenever the serving process
+        # or its wording changes. When that record names a different process, a transition note
+        # rides beside it: persisted context carried over (not a new task); process-local state
+        # (terminals, background processes, kernels, caches, pids) did not and must be revalidated.
         from gateway.serving_transition import session_turn_notes
         from gateway.context_injection_labels import join_turn_notes, tag_turn_note
 

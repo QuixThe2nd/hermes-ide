@@ -5,14 +5,14 @@ needs to know which process served the session's PREVIOUS turns. That
 knowledge must survive the process transition itself — in-memory state dies
 with the predecessor — so it lives in the session database's ``state_meta``
 KV store: one ``served_by:<session_id>`` key per session holding
-``{"pid": ..., "start_time": ...}``. The pid alone is not identity (PIDs get
-reused); the start fingerprint is part of the record for the same reason.
+``{"pid": ..., "start_time": ..., "note": ...}`` — the note is the exact
+per-turn note the session last saw, the proof that suppresses an
+unchanged repeat (durable for the same reason as the start fingerprint).
 
-Write discipline: the record is written only when it CHANGES (a process
-transition), never per turn — an ordinary same-process turn is one cheap
+Write discipline: the record is written only when it CHANGES (process or
+note wording), never per turn — an ordinary same-process turn is one cheap
 point read. Every failure path degrades to "no transition claimed": a note
-that cannot be proven is never guessed, and persistence trouble must never
-break a turn.
+that cannot be proven is never guessed, and persistence never breaks a turn.
 """
 
 from __future__ import annotations
@@ -34,14 +34,16 @@ def _valid_session_id(session_id: Any) -> bool:
     return isinstance(session_id, str) and bool(session_id.strip())
 
 
-def _record_write_needed(stored_raw: Any, pid: Any, start_time: Any) -> bool:
+def _record_write_needed(stored_raw: Any, pid: Any, start_time: Any,
+                         note: Optional[str] = None) -> bool:
     """Pure write-on-change predicate for the served-by record.
 
     ``False`` only when the stored record parses and already carries exactly
-    this pid + start fingerprint (an ordinary same-process turn). Corrupt or
-    absent records are writes — the durable predecessor must be learnable.
-    Shared contract with ``internal/servingidentity`` (Go twin); pinned by
-    the shared honesty table.
+    this pid + start fingerprint + note (an ordinary same-process turn whose
+    note wording did not change). Corrupt or absent records are writes — the
+    durable predecessor must be learnable. Shared contract with
+    ``internal/servingidentity`` (Go twin); pinned by the shared honesty
+    table.
     """
     try:
         stored = json.loads(stored_raw) if isinstance(stored_raw, str) else None
@@ -51,6 +53,7 @@ def _record_write_needed(stored_raw: Any, pid: Any, start_time: Any) -> bool:
         isinstance(stored, dict)
         and stored.get("pid") == pid
         and stored.get("start_time") == start_time
+        and stored.get("note") == note
     )
 
 
@@ -73,9 +76,9 @@ def _resolve_db(store: Any, session_id: Optional[str]) -> Any:
 
 
 def record_served_identity(
-    store: Any, session_id: Optional[str], identity: Mapping[str, Any]
-) -> bool:
-    """Persist *identity* when it differs from the stored record. Never raises.
+    store: Any, session_id: Optional[str], identity: Mapping[str, Any],
+    note: Optional[str] = None) -> bool:
+    """Persist *identity* and the *note* the session saw, on change only. Never raises.
 
     Returns True when a write happened. A missing/invalid session id or an
     unreachable store is a silent no-op — the transition note is advisory.
@@ -85,14 +88,12 @@ def record_served_identity(
     db = _resolve_db(store, session_id)
     if db is None:
         return False
-    record = {
-        "pid": identity.get("pid"),
-        "start_time": identity.get("start_time"),
-    }
+    record = {"pid": identity.get("pid"), "start_time": identity.get("start_time"),
+              "note": note}
     try:
         if not _record_write_needed(
             db.get_meta(_meta_key(session_id)),
-            record["pid"], record["start_time"],
+            record["pid"], record["start_time"], record["note"],
         ):
             return False
         db.set_meta(_meta_key(session_id), json.dumps(record))
@@ -104,21 +105,21 @@ def record_served_identity(
 
 def session_turn_notes(
     store: Any, session_id: Optional[str], runner: Any
-) -> Tuple[str, Optional[str]]:
-    """``(identity note, transition note | None)`` with the durable comparison inside.
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(identity note | None, transition note | None)`` with the durable
+    comparison inside.
 
-    Reads the session's last-served record, renders the note pair via
-    ``gateway.serving_identity.serving_turn_notes``, then records THIS
-    process as the session's last server (on change only). Read-before-write
-    ordering matters: the note must describe the state BEFORE this turn's
-    record lands. Persistence failures never break the turn — the identity
-    note still renders and no transition is claimed.
+    Reads the session's last-served record, renders the pair via
+    ``gateway.serving_identity.serving_turn_notes`` (a note the record
+    proves seen is suppressed), then records THIS process as the last
+    server (on change only). Read-before-write ordering matters: the note
+    must describe the state BEFORE this turn's record lands; persistence
+    failure never breaks the turn — unproven notes still render.
     """
     from gateway.serving_identity import serving_identity_snapshot, serving_turn_notes
 
-    # The persisted last-served record, or ``None`` for absent, corrupt, or
-    # unreachable records: the absence of a provable predecessor is "no
-    # transition", never an error.
+    # The persisted last-served record — ``None`` when absent, corrupt, or
+    # unreachable: no provable predecessor means "no transition", not an error.
     previous: Optional[dict] = None
     db = _resolve_db(store, session_id) if _valid_session_id(session_id) else None
     if db is not None:
@@ -129,8 +130,12 @@ def session_turn_notes(
         except Exception:
             logger.debug("serving transition: last-served record unreadable", exc_info=True)
     identity_note, transition_note = serving_turn_notes(runner, previous)
+    # The record remembers the note the conversation saw THIS turn: the one
+    # just emitted, or — on a suppressed repeat — the stored one it matched.
     try:
-        record_served_identity(store, session_id, serving_identity_snapshot(runner))
+        record_served_identity(
+            store, session_id, serving_identity_snapshot(runner),
+            identity_note or (previous or {}).get("note"))
     except Exception:
         logger.debug("serving transition: record step failed", exc_info=True)
     return identity_note, transition_note

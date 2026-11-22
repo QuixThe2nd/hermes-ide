@@ -1074,6 +1074,46 @@
         "via_service": false,
         "note": "Restart chained for the serving process: 'process' names pid 1531038, the process serving this conversation. The control socket is still owned by the draining predecessor (pid 709505); the chained restart runs on pid 1531038 once that handoff completes."
       }
+    },
+    {
+      "name": "record_unchanged_note_skip",
+      "op": "record",
+      "input": {
+        "session_id": "discord:42",
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678, \"note\": \"[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \\u2014 not any pid reported by systemctl, the pid file, or gateway status files \\u2014 is the process running this conversation.]\"}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        },
+        "note": "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \u2014 not any pid reported by systemctl, the pid file, or gateway status files \u2014 is the process running this conversation.]"
+      },
+      "expect": "skip"
+    },
+    {
+      "name": "record_note_change_write",
+      "op": "record",
+      "input": {
+        "session_id": "discord:42",
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678, \"note\": \"[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \\u2014 not any pid reported by systemctl, the pid file, or gateway status files \\u2014 is the process running this conversation.]\"}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        },
+        "note": "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. This process is draining for a queued restart.]"
+      },
+      "expect": "write"
+    },
+    {
+      "name": "turn_notes_unchanged_note_suppressed",
+      "op": "turn_notes",
+      "input": {
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678, \"note\": \"[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \\u2014 not any pid reported by systemctl, the pid file, or gateway status files \\u2014 is the process running this conversation.]\"}",
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect_lines": []
     }
   ]
 }

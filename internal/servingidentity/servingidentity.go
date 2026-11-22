@@ -55,16 +55,19 @@
 //     successor served the turns).
 //   - Process transitions (TransitionState/TransitionNote): the session's
 //     DURABLE served-by record (transitionrecord.go — "served_by:<session>"
-//     holding pid + start fingerprint, written on change only) proves which
-//     process served the previous turns. A provably different process
-//     (pid inequality, or equal pids with differing fingerprints — PIDs get
-//     reused) renders the transition note: it names both identities, states
-//     the transition is NOT a new task (persisted conversation/task context
-//     carried over and stays valid), and demands revalidation of
-//     process-local state (terminals, background processes, kernels,
-//     sockets, caches, tool handles, recorded pids). Same process, first
-//     turn, or unprovable fingerprints render nothing — silence is never a
-//     guess.
+//     holding pid + start fingerprint + the note the session last saw,
+//     written on change only) proves which process served the previous
+//     turns. A provably different process (pid inequality, or equal pids
+//     with differing fingerprints — PIDs get reused) renders the transition
+//     note: it names both identities, states the transition is NOT a new
+//     task (persisted conversation/task context carried over and stays
+//     valid), and demands revalidation of process-local state (terminals,
+//     background processes, kernels, sockets, caches, tool handles,
+//     recorded pids). Same process, first turn, or unprovable fingerprints
+//     render nothing — silence is never a guess. The record's note proof
+//     also gates the runtime note itself (TurnNotes): a byte-identical
+//     repeat of the note the session already saw is suppressed, so an
+//     ordinary same-process turn pays no note at all.
 //   - The restart-tool owner gate (OwnerAction/OwnerRefusal): a restart
 //     queued through the control socket must target the process serving THIS
 //     conversation. The socket's answerer must be that process, attest it
@@ -250,15 +253,19 @@ func SessionStamp(pidRaw, startRaw string) (Snapshot, bool) {
 }
 
 // TurnNotes composes the per-turn note pair from a runtime snapshot and the
-// session's DURABLE served-by record: the runtime identity note always, the
-// transition note only when the record proves a different process served
-// the previous turns. Parity twin of
-// gateway.serving_identity.serving_turn_notes composition with
-// gateway.serving_transition.session_turn_notes' read step; the record's
-// write step is ApplyServedBy.
+// session's DURABLE served-by record: the runtime identity note — SUPPRESSED
+// when the record's note proof says the session already saw this exact note
+// (an unchanged repeat is context noise; first turns, records without note
+// proof, and any wording change all ride) — and the transition note only
+// when the record proves a different process served the previous turns.
+// Parity twin of gateway.serving_identity.serving_turn_notes composition
+// with gateway.serving_transition.session_turn_notes' read step; the
+// record's write step is ApplyServedBy.
 func TurnNotes(s Snapshot, storedRecord string) []string {
-	var notes []string
-	if note := RuntimeNote(s); note != "" {
+	// Non-nil base: a fully-suppressed turn renders as [] on the wire
+	// (JSON), never null.
+	notes := make([]string, 0, 2)
+	if note := RuntimeNote(s); note != StoredNote(storedRecord) {
 		notes = append(notes, note)
 	}
 	if previous, ok := ParseRecord(storedRecord); ok {

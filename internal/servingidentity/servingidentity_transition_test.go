@@ -40,12 +40,13 @@ func (m *mapStore) set(key, value string) error {
 }
 
 // TestTurnNotesComposition pins the note pair the turn wiring ships: the
-// runtime identity note always rides; the transition note appears only when
-// the DURABLE record proves a different process served the previous turns.
+// runtime identity note rides unless the record's note proof says the
+// session already saw it; the transition note appears only when the DURABLE
+// record proves a different process served the previous turns.
 func TestTurnNotesComposition(t *testing.T) {
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
 	// First turn after handoff: record names the predecessor → both notes.
-	notes := TurnNotes(current, EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}))
+	notes := TurnNotes(current, EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}, ""))
 	if len(notes) != 2 {
 		t.Fatalf("transition turn: got %d notes, want 2 (%q)", len(notes), notes)
 	}
@@ -55,10 +56,15 @@ func TestTurnNotesComposition(t *testing.T) {
 	if !strings.Contains(notes[1], "replaced pid 709505, start 3001234") {
 		t.Errorf("transition note must name the predecessor: %q", notes[1])
 	}
-	// Ordinary same-process turn: identity note only, no transition claim.
-	notes = TurnNotes(current, EncodeRecord(current))
+	// Legacy same-process record (no note proof): identity note, no claim.
+	notes = TurnNotes(current, EncodeRecord(current, ""))
 	if len(notes) != 1 {
-		t.Fatalf("same-process turn: got %d notes, want 1 (%q)", len(notes), notes)
+		t.Fatalf("legacy same-process turn: got %d notes, want 1 (%q)", len(notes), notes)
+	}
+	// Settled same-process record (note proof present): no note at all.
+	notes = TurnNotes(current, EncodeRecord(current, RuntimeNote(current)))
+	if len(notes) != 0 {
+		t.Fatalf("settled same-process turn: got %d notes, want 0 (%q)", len(notes), notes)
 	}
 	// First-ever turn (no record): identity note only — absence is not a
 	// transition.
@@ -94,10 +100,11 @@ func TestSessionStampParsing(t *testing.T) {
 
 // TestApplyServedByFirstTurnAfterHandoff pins the full decision flow of the
 // durable transition: the predecessor's record yields the transition note,
-// and this process's record replaces it (write-on-change).
+// and this process's record (now carrying the note proof) replaces it
+// (write-on-change).
 func TestApplyServedByFirstTurnAfterHandoff(t *testing.T) {
 	store := newMapStore(map[string]string{
-		MetaKey("discord:42"): EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}),
+		MetaKey("discord:42"): EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}, ""),
 	})
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
 	notes := ApplyServedBy("discord:42", current, store.get, store.set)
@@ -108,21 +115,66 @@ func TestApplyServedByFirstTurnAfterHandoff(t *testing.T) {
 		stored.PID != current.PID || stored.StartTime != current.StartTime {
 		t.Errorf("record must be rewritten to the serving process, got %v", stored)
 	}
+	if StoredNote(store.records[MetaKey("discord:42")]) != RuntimeNote(current) {
+		t.Errorf("record must establish the note proof, got %q",
+			store.records[MetaKey("discord:42")])
+	}
 	if store.setCalls != 1 {
 		t.Errorf("write-on-change: set called %d times, want 1", store.setCalls)
 	}
 }
 
-// TestApplyServedBySameProcessTurnSkipsWrite pins the point-read discipline:
-// an ordinary same-process turn renders the identity note and writes
-// nothing.
+// TestApplyServedBySameProcessTurnSkipsWrite pins the point-read discipline
+// per record shape: a LEGACY record (no note proof) renders the identity
+// note once and writes to establish the proof; a SETTLED record (proof
+// present) renders nothing and writes nothing.
 func TestApplyServedBySameProcessTurnSkipsWrite(t *testing.T) {
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
-	store := newMapStore(map[string]string{MetaKey("s"): EncodeRecord(current)})
-	notes := ApplyServedBy("s", current, store.get, store.set)
-	if len(notes) != 1 || store.setCalls != 0 {
-		t.Fatalf("same-process turn: %d notes, %d writes; want 1 note, 0 writes",
-			len(notes), store.setCalls)
+	legacy := newMapStore(map[string]string{MetaKey("s"): EncodeRecord(current, "")})
+	if notes := ApplyServedBy("s", current, legacy.get, legacy.set); len(notes) != 1 ||
+		legacy.setCalls != 1 {
+		t.Fatalf("legacy record: %d notes, %d writes; want 1 note, 1 write (establish proof)",
+			len(notes), legacy.setCalls)
+	}
+	settled := newMapStore(map[string]string{
+		MetaKey("s"): EncodeRecord(current, RuntimeNote(current))})
+	if notes := ApplyServedBy("s", current, settled.get, settled.set); len(notes) != 0 ||
+		settled.setCalls != 0 {
+		t.Fatalf("settled record: %d notes, %d writes; want 0 notes, 0 writes",
+			len(notes), settled.setCalls)
+	}
+}
+
+// TestApplyServedByNoteGate pins the unchanged-note gate end to end: once
+// the record proves the conversation saw this exact note, a byte-identical
+// repeat is suppressed (no notes, no write); a wording change on the SAME
+// process — the drain begins — rides once and settles again.
+func TestApplyServedByNoteGate(t *testing.T) {
+	current := Snapshot{PID: 1531038, StartTime: 3005678}
+	store := newMapStore(nil)
+	if notes := ApplyServedBy("s", current, store.get, store.set); len(notes) != 1 {
+		t.Fatalf("first turn: got %q", notes)
+	}
+	if notes := ApplyServedBy("s", current, store.get, store.set); len(notes) != 0 {
+		t.Fatalf("unchanged note must be suppressed, got %q", notes)
+	}
+	if store.setCalls != 1 {
+		t.Fatalf("suppressed turn must not write again, got %d writes", store.setCalls)
+	}
+	// Same process, new wording (a queued restart starts draining): the
+	// note's claim materially changes, so it rides — then settles.
+	draining := Snapshot{PID: current.PID, StartTime: current.StartTime,
+		RestartRequested: true, SuccessorPID: 4242}
+	if notes := ApplyServedBy("s", draining, store.get, store.set); len(notes) != 1 ||
+		!strings.Contains(notes[0], "draining for a queued restart") {
+		t.Fatalf("wording change must ride, got %q", notes)
+	}
+	if StoredNote(store.records[MetaKey("s")]) != RuntimeNote(draining) {
+		t.Fatalf("wording change must rewrite the note proof, got %q",
+			store.records[MetaKey("s")])
+	}
+	if notes := ApplyServedBy("s", draining, store.get, store.set); len(notes) != 0 {
+		t.Fatalf("same drain wording must not ride twice, got %q", notes)
 	}
 }
 
@@ -274,7 +326,8 @@ func TestAckRewriteNamesRestartingProcess(t *testing.T) {
 // TestApplyServedBySuccessiveTransitions pins the A→B→A pattern: each
 // process change renders a transition note and rewrites the record; a
 // return to a previously-seen process is still a transition (the record
-// names the immediately-preceding server, not history).
+// names the immediately-preceding server, not history). A settled process
+// renders nothing — its note is already proven seen.
 func TestApplyServedBySuccessiveTransitions(t *testing.T) {
 	store := newMapStore(nil)
 	processA := Snapshot{PID: 709505, StartTime: 3001234}
@@ -285,7 +338,7 @@ func TestApplyServedBySuccessiveTransitions(t *testing.T) {
 	if notes := ApplyServedBy("s", processB, store.get, store.set); len(notes) != 2 {
 		t.Fatalf("A→B transition: got %q", notes)
 	}
-	if notes := ApplyServedBy("s", processB, store.get, store.set); len(notes) != 1 {
+	if notes := ApplyServedBy("s", processB, store.get, store.set); len(notes) != 0 {
 		t.Fatalf("B steady state: got %q", notes)
 	}
 	back := ApplyServedBy("s", processA, store.get, store.set)
@@ -338,7 +391,7 @@ func TestTurnNotesIncidentTurn(t *testing.T) {
 		PID: 1531038, StartTime: 3005678,
 		OverlapSuccessorPending: true, PredecessorPID: 709505,
 	}
-	notes := TurnNotes(successor, EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}))
+	notes := TurnNotes(successor, EncodeRecord(Snapshot{PID: 709505, StartTime: 3001234}, ""))
 	if len(notes) != 2 {
 		t.Fatalf("incident turn: got %d notes, want 2 (%q)", len(notes), notes)
 	}
@@ -351,8 +404,8 @@ func TestTurnNotesIncidentTurn(t *testing.T) {
 }
 
 // TestApplyServedByRecordShape pins the durable record's wire shape on
-// write: exactly pid + start_time (a process fingerprint — records never
-// carry a build sha).
+// write: pid + start_time + the note proof (a process fingerprint with the
+// note the session saw — records never carry a build sha as a field).
 func TestApplyServedByRecordShape(t *testing.T) {
 	store := newMapStore(nil)
 	current := Snapshot{PID: 1531038, StartTime: 3005678, BuildSHA: "should-not-persist"}
@@ -362,8 +415,12 @@ func TestApplyServedByRecordShape(t *testing.T) {
 		!strings.Contains(written, `"start_time":3005678`) {
 		t.Errorf("record shape: %q", written)
 	}
-	if strings.Contains(written, "should-not-persist") {
-		t.Errorf("record must not carry a build sha: %q", written)
+	if StoredNote(written) != RuntimeNote(current) {
+		t.Errorf("record must carry the note proof: %q", written)
+	}
+	if strings.Contains(written, `"code_sha"`) ||
+		strings.Contains(written, "should-not-persist\"") {
+		t.Errorf("record must not carry a build sha field: %q", written)
 	}
 }
 
@@ -389,6 +446,8 @@ func TestSharedTableCoversTheHonestyContract(t *testing.T) {
 		"transition_first_turn_silent",
 		"record_same_process_skip",
 		"record_process_change_write",
+		"record_unchanged_note_skip",
+		"record_note_change_write",
 		"owner_guard_legacy_predecessor_refuse",
 		"owner_guard_attested_chain",
 		"owner_guard_attested_forward",
@@ -400,6 +459,7 @@ func TestSharedTableCoversTheHonestyContract(t *testing.T) {
 		"ack_rewrite_attested_forward_names_newest",
 		"ack_rewrite_chained_names_serving_process",
 		"turn_notes_first_turn_after_handoff",
+		"turn_notes_unchanged_note_suppressed",
 	} {
 		if !names[required] {
 			t.Errorf("shared table lost the %s case", required)
@@ -445,8 +505,8 @@ func TestTransitionNoteSuccessiveProcessNames(t *testing.T) {
 	processA := Snapshot{PID: 709505, StartTime: 3001234, BuildSHA: "aaaaaaaa"}
 	processB := Snapshot{PID: 1531038, StartTime: 3005678, BuildSHA: "bbbbbbbb"}
 	processC := Snapshot{PID: 2048123, StartTime: 3009999, BuildSHA: "cccccccc"}
-	prevA, okA := ParseRecord(EncodeRecord(processA))
-	prevB, okB := ParseRecord(EncodeRecord(processB))
+	prevA, okA := ParseRecord(EncodeRecord(processA, ""))
+	prevB, okB := ParseRecord(EncodeRecord(processB, ""))
 	if !okA || !okB {
 		t.Fatalf("record roundtrip failed: %v %v", okA, okB)
 	}
@@ -464,27 +524,34 @@ func TestTransitionNoteSuccessiveProcessNames(t *testing.T) {
 }
 
 // TestRecordWriteNeededBoundaries pins the write-on-change predicate: a
-// matching fingerprint, a fresh session, and each individually-changed
-// field.
+// matching fingerprint + note, a fresh session, and each individually
+// changed field.
 func TestRecordWriteNeededBoundaries(t *testing.T) {
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
-	same := EncodeRecord(current)
-	if RecordWriteNeeded(same, current) {
+	same := EncodeRecord(current, "")
+	if RecordWriteNeeded(same, current, "") {
 		t.Error("identical fingerprint must skip the write")
 	}
-	if !RecordWriteNeeded("", current) {
+	if !RecordWriteNeeded("", current, "") {
 		t.Error("empty stored record must write")
 	}
-	if !RecordWriteNeeded("{not json", current) {
+	if !RecordWriteNeeded("{not json", current, "") {
 		t.Error("corrupt stored record must write")
 	}
-	reusedPID := EncodeRecord(Snapshot{PID: 1531038, StartTime: 1111111})
-	if !RecordWriteNeeded(reusedPID, current) {
+	reusedPID := EncodeRecord(Snapshot{PID: 1531038, StartTime: 1111111}, "")
+	if !RecordWriteNeeded(reusedPID, current, "") {
 		t.Error("same pid with a different start time is a NEW process — must write")
 	}
-	replacedPID := EncodeRecord(Snapshot{PID: 709505, StartTime: 3005678})
-	if !RecordWriteNeeded(replacedPID, current) {
+	replacedPID := EncodeRecord(Snapshot{PID: 709505, StartTime: 3005678}, "")
+	if !RecordWriteNeeded(replacedPID, current, "") {
 		t.Error("different pid must write")
+	}
+	withNote := EncodeRecord(current, RuntimeNote(current))
+	if RecordWriteNeeded(withNote, current, RuntimeNote(current)) {
+		t.Error("identical fingerprint and note must skip the write")
+	}
+	if !RecordWriteNeeded(withNote, current, "different wording") {
+		t.Error("same fingerprint with a changed note must write")
 	}
 }
 
@@ -514,7 +581,7 @@ func TestTurnNotesSilenceForms(t *testing.T) {
 	if got := TurnNotes(current, "null"); len(got) != 1 {
 		t.Errorf("null record: %q", got)
 	}
-	same := TurnNotes(current, EncodeRecord(current))
+	same := TurnNotes(current, EncodeRecord(current, ""))
 	if len(same) != 1 || strings.Contains(same[0], "was served by") {
 		t.Errorf("same-process record must not emit a transition note: %q", same)
 	}
