@@ -1115,8 +1115,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Live reload of the reaction gate's config block (discord.reaction_gate): the
         # watcher task, the config file it polls, the managed-scope directory whose
         # overlay is part of the effective config, and the values of that overlay's
-        # ${VAR} refs. All are resolved ONCE inside connect()'s profile scope (the
-        # same capture discipline as the credential above); the watcher itself runs
+        # ${VAR} refs. Direct connects capture these in their profile scope; a hub
+        # adapter receives the owning gateway's snapshot at attach. The watcher runs
         # outside any scope and only ever uses the captured paths/values — never
         # HERMES_HOME, HERMES_MANAGED_DIR or os.environ.
         self._reaction_gate_reload_task: Optional[asyncio.Task] = None
@@ -1124,6 +1124,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._reaction_gate_managed_dir: Optional[_Path] = None
         self._reaction_gate_managed_env: Optional[Dict[str, str]] = None
         self._reaction_gate_profile_name: str = "default"
+        self._hub_reaction_gate_reload_scope: Optional[Dict[str, Any]] = None
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._vault_prompt_bindings: Dict[str, Any] = {}
         self._vault_prompt_requests: Dict[str, Any] = {}
@@ -1985,39 +1986,46 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
 
     def _reaction_gate_start_reload_watcher(self) -> None:
-        """Watch this profile's config.yaml so a ``reaction_gate`` edit applies live.
+        """Watch the owning profile's config.yaml so gate edits apply live.
 
-        The file path, the managed-scope directory AND the values of the managed
-        config's ``${VAR}`` refs are resolved HERE — this runs from ``connect()``
-        inside the owning profile's runtime scope (the same capture discipline as
-        the judge credential and the gate-env snapshot). The watcher never
-        re-resolves any of them: event callbacks and background tasks run outside
-        any profile scope, where ``HERMES_HOME``/``HERMES_MANAGED_DIR`` — and the
-        process env a managed ref would expand from — can name another profile, so
-        the captured paths and values are the only ones it may read.
+        The file path, managed-scope directory and managed ``${VAR}`` values are
+        immutable connect-time captures. A hub-created adapter receives them from
+        the owning gateway; an in-process adapter captures them here.
         """
         if self._reaction_gate_reload_task is not None:
             # A reconnect starts a fresh watcher; drop the stale one (its disconnect
             # side never ran — see disconnect() for the awaited cancellation).
             self._reaction_gate_reload_task.cancel()
-        from hermes_constants import get_hermes_home
-        from hermes_cli import managed_scope
+        hub_scope = self._hub_reaction_gate_reload_scope
+        if hub_scope is not None:
+            config_path = str(hub_scope.get("config_path") or "").strip()
+            if not config_path:
+                raise ValueError("Discord hub reaction-gate reload scope requires config_path")
+            self._reaction_gate_config_path = _Path(config_path)
+            managed_dir = hub_scope.get("managed_dir")
+            self._reaction_gate_managed_dir = _Path(str(managed_dir)) if managed_dir else None
+            managed_env = hub_scope.get("managed_env")
+            self._reaction_gate_managed_env = dict(managed_env) if isinstance(managed_env, dict) else None
+            self._reaction_gate_profile_name = str(
+                hub_scope.get("profile_name") or "default").strip() or "default"
+        else:
+            from hermes_constants import get_hermes_home
+            from hermes_cli import managed_scope
 
-        self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
-        self._reaction_gate_managed_dir = managed_scope.get_managed_dir()
-        self._reaction_gate_managed_env = (
-            managed_scope.managed_config_env_snapshot(self._reaction_gate_managed_dir)
-            if self._reaction_gate_managed_dir is not None
-            else None
-        )
-        # Profile identity for the boot-diagnostic repair in _reaction_gate_reload:
-        # captured here, inside the owning profile's scope, because the watcher
-        # callback runs outside any scope where HERMES_HOME can name another profile.
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            self._reaction_gate_profile_name = get_active_profile_name() or "default"
-        except Exception:
-            self._reaction_gate_profile_name = "default"
+            self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
+            self._reaction_gate_managed_dir = managed_scope.get_managed_dir()
+            self._reaction_gate_managed_env = (
+                managed_scope.managed_config_env_snapshot(self._reaction_gate_managed_dir)
+                if self._reaction_gate_managed_dir is not None
+                else None
+            )
+            # The watcher callback runs outside the profile scope, so boot-warning
+            # repair also needs this connect-time identity capture.
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                self._reaction_gate_profile_name = get_active_profile_name() or "default"
+            except Exception:
+                self._reaction_gate_profile_name = "default"
         self._reaction_gate_reload_task = start_reaction_gate_reload_watcher(
             config_path=self._reaction_gate_config_path,
             apply=self._reaction_gate_reload,
