@@ -208,6 +208,59 @@ class TestDescribeToolCallSkillAndDelegateDescription:
         )
         assert phrase == "Delegating to a Claude agent in /w"
 
+    def test_delegate_agent_default_subagent_with_description(self):
+        phrase = describe_tool_call(
+            "delegate_agent",
+            {
+                "description": "preparing the LiteLLM model migration scripts",
+                "goal": "/goal prepare scripts",
+                "context": "private migration notes",
+                "workdir": "/root",
+            },
+        )
+        assert phrase == "Delegated to subagent: preparing the LiteLLM model migration scripts"
+        assert "/goal prepare scripts" not in phrase
+        assert "private migration notes" not in phrase
+
+    def test_delegate_agent_explicit_subagent_with_description(self):
+        phrase = describe_tool_call(
+            "delegate_agent",
+            {
+                "backend": "subagent",
+                "tasks": [{"goal": "private task", "context": "private context"}],
+                "description": "coordinating the migration",
+            },
+        )
+        assert phrase == "Delegated to subagent: coordinating the migration"
+        assert "private task" not in phrase
+        assert "private context" not in phrase
+
+    @pytest.mark.parametrize("backend", [None, "subagent"])
+    def test_delegate_agent_subagent_without_description_unchanged(self, backend):
+        args = {"goal": "private goal"}
+        if backend is not None:
+            args["backend"] = backend
+        assert describe_tool_call("delegate_agent", args) == "Delegating"
+
+    @pytest.mark.parametrize(
+        ("action", "expected"),
+        [
+            ("list", "Listing subagents"),
+            ("steer", "Steering subagent agent-1"),
+            ("stop", "Stopping subagent agent-1"),
+        ],
+    )
+    def test_delegate_agent_control_actions_unchanged(self, action, expected):
+        phrase = describe_tool_call(
+            "delegate_agent",
+            {
+                "action": action,
+                "subagent_id": "agent-1",
+                "description": "private action detail",
+            },
+        )
+        assert phrase == expected
+
 
 class TestDescribeDelegateLanePhrase:
     """describe_tool_call — progress phrases for the delegate_<lane> tools."""
