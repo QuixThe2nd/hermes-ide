@@ -10,11 +10,12 @@ A standing goal gives Hermes an objective that survives across turns. Every
 eligible message is classified by a Jev Decisions model
 (`jev-1.14.0` via the litellm proxy): task-like messages **start a goal
 automatically**, follow-up task messages extend it, approvals resume a paused
-loop, and chases reopen work that finished or stalled. After every turn a
-lightweight judge model checks whether the goal is satisfied by the
-assistant's last response; if not, Hermes feeds a continuation prompt back
-into the same session and keeps working — until the goal is achieved, you say
-"stop", or the turn budget runs out.
+loop, and chases reopen work that finished or stalled. A retrospective pass
+reclassifies the completed exchange and can recover a task missed at arrival.
+After every turn a lightweight judge model checks whether the goal is
+satisfied by the assistant's last response; if not, Hermes feeds a
+continuation prompt back into the same session and keeps working — until the
+goal is achieved, you say "stop", or the turn budget runs out.
 
 It's our take on the **Ralph loop**, directly inspired by
 [Codex CLI 0.128.0's `/goal`](https://github.com/openai/codex) by Eric Traut
@@ -36,9 +37,11 @@ re-prompting every turn:
 The classifier labels messages that want a thing changed, produced, diagnosed,
 or found as **task** — including complaints ("why is tdarr down", "the error
 handling is spamming") — and messages that only want words ("what is X",
-"list the commands") as **chat**. Chat never starts a goal. Tasks where the
-agent does one turn and stops simply finish; tasks where *you'd otherwise have
-to say "keep going" three times* are where the loop shines.
+"list the commands") as **chat**. Chat does not start a goal at arrival; a
+high-confidence retrospective `task` can recover a misclassification when no
+goal already exists. Tasks where the agent does one turn and stops simply
+finish; tasks where *you'd otherwise have to say "keep going" three times*
+are where the loop shines.
 
 ## Quick start
 
@@ -71,9 +74,10 @@ What happened:
    turns used`, or your own "stop".
 
 
-Low-confidence decisions, `chat`, and `unknown` (the fail-safe result when
-the classifier is unreachable) never start a goal — but the raw label and
-confidence are always logged (see the intent report below).
+Low-confidence decisions and `chat` never start a goal in that classification
+pass. `unknown` is the fail-safe result when the classifier is unreachable.
+Labels, confidence, and retrospective comparisons are always logged (see the
+intent report below).
 
 ## Controlling the loop
 
@@ -284,8 +288,9 @@ The continuation prompt is a plain user-role message appended to history. It
 does **not** mutate the system prompt, swap toolsets, or touch the
 conversation in any way that invalidates Hermes' prompt cache. Running a
 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
-Auto-goal classification happens off-path (never inline with the reply) and
-adds nothing to model context.
+Arrival classification happens off-path. Retrospective classification runs at
+the post-turn boundary; neither pass adds anything to model context, and their
+status lines are sent as non-conversational interim messages.
 
 ## Configuration
 
@@ -293,6 +298,11 @@ adds nothing to model context.
 goals:
   # Max continuation turns before Hermes auto-pauses. Default 20.
   max_turns: 20
+  auto:
+    enabled: true
+    # Reclassify completed exchanges and recover missed tasks. Default true.
+    retrospective:
+      enabled: true
 ```
 
 Automatic goals are on by default — there is no mode setting. A
@@ -301,19 +311,29 @@ ignored, not an error; you can delete it. To turn the automatic layer off for
 one profile (for example a secondary profile served by the same multiplexed
 gateway), set `goals.auto.enabled: false` in that profile's config.yaml:
 nothing is classified and no goal starts automatically, while `/goal` still
-works. Likewise `display.jev_notices: false` stops that profile posting the
-`🔎 jev ...` classification lines into its chats. Every eligible human message is classified by one Jev
-Decisions POST to the litellm Jev endpoint (`jev-1.14.0`, 8s timeout, one retry,
-then fail closed as `unknown`). The classifier needs `LITELLM_API_KEY` (a litellm virtual key)
-(in `.env` or the platform's secret scope); without a key, goals simply never
-start automatically — nothing else changes. Internal/system events,
-bot-authored messages, blank messages, and slash commands are skipped.
+works. Set `goals.auto.retrospective.enabled: false` to keep arrival-time
+classification while disabling only the retrospective pass. Likewise
+`display.jev_notices: false` stops that profile posting the `🔎 jev ...`
+arrival-classification lines; retrospective `🔍 Retrospective Intent` statuses
+remain visible while that pass is enabled. Each classification pass uses one
+Jev Decisions POST to the litellm Jev endpoint (`jev-1.14.0`, 8s timeout, one
+retry, then fails closed as `unknown`). The classifier needs `LITELLM_API_KEY`
+(a litellm virtual key) in `.env` or the platform's secret scope; without a
+key, goals simply never start automatically, while the retrospective failure
+status remains visible and auditable.
+Internal/system events, bot-authored messages, blank
+messages, and slash commands are skipped. Recovery requires a retrospective
+`task` at confidence ≥ 0.6 after an initial `chat`/`unknown`, and no existing
+goal. It never replaces a handled `task`/`approval`/`chase` decision or
+modifies an existing active, paused, or completed goal.
 
 Records are appended to `<HERMES_HOME>/goals/intent_shadow.jsonl`
 (profile-aware) — the audit trail of what the loop acted on. The directory
 and file use private
 permissions (`0700`/`0600` where supported), and each stored message excerpt
-is capped at 300 characters. Inspect counts and the newest examples per label
+is capped at 300 characters. Retrospective rows carry `phase: retrospective`,
+the initial label/confidence, and whether the completed exchange changed the
+verdict. Inspect counts and the newest examples per label
 without making an LLM call:
 
 ```bash

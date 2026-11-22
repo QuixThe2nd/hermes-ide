@@ -70,6 +70,21 @@ def test_leftover_auto_mode_key_keeps_auto_goals_on(runner):
     assert runner.spawned == [("winnie", True)]
 
 
+def test_retrospective_gate_reads_the_owning_profile_config(runner):
+    runner.winnie_config.write_text(
+        "goals:\n"
+        "  auto:\n"
+        "    enabled: true\n"
+        "    retrospective:\n"
+        "      enabled: false\n",
+        encoding="utf-8",
+    )
+
+    assert runner._retrospective_goals_enabled(_source("default")) is True
+    assert runner._retrospective_goals_enabled(_source("winnie")) is False
+    assert runner._retrospective_goals_enabled(_source("default")) is True
+
+
 @pytest.mark.skipif(go_formatter_binary() is None, reason="jev notices need the Go formatter binary")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("profile, posts", [("default", True), ("winnie", False)])

@@ -1064,7 +1064,9 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
         # Read from the profile that owns the session: false skips the automatic layer entirely
         # (no Jev intent call, no parked decision, no "stop" auto-pause); /goal keeps working.
-        "auto": {"enabled": True},
+        # The retrospective pass reclassifies the completed exchange and can recover a missed task;
+        # goals.auto.retrospective.enabled=false keeps only the arrival-time decision.
+        "auto": {"enabled": True, "retrospective": {"enabled": True}},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
