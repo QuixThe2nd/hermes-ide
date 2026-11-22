@@ -185,13 +185,7 @@ class TurnRunner(_TurnRunnerCore):
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
-            from gateway.run_claude_progress import claude_delegation_single_status
-
-            suppress_generic = (
-                tool_name == "delegate_claude_agent" and claude_delegation_single_status(ctx)
-            )
-            if not suppress_generic:
-                self._progress_emit(msg)
+            self._progress_emit(msg)
 
     def _progress_context_injection(self, args) -> None:
         """Render model-received context through the ordered progress queue."""
@@ -897,28 +891,6 @@ class TurnRunner(_TurnRunnerCore):
         # (describe mode re-renders the same phrase) re-render as a second plain
         # row instead of collapsing into (×N).
 
-    def _claude_progress_delivery(self, st):
-        """Bind the shared Claude/viewer delivery rail to this bubble state."""
-        from gateway.run_claude_progress import ClaudeDelegationDelivery
-
-        async def flush_before_status() -> None:
-            if not st.progress_lines:
-                return
-            try:
-                if not await self._roll_progress_overflow_if_needed(st):
-                    await self._progress_send_or_edit(st, st.progress_lines[-1])
-            except Exception:
-                logger.debug("progress flush before agent status failed", exc_info=True)
-
-        return ClaudeDelegationDelivery(
-            ctx=self._ctx,
-            adapter=st.adapter,
-            deliver_status_marker=self._deliver_agent_status_marker,
-            flush_before_status=flush_before_status,
-            reset_bubble=lambda: self._reset_progress_bubble(st),
-            agent_interrupted=self._agent_interrupted,
-        )
-
 
     def _chunking_active(self, st) -> bool:
         # Buffer slicing only serves the editable lane; non-editable rows are chunked at send time.
@@ -997,11 +969,9 @@ class TurnRunner(_TurnRunnerCore):
 
     async def _drain_progress_on_cancel(self, st) -> None:
         from gateway.run import _is_agent_status_queue_marker
-        from gateway.run_claude_progress import is_claude_delegation_start_marker
 
         ctx = self._ctx
         st.adapter = self._runner._delivery_adapter_for(ctx.source) or st.adapter
-        claude_delivery = self._claude_progress_delivery(st)
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
@@ -1014,12 +984,9 @@ class TurnRunner(_TurnRunnerCore):
                     # in its finally; release here too so the pump never waits.
                     self._release_hold_marker(raw)
                     continue
-                if is_claude_delegation_start_marker(raw):
-                    if not self._agent_interrupted():
-                        await claude_delivery.deliver_start(raw)
-                    continue
                 if _is_agent_status_queue_marker(raw):
-                    await claude_delivery.deliver_viewer_marker(raw)
+                    await self._deliver_agent_status_marker(raw)
+                    self._reset_progress_bubble(st)
                     continue
                 if self._agent_interrupted():
                     # A reset clears local bookkeeping but must not edit a stopped bubble.
@@ -1079,8 +1046,6 @@ class TurnRunner(_TurnRunnerCore):
 
     async def send_progress_messages(self):
         from gateway.run import _adapter_can_edit_progress, _is_agent_status_queue_marker
-        from gateway.run_claude_progress import is_claude_delegation_start_marker
-
         ctx = self._ctx
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
@@ -1104,7 +1069,6 @@ class TurnRunner(_TurnRunnerCore):
                     self._release_hold_marker(raw)
             return
         st = self._progress_edit_state(adapter)
-        claude_delivery = self._claude_progress_delivery(st)
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (platform flood control)
         pending = None
@@ -1167,9 +1131,10 @@ class TurnRunner(_TurnRunnerCore):
                     await self._handle_hold_marker(st, raw)
                     dirty = False
                     continue
-                # Late rows are suppressed after stop. Viewer markers survive:
+                # Late rows are suppressed after stop. Viewer rows survive:
                 # the spawned agent keeps running and its link remains useful.
-                if self._agent_interrupted() and not _is_agent_status_queue_marker(raw):
+                _is_viewer_row = isinstance(raw, str) and raw.startswith("\U0001f517 ")
+                if self._agent_interrupted() and not (_is_agent_status_queue_marker(raw) or _is_viewer_row):
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
@@ -1181,11 +1146,10 @@ class TurnRunner(_TurnRunnerCore):
                     self._reset_progress_bubble(st)
                     dirty = False
                     continue
-                if is_claude_delegation_start_marker(raw):
-                    await claude_delivery.deliver_start(raw)
-                    continue
                 if _is_agent_status_queue_marker(raw):
-                    await claude_delivery.deliver_viewer_marker(raw)
+                    await self._deliver_agent_status_marker(raw)
+                    self._reset_progress_bubble(st)
+                    dirty = False
                     continue
                 msg = self._progress_absorb(st, raw)
                 dirty = True
@@ -1202,7 +1166,6 @@ class TurnRunner(_TurnRunnerCore):
                             self._is_reset_marker(nxt)
                             or self._is_hold_marker(nxt)
                             or self._is_flush_marker(nxt)
-                            or is_claude_delegation_start_marker(nxt)
                             or _is_agent_status_queue_marker(nxt)
                         ):
                             pending = nxt
@@ -1294,10 +1257,6 @@ class TurnRunner(_TurnRunnerCore):
         """Native task-card start consumer (Slack)."""
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
-        from gateway.run_claude_progress import claude_delegation_single_status, queue_claude_delegation_start
-
-        if str(tool_name or "") == "delegate_claude_agent" and claude_delegation_single_status(self._ctx):
-            queue_claude_delegation_start(self._ctx, call_id, tool_name, args)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
@@ -1397,23 +1356,17 @@ class TurnRunner(_TurnRunnerCore):
         # Viewer notices follow the delegation's tool row through the same FIFO.
         # Non-editable and native-card consumers have no durable text queue, so
         # those surfaces retain the direct status rail.
-        from gateway.run import _adapter_can_edit_progress, _agent_status_queue_marker
+        from gateway.run import _adapter_can_edit_progress
         if (
             ctx.tool_progress_enabled
             and ctx.progress_queue is not None
             and not ctx._native_slack_task_cards
             and _adapter_can_edit_progress(ctx._status_adapter)
         ):
-            from tools.tool_status import get_tool_status_call_id, is_agent_viewer_status_line
+            from tools.tool_status import is_agent_viewer_status_line
 
             if is_agent_viewer_status_line(prepared):
-                try:
-                    viewer_call_id = get_tool_status_call_id()
-                except Exception:
-                    viewer_call_id = None
-                ctx.progress_queue.put(
-                    _agent_status_queue_marker(event_type, prepared, viewer_call_id)
-                )
+                ctx.progress_queue.put("🔗 " + prepared)
                 return
 
         def present():

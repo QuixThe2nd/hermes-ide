@@ -3902,12 +3902,6 @@ from gateway.session_state import (
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
-from gateway.run_claude_progress import (
-    ClaudeDelegationDelivery,
-    claude_delegation_single_status,
-    is_claude_delegation_start_marker,
-    queue_claude_delegation_start,
-)
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
