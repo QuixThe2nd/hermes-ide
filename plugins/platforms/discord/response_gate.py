@@ -601,9 +601,10 @@ def build_conversation_state(
 class GateRuntime:
     """One adapter's gate: validated config, judge client and the context buffer.
 
-    Built once per ``connect()`` from the typed ``response_gate`` block and the profile
-    credential captured at startup. ``client is None`` means no usable credential, which
-    leaves the gate *active but always denying* — enforce mode must fail closed, never
+    Built at ``connect()`` and refreshed on each Discord ``READY`` from the typed
+    ``response_gate`` block and the profile credential captured at startup.
+    ``client is None`` means no usable credential, which leaves the gate *active but
+    always denying* — enforce mode must fail closed, never
     quietly disable itself and fall back to legacy ambient admission.
     """
 

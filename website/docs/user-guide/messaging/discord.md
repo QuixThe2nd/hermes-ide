@@ -494,7 +494,7 @@ discord:
     threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
 
-**Bot identity.** The optional `bot_name` is a non-empty string used for the judge's assistant identity and its address examples; surrounding whitespace is trimmed. When it is unset or `null`, the gate uses the connected Discord bot's display name, then its username/name, then `assistant`. The identity is resolved once when the gate starts, so question examples and judge state always use the same name.
+**Bot identity.** The optional `bot_name` is a non-empty string used for the judge's assistant identity and its address examples; surrounding whitespace is trimmed. When it is unset or `null`, the gate uses the connected Discord bot's display name, then its username/name, then `assistant`. Automatic identity is refreshed on every Discord READY before message processing resumes, keeping question examples and judge state aligned across reconnects; a configured `bot_name` remains fixed.
 
 **Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
 

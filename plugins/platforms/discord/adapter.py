@@ -1384,6 +1384,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
             @self._client.event
             async def on_ready():
+                # client.user exists only at READY; rebuild questions and judge state before dispatch opens.
+                adapter_self._response_gate_init()
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()

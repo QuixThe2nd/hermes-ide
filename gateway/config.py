@@ -464,7 +464,7 @@ class ResponseGateConfig:
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
     model: str = "jev-1.14.0"
-    #: Optional judge-facing identity. ``None`` resolves the connected Discord user at startup.
+    #: Optional judge-facing identity. ``None`` follows the connected user on each Discord READY.
     bot_name: Optional[str] = None
     #: Optional loopback-only override for the Decisions endpoint, so judge calls can
     #: traverse a local metering proxy. ``None`` (default) keeps the fixed endpoint

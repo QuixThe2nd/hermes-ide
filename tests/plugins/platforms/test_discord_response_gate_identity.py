@@ -1,5 +1,6 @@
 """Discord response-gate bot identity must follow config and the connected user."""
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from plugins.platforms.discord.adapter import DiscordAdapter
+import plugins.platforms.discord.adapter as discord_platform
 from plugins.platforms.discord.response_gate import (
     ADDRESSES_BOT_KEY,
     CONTINUES_THREAD_KEY,
@@ -199,3 +201,168 @@ async def test_adapter_resolves_one_identity_for_questions_and_judge_state(
     assert captured["state"]["bot"]["name"] == expected
     examples = captured["questions"][ADDRESSES_BOT_KEY]["criteria"]["true"]["examples"]
     assert examples[0] == f"hey {expected} whats up"
+
+
+class _ReadyGateBot:
+    """Bot transport whose user appears only when START releases READY."""
+
+    def __init__(self, user, started, **_kwargs):
+        self.user = None
+        self._ready_user = user
+        self._started = started
+        self._events = {}
+        self._closed = asyncio.Event()
+        self._is_closed = False
+        self.release_ready = asyncio.Event()
+
+    def event(self, callback):
+        self._events[callback.__name__] = callback
+        return callback
+
+    async def start(self, _token):
+        await self._started.put(self)
+        await self.release_ready.wait()
+        self.user = self._ready_user
+        await self._events["on_ready"]()
+        await self._closed.wait()
+
+    def is_closed(self):
+        return self._is_closed
+
+    async def close(self):
+        self._is_closed = True
+        self.release_ready.set()
+        self._closed.set()
+
+
+def _real_connect_adapter(monkeypatch, users, *, bot_name=_AUTOMATIC):
+    gate_data: dict[str, Any] = {"channels": ["555"], "mode": "shadow"}
+    if bot_name is not _AUTOMATIC:
+        gate_data["bot_name"] = bot_name
+    adapter = DiscordAdapter(PlatformConfig.from_dict({
+        "enabled": True,
+        "token": "test-token",
+        "slash_commands": False,
+        "response_gate": gate_data,
+    }))
+    assert adapter._client is None
+
+    started = asyncio.Queue()
+    bots = []
+
+    def bot_factory(**kwargs):
+        bot = _ReadyGateBot(users[len(bots)], started, **kwargs)
+        bots.append(bot)
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", bot_factory)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    ))
+    monkeypatch.setenv("LITELLM_API_KEY", "test-credential")
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args: True)
+    monkeypatch.setattr(adapter, "_release_platform_lock", lambda: None)
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())
+    monkeypatch.setattr(adapter, "_missed_message_backfill_enabled", lambda: False)
+    monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)
+    monkeypatch.setattr(adapter, "_wire_plugin_handlers", lambda client: None)
+
+    ready_observations = []
+
+    async def observe_before_ready():
+        question = adapter._response_gate.client._questions[ADDRESSES_BOT_KEY]
+        ready_observations.append((
+            adapter._response_gate_bot_name,
+            question["criteria"]["true"]["examples"][0],
+            adapter._ready_event.is_set(),
+        ))
+
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", observe_before_ready)
+    return adapter, bots, started, ready_observations
+
+
+async def _begin_real_connect(adapter, started, *, is_reconnect=False):
+    task = asyncio.create_task(adapter.connect(is_reconnect=is_reconnect))
+    bot = await asyncio.wait_for(started.get(), timeout=2)
+    return task, bot
+
+
+def _captured_identity(captured):
+    question = captured["questions"][ADDRESSES_BOT_KEY]
+    return (
+        captured["state"]["bot"]["name"],
+        question["criteria"]["true"]["examples"][0],
+    )
+
+
+def _expected_identity(name):
+    return name, f"hey {name} whats up"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured_name, pre_ready_name, first_name, second_name",
+    [
+        (_AUTOMATIC, "assistant", "First Display", "Second Display"),
+        ("Configured Override", "Configured Override", "Configured Override", "Configured Override"),
+    ],
+)
+async def test_real_connect_resolves_ready_identity_and_refreshes_reconnect(
+    monkeypatch, configured_name, pre_ready_name, first_name, second_name,
+):
+    users = [
+        SimpleNamespace(id=101, display_name="First Display", username="first", name="first"),
+        SimpleNamespace(id=202, display_name="Second Display", username="second", name="second"),
+    ]
+    adapter, bots, started, ready_observations = _real_connect_adapter(
+        monkeypatch, users, bot_name=configured_name,
+    )
+    connect_tasks = []
+    try:
+        first_connect, first_bot = await _begin_real_connect(adapter, started)
+        connect_tasks.append(first_connect)
+        assert adapter._client is first_bot
+        assert first_bot.user is None
+        assert not adapter._ready_event.is_set()
+        before_first = await _capture_decision(adapter, monkeypatch)
+
+        first_bot.release_ready.set()
+        assert await asyncio.wait_for(first_connect, timeout=2) is True
+        assert adapter._ready_event.is_set()
+        after_first = await _capture_decision(adapter, monkeypatch)
+
+        second_connect, second_bot = await _begin_real_connect(
+            adapter, started, is_reconnect=True,
+        )
+        connect_tasks.append(second_connect)
+        assert adapter._client is second_bot
+        assert second_bot.user is None
+        assert not adapter._ready_event.is_set()
+        before_second = await _capture_decision(adapter, monkeypatch)
+
+        second_bot.release_ready.set()
+        assert await asyncio.wait_for(second_connect, timeout=2) is True
+        assert adapter._ready_event.is_set()
+        after_second = await _capture_decision(adapter, monkeypatch)
+
+        assert [
+            _captured_identity(captured)
+            for captured in (before_first, after_first, before_second, after_second)
+        ] == [
+            _expected_identity(name)
+            for name in (pre_ready_name, first_name, first_name, second_name)
+        ]
+        assert ready_observations == [
+            (*_expected_identity(first_name), False),
+            (*_expected_identity(second_name), False),
+        ]
+        assert adapter._response_gate_credential == "test-credential"
+    finally:
+        for bot in bots:
+            bot.release_ready.set()
+        for task in connect_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*connect_tasks, return_exceptions=True)
+        await adapter.disconnect()
