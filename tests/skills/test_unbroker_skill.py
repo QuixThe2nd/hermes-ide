@@ -16,9 +16,9 @@ import tempfile
 from pathlib import Path
 
 # Resolve the skill's scripts dir across layouts: standalone dev repo (tests/) and hermes-agent
-# (tests/skills/ -> optional-skills/security/unbroker/scripts).
+# (tests/skills/ -> skills/security/unbroker/scripts).
 _HERE = Path(__file__).resolve()
-_REL = ("optional-skills", "security", "unbroker", "scripts")
+_REL = ("skills", "security", "unbroker", "scripts")
 _CANDIDATES = [
     _HERE.parent.parent / "skill" / "scripts",           # standalone dev repo
     _HERE.parent.parent.joinpath(*_REL),                 # standalone layout
