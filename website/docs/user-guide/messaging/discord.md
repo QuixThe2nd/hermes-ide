@@ -561,6 +561,8 @@ discord:
 
 **Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed. The reload resolves the block exactly like startup does (including the [managed-scope](/user-guide/managed-scope) overlay and the nested `gateway.platforms.discord` / `platforms.discord` / `gateway.discord` spellings), so a live edit has the same effect as a restart, and administrator-pinned values cannot be bypassed by editing the user file. An invalid edit — broken YAML, a non-mapping document (including an empty file mid-save), or a block that fails validation — keeps the active gate; removing the block from an otherwise valid file, or setting `enabled: false`, turns it off. That includes `decision_formula`: changing thresholds or flipping `or` to `and` applies on the next decision after the reload, with no restart or reconnect.
 
+**Shared-hub reconnects.** When profiles share one Discord bot token, the hub keeps one transport but lets a named profile adopt a default-owned reaction-gate watcher. The adoption refreshes the watcher’s config path, managed overlay, and reaction-judge credential. A later default or unscoped reconnect cannot overwrite that named profile’s watcher; a same-profile reconnect refreshes it.
+
 Values outside the documented ranges (`timeout_seconds` above `30`, more than `32` emojis, emojis longer than `32` characters, criteria text above `500` characters, oversized context bounds, a `None`/`Other` entry in `emojis` — those two options are fixed — or an invalid `decision_formula`) refuse to load or leave the gate off rather than quietly degrading.
 
 #### `discord.auto_thread`

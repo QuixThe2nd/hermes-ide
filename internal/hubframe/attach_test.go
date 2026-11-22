@@ -156,6 +156,100 @@ func TestDecodeAttachParamsKeepsFollowingFrame(t *testing.T) {
 	}
 }
 
+func TestShouldAdoptReactionGateScope(t *testing.T) {
+	explicitScope := &ReactionGateReloadScope{ConfigPath: "/profiles/winnie/config.yaml"}
+	for _, tc := range []struct {
+		name            string
+		currentProfile  string
+		incomingProfile string
+		explicitScope   bool
+		want            bool
+	}{
+		{
+			name:            "legacy_attach_cannot_rebind",
+			currentProfile:  "default",
+			incomingProfile: "Winnie",
+			explicitScope:   false,
+			want:            false,
+		},
+		{
+			name:            "default_refreshes_default",
+			currentProfile:  "default",
+			incomingProfile: "default",
+			explicitScope:   true,
+			want:            true,
+		},
+		{
+			name:            "empty_legacy_owner_is_default",
+			currentProfile:  "",
+			incomingProfile: "default",
+			explicitScope:   true,
+			want:            true,
+		},
+		{
+			name:            "named_adopts_default",
+			currentProfile:  "default",
+			incomingProfile: "Winnie",
+			explicitScope:   true,
+			want:            true,
+		},
+		{
+			name:            "named_adopts_legacy_default",
+			currentProfile:  "",
+			incomingProfile: "Winnie",
+			explicitScope:   true,
+			want:            true,
+		},
+		{
+			name:            "same_named_profile_refreshes",
+			currentProfile:  "Winnie",
+			incomingProfile: "Winnie",
+			explicitScope:   true,
+			want:            true,
+		},
+		{
+			name:            "default_cannot_replace_named",
+			currentProfile:  "Winnie",
+			incomingProfile: "default",
+			explicitScope:   true,
+			want:            false,
+		},
+		{
+			name:            "sibling_cannot_replace_named",
+			currentProfile:  "Winnie",
+			incomingProfile: "Other",
+			explicitScope:   true,
+			want:            false,
+		},
+		{
+			name:            "blank_incoming_name_is_default",
+			currentProfile:  "Winnie",
+			incomingProfile: "  ",
+			explicitScope:   true,
+			want:            false,
+		},
+		{
+			name:            "profile_names_are_trimmed",
+			currentProfile:  " Winnie ",
+			incomingProfile: "Winnie",
+			explicitScope:   true,
+			want:            true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var scope *ReactionGateReloadScope
+			if tc.explicitScope {
+				scope = explicitScope
+			}
+			got := ShouldAdoptReactionGateScope(tc.currentProfile, tc.incomingProfile, scope)
+			if got != tc.want {
+				t.Fatalf("ShouldAdoptReactionGateScope(%q, %q, scope=%v) = %v, want %v",
+					tc.currentProfile, tc.incomingProfile, tc.explicitScope, got, tc.want)
+			}
+		})
+	}
+}
+
 func mustReadFrame(t *testing.T, r *bufio.Reader) []byte {
 	t.Helper()
 	frame, err := ReadFrame(r)

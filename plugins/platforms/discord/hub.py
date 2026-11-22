@@ -510,6 +510,31 @@ class DiscordHubServer:
                 self._adapter_routes[key] = sorted(
                     merged.values(), key=lambda route: route.specificity, reverse=True)
             if key in self._adapters:
+                adapter = self._adapters[key]
+                current_scope = getattr(adapter, "_hub_reaction_gate_reload_scope", None)
+                if isinstance(current_scope, dict):
+                    current_profile = str(current_scope.get("profile_name") or "default")
+                else:
+                    # Compatibility with an adapter connected before hub scope capture:
+                    # its watcher already captured the owning profile's identity.
+                    current_profile = str(getattr(adapter, "_reaction_gate_profile_name", "") or "")
+                current_profile = current_profile.strip() or "default"
+                incoming_profile = profile_name.strip() or "default"
+                may_adopt = current_profile == incoming_profile or (
+                    current_profile == "default" and incoming_profile != "default"
+                )
+                if reaction_gate_reload is not None and may_adopt:
+                    next_scope = dict(reaction_gate_reload)
+                    next_scope["profile_name"] = incoming_profile
+                    if not str(next_scope.get("config_path") or "").strip():
+                        raise ValueError("Discord hub reaction-gate reload scope requires config_path")
+                    # Keep the shared Discord transport, but atomically replace the
+                    # watcher owner and its pinned judge credential. The new watcher's
+                    # boot reconciliation applies the new profile's current file.
+                    adapter._hub_gate_credential = str(gate_credential or "")
+                    adapter._capture_response_gate_credential()
+                    adapter._hub_reaction_gate_reload_scope = next_scope
+                    adapter._reaction_gate_start_reload_watcher()
                 return
             adapter = DiscordAdapter(config)
             adapter._owner_profile = None
