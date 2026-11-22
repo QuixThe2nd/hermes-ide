@@ -13,6 +13,14 @@ Write discipline: the record is written only when it CHANGES (process or
 note wording), never per turn — an ordinary same-process turn is one cheap
 point read. Every failure path degrades to "no transition claimed": a note
 that cannot be proven is never guessed, and persistence never breaks a turn.
+
+The note proof is acknowledgement-gated: staging a turn records the serving
+process (pid + start fingerprint) but does NOT advance the note proof — the
+note has not been delivered yet. The proof lands only when the note's
+api_content sidecar stamp is persisted
+(``agent.turn_context._persist_turn_user_api_content`` →
+:func:`confirm_served_note`), so a turn that crashes before the stamp
+re-emits the note on the next turn instead of suppressing it forever.
 """
 
 from __future__ import annotations
@@ -103,11 +111,42 @@ def record_served_identity(
         return False
 
 
+def confirm_served_note(
+    store: Any, session_id: Optional[str], note: Optional[str]
+) -> bool:
+    """Advance the durable note proof once the note's sidecar stamp landed. Never raises.
+
+    The acknowledgement half of the note gate: staging
+    (:func:`session_turn_notes`) records the serving process but leaves the
+    note proof at its previous value; only the persisted api_content sidecar
+    stamp proves the conversation actually received the note. Write-on-change,
+    keyed on the session's own record: an absent/corrupt record (the stage
+    write could not be established) or an already-current proof is a silent
+    no-op, never an error.
+    """
+    if not _valid_session_id(session_id) or not isinstance(note, str) or not note:
+        return False
+    db = _resolve_db(store, session_id)
+    if db is None:
+        return False
+    try:
+        raw = db.get_meta(_meta_key(session_id))
+        record = json.loads(raw) if isinstance(raw, str) else None
+        if not isinstance(record, dict) or record.get("note") == note:
+            return False
+        record["note"] = note
+        db.set_meta(_meta_key(session_id), json.dumps(record))
+        return True
+    except Exception:
+        logger.debug("serving transition: note confirm failed", exc_info=True)
+        return False
+
+
 def session_turn_notes(
     store: Any, session_id: Optional[str], runner: Any
-) -> Tuple[Optional[str], Optional[str]]:
-    """``(identity note | None, transition note | None)`` with the durable
-    comparison inside.
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(identity note | None, transition note | None, pending note | None)``
+    with the durable comparison inside.
 
     Reads the session's last-served record, renders the pair via
     ``gateway.serving_identity.serving_turn_notes`` (a note the record
@@ -115,6 +154,14 @@ def session_turn_notes(
     server (on change only). Read-before-write ordering matters: the note
     must describe the state BEFORE this turn's record lands; persistence
     failure never breaks the turn — unproven notes still render.
+
+    The stage write carries the process identity but NOT the new note proof:
+    the proof only becomes durable once the note's sidecar stamp lands
+    (:func:`confirm_served_note`, called from
+    ``agent.turn_context._persist_turn_user_api_content``). The returned
+    pending note is the identity the stamp ack must confirm — the note just
+    emitted, or (on a suppressed repeat) the stored proof it matched, which
+    is already durable and needs no write.
     """
     from gateway.serving_identity import serving_identity_snapshot, serving_turn_notes
 
@@ -130,12 +177,16 @@ def session_turn_notes(
         except Exception:
             logger.debug("serving transition: last-served record unreadable", exc_info=True)
     identity_note, transition_note = serving_turn_notes(runner, previous)
-    # The record remembers the note the conversation saw THIS turn: the one
-    # just emitted, or — on a suppressed repeat — the stored one it matched.
+    # The note the stamp ack must confirm: the one just emitted, or — on a
+    # suppressed repeat — the stored one it matched (a no-op confirm).
+    pending_note = identity_note or (previous or {}).get("note")
+    # Record THIS process as the last server, on change only — but keep the
+    # PREVIOUS note proof: the new note is not durable until its sidecar
+    # stamp lands, and a turn that never reaches the stamp must re-emit it.
     try:
         record_served_identity(
             store, session_id, serving_identity_snapshot(runner),
-            identity_note or (previous or {}).get("note"))
+            (previous or {}).get("note"))
     except Exception:
         logger.debug("serving transition: record step failed", exc_info=True)
-    return identity_note, transition_note
+    return identity_note, transition_note, pending_note

@@ -311,21 +311,26 @@ func AckRewrite(ack map[string]any, servingPID int, id *Identify, rows []Registr
 	return rewritten
 }
 
-// ApplyServedBy is the decision twin of
+// StageServedBy is the decision twin of
 // gateway.serving_transition.session_turn_notes: read the session's
 // served-by record, render the turn notes against THIS process (the note
-// gate above applies), then record this process plus the note it rendered
-// on change only. Persistence is injected (get/set), so the orchestration
-// is testable without a database; a nil set or a failing store degrades to
-// "notes still render, nothing claimed". Read-before-write ordering
-// matters: the notes must describe the state BEFORE this turn's record
-// lands.
-func ApplyServedBy(
+// gate above applies), then record this process on change only — with the
+// STORED note proof, NOT the new one. The proof is acknowledgement-gated:
+// it advances only via ConfirmServedNote once the note's api_content
+// sidecar stamp lands (agent.turn_context._persist_turn_user_api_content),
+// so a turn that crashes before the stamp re-emits the note instead of
+// suppressing it forever. Read-before-write ordering matters: the notes
+// must describe the state BEFORE this turn's record lands. Persistence is
+// injected (get/set), so the orchestration is testable without a database;
+// a nil set or a failing store degrades to "notes still render, nothing
+// claimed". Returns the notes and the pending note the stamp ack must
+// confirm ("" when nothing is pending).
+func StageServedBy(
 	sessionID string,
 	s Snapshot,
 	get func(string) string,
 	set func(string, string) error,
-) []string {
+) ([]string, string) {
 	if get == nil {
 		get = func(string) string { return "" }
 	}
@@ -334,12 +339,46 @@ func ApplyServedBy(
 		stored = get(MetaKey(sessionID))
 	}
 	notes := TurnNotes(s, stored)
-	note := RuntimeNote(s)
-	if ValidSessionID(sessionID) && set != nil && RecordWriteNeeded(stored, s, note) {
+	// The note the stamp ack must confirm: the one just emitted, or — on a
+	// suppressed repeat — the stored proof it matched (a no-op confirm).
+	pending := StoredNote(stored)
+	if note := RuntimeNote(s); note != pending {
+		pending = note
+	}
+	if ValidSessionID(sessionID) && set != nil && RecordWriteNeeded(stored, s, StoredNote(stored)) {
 		// Write failures never break the turn: the identity note already
 		// rendered and no transition is claimed from a record we could not
 		// re-establish.
-		_ = set(MetaKey(sessionID), EncodeRecord(s, note))
+		_ = set(MetaKey(sessionID), EncodeRecord(s, StoredNote(stored)))
 	}
-	return notes
+	return notes, pending
+}
+
+// ConfirmServedNote is the ack half of the note gate, the decision twin of
+// gateway.serving_transition.confirm_served_note: advance the durable note
+// proof once the note's api_content sidecar stamp landed. Write-on-change,
+// keyed on the session's own record: an absent/corrupt record (the stage
+// write could not be established) or an already-current proof is a silent
+// no-op, and a nil/failing store degrades to false — never an error.
+func ConfirmServedNote(
+	sessionID, note string,
+	get func(string) string,
+	set func(string, string) error,
+) bool {
+	if !ValidSessionID(sessionID) || note == "" || get == nil || set == nil {
+		return false
+	}
+	var record servedByRecord
+	if err := json.Unmarshal([]byte(strings.TrimSpace(get(MetaKey(sessionID)))), &record); err != nil {
+		return false
+	}
+	if record.Note == note {
+		return false
+	}
+	if err := set(MetaKey(sessionID), EncodeRecord(Snapshot{
+		PID: record.PID, StartTime: record.StartTime,
+	}, note)); err != nil {
+		return false
+	}
+	return true
 }

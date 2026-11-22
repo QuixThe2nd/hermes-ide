@@ -260,7 +260,7 @@ func SessionStamp(pidRaw, startRaw string) (Snapshot, bool) {
 // when the record proves a different process served the previous turns.
 // Parity twin of gateway.serving_identity.serving_turn_notes composition
 // with gateway.serving_transition.session_turn_notes' read step; the
-// record's write step is ApplyServedBy.
+// record's stage/ack write steps are StageServedBy/ConfirmServedNote.
 func TurnNotes(s Snapshot, storedRecord string) []string {
 	// Non-nil base: a fully-suppressed turn renders as [] on the wire
 	// (JSON), never null.

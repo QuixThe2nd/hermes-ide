@@ -1795,7 +1795,7 @@ class TurnRunner(_TurnRunnerCore):
         from gateway.context_injection_labels import join_turn_notes, tag_turn_note
 
         turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
-        runtime_note, transition_note = session_turn_notes(
+        runtime_note, transition_note, pending_served_note = session_turn_notes(
             getattr(runner, "session_store", None),
             getattr(ctx, "session_id", None), runner)
         if runtime_note:
@@ -1811,6 +1811,12 @@ class TurnRunner(_TurnRunnerCore):
         agent._gateway_turn_context_notes, agent._gateway_turn_note_kinds = (
             join_turn_notes(turn_notes)
         )
+        # The staged note is not proof of delivery: the durable note proof
+        # advances only when the note's api_content sidecar stamp lands
+        # (agent.turn_context._persist_turn_user_api_content acks it), so a
+        # turn that crashes before the stamp re-emits the note next turn.
+        # Assigned unconditionally so a reused agent never confirms a stale note.
+        agent._gateway_serving_note_pending = pending_served_note
         # A transparent continuation defers the notes channel above, but a
         # restart just moved the conversation to a new process mid-turn —
         # stage the runtime notes on their own one-shot channel so the
