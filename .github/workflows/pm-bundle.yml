@@ -49,10 +49,6 @@ jobs:
             runner: macos-15
           - label: darwin-x64
             runner: macos-15-intel
-          - label: win32-x64
-            runner: windows-2025
-          - label: win32-arm64
-            runner: windows-11-arm
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -75,26 +71,6 @@ jobs:
           path: build/agent-payload/tools
           key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
 
-      # win32-arm64 builds cryptography from sdist (no win_arm64 wheel);
-      # its Rust core links OpenSSL statically from vcpkg.
-      - name: Cache vcpkg OpenSSL (arm64)
-        if: matrix.target.label == 'win32-arm64'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: C:\vcpkg\installed\arm64-windows-static-md
-          key: vcpkg-openssl-arm64-windows-static-md-${{ runner.os }}
-
-      - name: Install OpenSSL (arm64)
-        if: matrix.target.label == 'win32-arm64'
-        shell: bash
-        run: |
-          if [ ! -f "/c/vcpkg/installed/arm64-windows-static-md/lib/libcrypto.lib" ]; then
-            "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:arm64-windows-static-md
-          fi
-          {
-            printf 'OPENSSL_DIR=C:\\vcpkg\\installed\\arm64-windows-static-md\n'
-            printf 'OPENSSL_STATIC=1\n'
-          } >> "$GITHUB_ENV"
 
       - name: Pin CMake < 4 for sdist builds
         # python-olm (matrix extra) builds libolm from sdist on non-Linux
@@ -113,11 +89,8 @@ jobs:
       - name: Stage the payload
         shell: bash
         env:
-          # Windows runners default to cp1252; pm prints UTF-8 (✓/✗).
+          # pm prints UTF-8 (✓/✗); make sure the runner's locale agrees.
           PYTHONUTF8: '1'
-          # ring/obstore's C sources need clang, not MSVC, on windows-arm64.
-          # Scoped to the cargo target triple so every other sdist keeps MSVC.
-          CC_aarch64_pc_windows_msvc: ${{ matrix.target.label == 'win32-arm64' && 'clang' || '' }}
         run: |
           # The bootstrap interpreter tracks the payload interpreter's
           # minor version — one authority (pm/lock.json), no drift.

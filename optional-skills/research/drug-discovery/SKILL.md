@@ -1,7 +1,7 @@
 ---
 name: drug-discovery
 description: "Drug discovery: ChEMBL search, drug-likeness, interactions."
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 version: 1.0.0
 author: bennytimz
 license: MIT

@@ -4,7 +4,7 @@ description: Validated interactive HTML diagrams, upstream-maintained.
 version: 2.17.0
 author: tt-a1i
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [diagram, architecture, workflow, sequence, dataflow, state-machine, mermaid, html, svg]

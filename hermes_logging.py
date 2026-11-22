@@ -18,21 +18,10 @@ from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Windows-ONLY swap (#44873): stdlib ``RotatingFileHandler.doRollover()`` calls
-# ``os.rename()``, which fails with ``PermissionError [WinError 32]`` whenever
-# another process holds an append handle on ``agent.log`` — essentially always
-# in Hermes (TUI, gateway, hy_memory, MCP servers, CLI commands all log) —
-# pinning the file at the size threshold and spamming stderr on every emit.
-# ``concurrent-log-handler`` serializes rollover with a cross-process lock.
-# POSIX keeps stdlib: renames of open files work, and managed mode (NixOS)
-# relies on stdlib's exact ``_open()``/``doRollover()`` lifecycle for the
-# 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
-if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
-else:
-    from logging.handlers import RotatingFileHandler  # noqa: E402
+# POSIX keeps stdlib ``RotatingFileHandler``: renames of open files work, and
+# managed mode (NixOS) relies on stdlib's exact ``_open()``/``doRollover()
+# lifecycle for the 0660 chmod and eager file creation.
+from logging.handlers import RotatingFileHandler  # noqa: E402
 
 
 from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
@@ -65,20 +54,6 @@ def _safe_stderr():  # type: ignore[return]
         return wrapped
     except Exception:
         return stream  # best-effort: no buffer / wrapping failed -> original stream
-
-
-def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
-    """True for concurrent-log-handler's Windows lock timeout.
-
-    Slash-command workers and the gateway share rotating files on Windows Desktop;
-    when another process holds the rollover lock too long CLH raises this
-    RuntimeError, which must not escape into Desktop chat output.
-    """
-    return (
-        sys.platform == "win32"
-        and isinstance(exc, RuntimeError)
-        and "Cannot acquire lock after 20 attempts" in str(exc)
-    )
 
 
 def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
@@ -370,15 +345,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._unavailable_reported = False
 
     def handleError(self, record: logging.LogRecord) -> None:
-        """Suppress the known Windows ``concurrent-log-handler`` lock timeout.
-
-        CLH's ``emit()`` routes that RuntimeError here, so this is the single point to
-        silence it before stdlib prints to stderr (which the Desktop slash-worker
-        captures into chat output).
-        """
         exc = sys.exc_info()[1]
-        if _is_windows_concurrent_log_lock_timeout(exc):
-            return
         if _is_unavailable_log_stream(exc):
             # The QueueListener must not turn a failing log destination into a traceback for
             # every queued record. Name the path once, drop the stale stream; the next emit
@@ -594,9 +561,8 @@ def release_profile_log_handlers(profile_home: str | Path) -> int:
     """Release this process's routed log files below a profile before it is removed.
 
     The Desktop serve process can route records for several profiles through one
-    ``QueueListener``. On Windows, each routed concurrent log handler keeps its
-    lock file open, so closing only external profile resources still leaves
-    ``logs/.__agent.lock`` and ``logs/.__errors.lock`` unavailable to rmtree.
+    ``QueueListener``; those handlers stay open until explicitly closed, keeping
+    the profile's log files unavailable to rmtree.
     """
     global _queue_listener
     try:

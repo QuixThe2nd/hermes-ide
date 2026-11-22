@@ -32,7 +32,6 @@ def _force_local_terminal(monkeypatch):
     ensures each test starts (and ends) with the correct value.
     """
     monkeypatch.setenv("TERMINAL_ENV", "local")
-import sys
 import threading
 import unittest
 from unittest.mock import patch, MagicMock
@@ -87,8 +86,7 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
 
 class TestSandboxRequirements(unittest.TestCase):
     def test_available_on_posix(self):
-        if sys.platform != "win32":
-            self.assertTrue(check_sandbox_requirements())
+        self.assertTrue(check_sandbox_requirements())
 
     def test_schema_is_valid(self):
         self.assertEqual(EXECUTE_CODE_SCHEMA["name"], "execute_code")
@@ -244,7 +242,6 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
 
-@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
     """Integration tests using the mock dispatcher."""
 
@@ -572,7 +569,6 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
 # Environment variable filtering (security critical)
 # ---------------------------------------------------------------------------
 
-@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestEnvVarFiltering(unittest.TestCase):
     """Verify that execute_code filters environment variables correctly.
 
@@ -634,12 +630,7 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            if sys.platform == "win32":
-                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
-                # offset (#112233), so Windows children keep the OS zone instead.
-                self.assertNotIn("TZ", child_env)
-            else:
-                self.assertEqual(child_env.get("TZ"), "America/New_York")
+            self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -716,17 +707,13 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
         the sandbox unusable for this environment), execute_code returns
         an error JSON with a readable message pointing the caller at
-        regular tool calls.  Previously this was a Windows-only gate;
-        execute_code now works on Windows via loopback TCP, so the
-        error is only emitted when SANDBOX_AVAILABLE is explicitly
-        flipped off (e.g. for future platform-specific disables)."""
+        regular tool calls."""
         with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
             result = json.loads(execute_code("print('hi')", task_id="test"))
             self.assertIn("error", result)
             self.assertIn("unavailable", result["error"].lower())
 
 
-    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
     def test_nonoverlapping_tools_fallback(self):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
@@ -770,7 +757,6 @@ class TestLoadConfig(unittest.TestCase):
 # Interrupt event
 # ---------------------------------------------------------------------------
 
-@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestInterruptHandling(unittest.TestCase):
     def test_interrupt_event_stops_execution(self):
         """When interrupt is set for the execution thread, execute_code should stop."""

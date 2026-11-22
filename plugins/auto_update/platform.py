@@ -86,7 +86,7 @@ def detect_install_scope(
 
     home = (hermes_home or get_hermes_home()).resolve()
     if euid is None:
-        uid = os.getuid() if hasattr(os, "getuid") else 0  # windows-footgun: ok — Linux-only scope probe
+        uid = os.getuid() if hasattr(os, "getuid") else 0
     else:
         uid = euid
 

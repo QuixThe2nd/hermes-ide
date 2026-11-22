@@ -4,7 +4,7 @@ description: Box manages cloud files, sharing, search, and metadata.
 version: 1.0.0
 author: Chris Kim (iskysun96), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 prerequisites:
   commands: [box]
 metadata:
@@ -48,12 +48,10 @@ When a user selects an authentication path or asks Hermes to connect Box, perfor
 
 ## Start each task
 
-1. Confirm the CLI and current actor. Probe with `command -v box` on POSIX shells or `Get-Command box -ErrorAction SilentlyContinue` in PowerShell. If `box` is on `PATH`, use it. If Hermes installed the CLI under its current home, use the shell-appropriate verified runner in [CLI guide](references/cli-guide.md) in place of every leading `box`. Then run `box users:get me --json --fields id,name,login` with that runner.
+1. Confirm the CLI and current actor. Probe with `command -v box`. If `box` is on `PATH`, use it. If Hermes installed the CLI under its current home, use the verified runner in [CLI guide](references/cli-guide.md) in place of every leading `box`. Then run `box users:get me --json --fields id,name,login` with that runner.
    If this succeeds, record the actor and continue. Do not ask about authentication again. Treat `folders:items 0` only as a listing of the actor's root; it is not proof that a shared file, folder, or Hub is inaccessible. For a known file or folder, verify its ID directly; for a Hub, use the Hubs discovery path in [Box Hubs](references/hubs.md).
 2. If authentication is absent, ask to connect a Box account with OAuth, then ask whether Hermes and the authorization browser run on the same computer or on separate hosts. Read [OAuth setup](references/oauth-setup.md).
 3. Read the relevant reference before operating. Use documented commands first; only run subcommand help when the request needs an option not covered by the reference or the installed CLI rejects the documented form.
-
-Examples labeled `bash` use POSIX continuation syntax. In PowerShell, run the Box command on one line or replace each trailing `\` with PowerShell's backtick continuation. Do not paste POSIX variable assignments into PowerShell.
 
 ## Extend the CLI without pausing
 

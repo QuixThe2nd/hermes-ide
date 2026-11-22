@@ -24,9 +24,9 @@ _INSTALL_DEFINING_FILES = "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.i
 
 def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool:
     """True when the pulled commits cannot have invalidated the editable install: ``uv pip install
-    -e .`` always rewrites console-script shims (Windows: ``hermes.exe`` quarantine, ``os error 32``
-    on a lost race), so skip it when only non-install files changed. Safe because the editable
-    finder uses a *static* module list. Fails closed: no pre-pull SHA or failed diff -> False."""
+    -e .`` always rewrites console-script shims, so skip it when only non-install files changed. Safe
+    because the editable finder uses a *static* module list. Fails closed: no pre-pull SHA or failed
+    diff -> False."""
     if not pre_pull_sha:
         return False
     try:
@@ -47,7 +47,7 @@ def _critical_module_import_failures(
     root, *, report_runtime_errors: bool = False) -> dict[str, tuple[str, str]]:
     """Import each ``_UPDATE_CRITICAL_MODULES`` entry in a subprocess; return failures in probe order.
 
-    Syntax validation only *parses*: a partially-updated tree (Windows ZIP copy loop) parses yet
+    Syntax validation only *parses*: a partially-updated tree parses yet
     dies with ``ImportError: cannot import name``. The subprocess (venv interpreter when present —
     the updater may run under another Python) keeps import side effects out of our ``sys.modules``.
     Generic import-time exceptions are tolerated unless ``report_runtime_errors=True``.
@@ -87,7 +87,7 @@ def _critical_module_import_failures(
         with suppress(Exception):
             from hermes_cli import runtime_paths
             venv_dir = runtime_paths.selected_venv(Path(root))
-            venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+            venv_python = venv_python_path(venv_dir)
             if venv_python.exists():
                 interpreter = str(venv_python)
         result = bounded_probe_run(
@@ -484,7 +484,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         # An unreadable/invalid committed selection is a KNOWN-unhealthy state (the repair
         # flow below re-syncs and re-commits); never raise.
         return False, str(exc)
-    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    venv_python = venv_python_path(venv_dir)
     if not venv_python.exists():
         # No venv: normal for a dev checkout (healthy), but on a MANAGED install (bootstrap
         # stamp or `.update-incomplete`) the venv IS the install — absence means an interrupted repair.
@@ -523,14 +523,14 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
 
 def _venv_dependency_set_stale() -> tuple[bool, str]:
     """Whether the venv's ``hermes-agent`` distribution was installed from an OLDER checkout than
-    the one on disk. The sync after a pull can be skipped (Windows hand-off child refused because
-    the serve backend held the venv, or died mid-install); the next run then finds git current,
+    the one on disk. The sync after a pull can be skipped (a hand-off child died mid-install);
+    the next run then finds git current,
     passes the import probe — the old release imports fine — and prints "Already up to date!" over
     stale pins (#97208). Probed in the venv's own interpreter; ``(stale, detail)``, unknown = not stale."""
     from hermes_cli.update_cmd import _m, _read_project_version
     expected = _read_project_version()
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
-    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    venv_python = venv_python_path(venv_dir)
     if not expected or not venv_python.exists():
         return False, ""
     try:
@@ -566,8 +566,8 @@ def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
 
     A venv touched by ``sudo pip``/``sudo hermes`` dies mid-update with ``venv/bin/hermes`` already
     deleted — never mutate a venv we can't safely mutate. Deliberately BOUNDED (venv root,
-    ``venv/bin``, first site-packages top level, ``*.dist-info`` children; ~2000 stats). POSIX-only:
-    ``[]`` on Windows and as root; ``[]`` on any surprise — must NEVER raise or add latency.
+    ``venv/bin``, first site-packages top level, ``*.dist-info`` children; ~2000 stats).
+    ``[]`` as root; ``[]`` on any surprise — must NEVER raise or add latency.
 
     See #83529.
     A later normal ``hermes update`` then dies mid-mutation inside ``uv pip install -e .`` ("Permission
@@ -577,8 +577,8 @@ def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
     from hermes_cli.update_cmd import _path_uid
     try:
         if not hasattr(os, "geteuid"):
-            return []  # windows-footgun: ok — POSIX ownership concept only
-        euid = os.geteuid()  # windows-footgun: ok — guarded by hasattr above
+            return []
+        euid = os.geteuid()
         if euid == 0:
             return []  # root can rewrite anything; nothing to refuse
 
@@ -652,7 +652,7 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
 def _sync_python_dependencies_after_pull(
     git_cmd, branch, pre_pull_sha, *, active_lazy_features, active_tool_dependencies,
-    _windows_gateway_resume, deferred_defects=None):
+    deferred_defects=None):
     """Reinstall Python deps for the pulled checkout in the post-swap interpreter.
     Ownership preflight and the transactional pm sync run before the bytecode
     sweep and feature/plugin repair; deferred defects are reported by the caller."""

@@ -105,7 +105,7 @@ body:
     id: os
     attributes:
       label: Operating System
-      description: e.g. Ubuntu 24.04, macOS 15.2, Windows 11
+      description: e.g. Ubuntu 24.04, macOS 15.2
       placeholder: Ubuntu 24.04
     validations:
       required: true

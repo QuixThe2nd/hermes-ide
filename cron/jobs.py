@@ -15,16 +15,12 @@ import os
 import re
 import uuid
 
-# Cross-process advisory locking for jobs.json: fcntl (Unix) or msvcrt (Windows). If both are
-# absent, _jobs_lock() degrades to in-process locking rather than failing.
+# Cross-process advisory locking for jobs.json via fcntl. If it is absent, _jobs_lock()
+# degrades to in-process locking rather than failing.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
     fcntl = None
-try:
-    import msvcrt
-except ImportError:  # pragma: no cover - non-Windows
-    msvcrt = None
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -250,9 +246,6 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
                 if time.monotonic() >= deadline:
                     return False
                 time.sleep(0.1)
-    if msvcrt is not None:
-        getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-        return True
     return None
 
 
@@ -261,8 +254,6 @@ def _release_flock(lock_fd) -> None:
     try:
         if fcntl is not None:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt is not None:
-            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
     except (OSError, IOError):
         pass
     finally:
@@ -577,7 +568,7 @@ def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> No
     """Restore a rewritten file's previous owner (POSIX, root writer only): atomic replace makes the
     file owned by the writer's euid, so a root CLI write (e.g. ``docker exec``) against the
     unprivileged gateway's store would flip jobs.json to root:root 0600 and lock the ticker out."""
-    if before is None or os.name != "posix":
+    if before is None:
         return
     geteuid = getattr(os, "geteuid", None)
     getegid = getattr(os, "getegid", None)

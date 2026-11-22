@@ -8,6 +8,7 @@ test patches on ``update_cmd`` stay effective).
 import logging
 from contextlib import suppress
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,23 +32,19 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 3
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
 _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
-#: Reinstalling through the official installer swaps in a Python whose SQLite is safe; the
-#: one-liner differs per OS (mirrors ``uninstall._REINSTALL_HINT``). windows -> command
-_REINSTALL_ONE_LINER = {
-    True: "iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
-    False: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
-}
+#: Reinstalling through the official installer swaps in a Python whose SQLite is safe
+#: (mirrors ``uninstall._REINSTALL_HINT``).
+_REINSTALL_ONE_LINER = "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
 
 
 def _sqlite_partial_completion_lines(sqlite_version: str) -> list[str]:
     """Shared ``⚠ Update partially complete`` wording for a vulnerable post-update SQLite, so the
     two completion banners cannot drift. The lead names the consequence, the second line the
     exact fix command."""
-    from hermes_cli.update_cmd import _m
     return [
         f"⚠ Update partially complete — your Python's SQLite ({sqlite_version}) has a known "
         "corruption bug. Hermes works, but sessions could be damaged.",
-        f"  Fix: run the installer again ({_REINSTALL_ONE_LINER[bool(_m()._is_windows())]}) "
+        f"  Fix: run the installer again ({_REINSTALL_ONE_LINER}) "
         "which installs a safe Python, then run `hermes doctor` to confirm.",
     ]
 
@@ -301,7 +298,7 @@ def _read_project_version() -> str | None:
     from hermes_cli.update_cmd import _m
     try:
         import tomllib
-        with open(_m().PROJECT_ROOT / "pyproject.toml", "rb") as fh:  # windows-footgun: ok — binary mode, tomllib requires bytes
+        with open(_m().PROJECT_ROOT / "pyproject.toml", "rb") as fh:
             version = tomllib.load(fh).get("project", {}).get("version")
         return str(version) if version else None
     except Exception:
@@ -330,7 +327,7 @@ def _post_update_sqlite_runtime_status():
     from hermes_constants import project_venv_dir
     from hermes_cli.sqlite_runtime import probe_sqlite_runtime
     venv_dir = project_venv_dir(_m().PROJECT_ROOT)
-    python = (venv_python_path(venv_dir, windows=_m()._is_windows()) if venv_dir is not None else Path(sys.executable))
+    python = (venv_python_path(venv_dir) if venv_dir is not None else Path(sys.executable))
     info = probe_sqlite_runtime(python)
     return info is not None and not info.wal_reset_vulnerable, info
 
@@ -509,7 +506,7 @@ def _ensure_fhs_path_guard() -> None:
     if _m().sys.platform != "linux":
         return
     try:
-        if os.geteuid() != 0:  # windows-footgun: ok — Linux FHS helper, guarded by sys.platform == "linux" above + AttributeError catch
+        if os.geteuid() != 0:
             return
     except AttributeError:
         return
@@ -614,7 +611,7 @@ def _resolve_pre_update_backup_mode(args) -> str:
 
 def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     """Verify live state.db after the snapshot: a concurrent process (antivirus, killed
-    gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently."""
+    gateway) can corrupt it and we'd otherwise exit 0 silently."""
     from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
     from hermes_cli.config import get_hermes_home
     _src_path = get_hermes_home() / "state.db"
@@ -761,6 +758,37 @@ def _run_pre_update_backup(args) -> Optional[str]:
     return snapshot_id
 
 
+def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
+    """Overwrite ``$HERMES_HOME/bootstrap-cache/install-<ref>.sh`` for *branch* from the fresh checkout.
+
+    Installer binaries built before the #67193 cache-refresh fix never re-download a cached
+    branch-ref script — ``install-main.sh`` cached at install time is reused forever. The
+    binary has no self-update path, so the poisoned cache outlives every ``hermes update``.
+    Overwriting the cached script for *branch* with the freshly pulled ``scripts/install.sh``
+    on every update turns the stale binary's unconditional reuse into a feature: it "reuses" a
+    file this function keeps permanently current. Post-#67193 installers re-download on each
+    run anyway, so for them this is a harmless pre-seed of the same bytes. Best-effort.
+    """
+    from hermes_cli.update_cmd import _m
+    with _best_effort('Could not refresh bootstrap-cache scripts after update: %s'):
+        cache_dir = Path(_m().get_hermes_home()) / "bootstrap-cache"
+        if not cache_dir.is_dir():
+            return
+        safe_ref = re.sub(r"[^A-Za-z0-9._-]", "_", str(branch or "main"))  # install_script.rs::sanitize_ref()
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", safe_ref):  # install_script.rs::is_valid_commit(): immutable pin
+            return
+        src = _m().PROJECT_ROOT / "scripts" / "install.sh"
+        cached = cache_dir / f"install-{safe_ref}.sh"
+        if not src.is_file() or not cached.is_file():
+            return  # this ref was never bootstrap-cached — nothing to heal
+        if cached.read_bytes() == src.read_bytes():
+            return
+        tmp = cached.with_suffix(cached.suffix + ".tmp")
+        tmp.write_bytes(src.read_bytes())
+        os.replace(tmp, cached)
+        print(f"  ✓ Refreshed installer bootstrap-cache script: {cached.name}")
+
+
 def _sweep_bytecode_after_update(branch: str) -> None:
     """Clear stale ``__pycache__`` (else gateway restart ImportErrors on names absent from old
     bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts."""
@@ -773,7 +801,7 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     if removed:
         print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
     _m()._record_bytecode_fingerprint()
-    _m()._refresh_bootstrap_cache_scripts(branch)
+    _refresh_bootstrap_cache_scripts(branch)
 
 
 def _profile_skill_sync_status(r) -> str:
@@ -824,14 +852,13 @@ def _refresh_cua_driver_after_update() -> None:
         refresh_cua_driver = bool(_load_updates_cfg().get("refresh_cua_driver", True))
 
     if (
-        refresh_cua_driver and sys.platform in ("darwin", "win32", "linux") and shutil.which("cua-driver")
+        refresh_cua_driver and sys.platform in ("darwin", "linux") and shutil.which("cua-driver")
     ):
         from hermes_cli.tools_config import install_cua_driver
         print()
         print("→ Refreshing cua-driver (Computer Use)...")
         # require_confirmed_update: install only when check-update positively reports a
         # newer release (update must stay fast; `computer-use install --upgrade` forces).
-        # Windows defers even confirmed updates (installer may need console/UAC consent).
         install_cua_driver(upgrade=True, require_confirmed_update=True, show_installer_progress=False)
 
 
@@ -860,14 +887,9 @@ def _print_profiles_without_credentials_notice() -> None:
 
 def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
-    Windows bin launchers, cua-driver refresh) that run after the summary."""
-    from hermes_cli.update_cmd import _m, _print_curator_first_run_notice, _print_curator_recent_run_notice
+    cua-driver refresh) that run after the summary."""
+    from hermes_cli.update_cmd import _print_curator_first_run_notice, _print_curator_recent_run_notice
 
-    def _migrate_windows_bin_path() -> None:
-        # Windows launchers into the managed bin dir: in-checkout launchers were swept by the
-        # autostash (--include-untracked) and updates never run install.ps1. No-op on POSIX.
-        from hermes_cli._install_repair import migrate_windows_bin_path
-        migrate_windows_bin_path(_m().PROJECT_ROOT)
 
     for message, step in (
         # v23 FTS layout is opt-in (existing indexes untouched); surface the command here.
@@ -875,7 +897,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
         ('Curator recent-run notice failed: %s', _print_curator_recent_run_notice),
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
-        ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),

@@ -14,11 +14,11 @@ from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
 from hermes_cli.tools_config_cua import (  # noqa: F401
-    _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
+    _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
     _cua_driver_contract_status, _cua_driver_install_ready, _pip_install, _cua_install_target_writable,
     install_cua_driver, _CUA_INSTALLER_TIMEOUT, _CUA_INSTALLER_DRAIN_GRACE, _CUA_LOCK_STALE_AFTER,
-    _clear_stale_windows_cua_install_lock, _clear_stale_cua_install_lock, _cua_install_lock_held,
-    _cua_release_endpoint_reachable, _repair_cua_driver_autostart_windows, _run_cua_driver_installer)
+    _clear_stale_cua_install_lock, _cua_install_lock_held,
+    _cua_release_endpoint_reachable, _run_cua_driver_installer)
 from hermes_cli.tools_config_post_setup import (  # noqa: F401
     _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
     _post_setup_already_installed, _module_installed, active_restorable_python_tool_dependencies,
@@ -73,7 +73,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
-    ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
+    ("computer_use",     "🖱️  Computer Use (macOS/Linux)", "background desktop control via cua-driver"),
     ("quota_channels",  "📊 Quota Channels",            "quota_channels_tick (Discord voice-channel quota display)"),
     ("assistant_handoff", "📤 Assistant Handoff",        "mission close or one-way escalation"),
     ("gateway",         "♻️ Gateway",                   "restart (same drain path as /restart)"),
@@ -295,9 +295,9 @@ TOOL_CATEGORIES = {
         ],
     },
     "computer_use": {
-        "name": "Computer Use (macOS/Windows/Linux)", "icon": "🖱️",
-        # Runtime backends ship for macOS, Windows, Linux (X11; Wayland via XWayland). Gaps surface via `computer-use doctor`.
-        "platform_gate": ["darwin", "win32", "linux"],
+        "name": "Computer Use (macOS/Linux)", "icon": "🖱️",
+        # Runtime backends ship for macOS, Linux (X11; Wayland via XWayland). Gaps surface via `computer-use doctor`.
+        "platform_gate": ["darwin", "linux"],
         # cua-driver reads HOME/TMPDIR from the process env; HERMES_CUA_DRIVER_CMD selects a specific
         # binary (e.g. a local build). There is no version-pin env var.
         "providers": [

@@ -52,7 +52,7 @@ def test_skill_frontmatter_is_valid_and_discoverable(frontmatter: dict):
 
     platforms = frontmatter.get("platforms")
     assert isinstance(platforms, list)
-    assert {"linux", "macos", "windows"}.issubset(platforms)
+    assert {"linux", "macos"}.issubset(platforms)
 
 
 def test_box_command_is_declared_without_universal_credential_gate(frontmatter: dict):

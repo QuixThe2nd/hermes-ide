@@ -165,7 +165,7 @@ def test_cli_restart_leads_with_control_socket(monkeypatch):
     monkeypatch.setattr(
         cli_gateway, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False
     )
-    monkeypatch.setattr(cli_gateway, "_installed_service_kind_for", lambda *a, **k: None)
+    monkeypatch.setattr(cli_gateway, "_installed_service_kind", lambda: None)
 
     args = SimpleNamespace(system=False, all=False, force=False)
     cli_gateway._cmd_restart(args)

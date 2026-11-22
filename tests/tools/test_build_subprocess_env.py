@@ -119,7 +119,7 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
 
     bin_dir = local_mod._resolve_hermes_bin_dir()
     if not bin_dir or not os.path.isfile(
-        os.path.join(bin_dir, "hermes.exe" if os.name == "nt" else "hermes")
+        os.path.join(bin_dir, "hermes")
     ):
         pytest.skip("no real hermes console-script install available")
 

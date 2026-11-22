@@ -496,7 +496,9 @@ def test_no_systemctl_means_no_serve_pass(monkeypatch):
 
 
 def test_non_linux_hosts_do_not_run_the_serve_pass(monkeypatch):
-    monkeypatch.setattr(recovery.sys, "platform", "win32")
+    # Not "darwin"/"win32": those are real hosts with their own lanes — this fake
+    # only needs to differ from "linux" to prove the guard (sys.platform != "linux").
+    monkeypatch.setattr(recovery.sys, "platform", "freebsd14")
     monkeypatch.setattr(recovery.shutil, "which", lambda name: "systemctl")
 
     def unreachable(*a, **k):

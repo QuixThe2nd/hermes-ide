@@ -55,7 +55,7 @@ if [ "${#INPUT[@]}" -eq 0 ]; then
       INPUT=(-f avfoundation -framerate 15 -capture_cursor 1 -i "${screen_idx}:none")
       ;;
     *)
-      echo "record-start: unsupported OS $(uname -s) (windows uses record-start.ps1)" >&2
+      echo "record-start: unsupported OS $(uname -s)" >&2
       exit 1
       ;;
   esac

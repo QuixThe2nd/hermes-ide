@@ -63,6 +63,9 @@ migrated or deleted while moving toward a 100% Go codebase; do not grow it.
 `.github/workflows/go-line-balance.yml` enforces this mechanically: every PR
 must keep `python added lines <= go added lines`, and a violating diff cannot
 merge (the check is required via "All required checks pass").
+Net Python deletions — where deleted `.py` lines are at least 10x the added
+`.py` lines — pass, so removal/cleanup PRs whose dedented leftovers git
+counts as added lines aren't blocked.
 
 ## Contribution Rubric — What We Want / What We Don't
 
@@ -99,8 +102,8 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
   class — sibling call paths included — not just the one site the reporter hit.
 - **Expand reach at the edges.** New platform adapters, channels, providers,
   models, and desktop/TUI features are welcome and land routinely,
-  including large ones (a new messaging channel, a session-cap feature, a
-  Windows PTY bridge). Breadth in the product is a goal, not a footprint
+  including large ones (a new messaging channel, a session-cap feature).
+  Breadth in the product is a goal, not a footprint
   concern — as long as it integrates with the existing setup/config UX
   (`hermes tools`, `hermes setup`, auto-install) rather than bolting on a raw
   env var.
@@ -1172,11 +1175,7 @@ plan → snapshot → apply → restart-per-kind → verify → report
   snapshots are FILE-LOSS RECOVERY (the per-profile cron-jobs safety
   net restores from them), NOT code-rollback insurance; `--backup` full
   mode owns rollback.
-- **Apply**: git pull, or the Windows ZIP fallback — which fires ONLY
-  when git itself failed (`_should_zip_fallback_on_update_error`,
-  argv-classified; a dependency-install failure must never trigger a
-  tree-clobbering re-download), and REFUSES a dirty working tree
-  (`-uall`, plus a pre-swap TOCTOU re-check).
+- **Apply**: git pull.
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE
   (every `hermes-gateway*` unit / `ai.hermes.gateway*` LaunchAgent),
   drain-first (SIGUSR1) with per-unit/per-label failure isolation.
@@ -1466,8 +1465,7 @@ def profile_env(tmp_path, monkeypatch):
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
 and a host-dispatched runner: per-file subprocess isolation on POSIX — spawn is
 ~15ms there, so each file gets a clean interpreter and is collected exactly
-once — and pytest-xdist `--dist loadfile` on Windows, where per-file spawn
-costs 0.5-1.5s and persistent workers amortize it). Direct `pytest`
+once). Direct `pytest`
 on a 16+ core developer machine with API keys set diverges from CI in ways
 that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 
@@ -1479,9 +1477,7 @@ scripts/run_tests.sh -v --tb=long                       # pass-through pytest fl
 ```
 
 **Flake policy:** on POSIX every file runs in its own subprocess (a failure
-is the file's own bug). On Windows, xdist `loadfile` co-schedules files on
-workers — an order-dependent failure there is a stateful-test bug to fix, not
-noise; fix it at the test, don't reach for runner changes. Timing-sensitive
+is the file's own bug). Timing-sensitive
 tests must not assume a quiet runner (loose wall-clock bounds ≥ 2s,
 event-based sync, no `assert not _wait_until(...)` negative-timing races).
 
@@ -1499,71 +1495,41 @@ event-based sync, no `assert not _wait_until(...)` negative-timing races).
 
 On POSIX, each test file runs in a freshly-spawned `python -m pytest <file>`
 subprocess (via `scripts/run_tests_parallel.py`), so module-level state cannot
-leak between files at all. On Windows, `--dist loadfile` pins each file to ONE
-xdist worker, bounding pollution to co-scheduled files — state shared across
-files is a bug to fix at the tests.
+leak between files at all.
 
 ### Don't fake the host OS
 
 Behaviour that genuinely differs per host is tested ON that host with `@pytest.mark.linux_only`
-/ `macos_only` / `windows_only`, never by patching `sys.platform`. Host-independent things stay
-unmarked: pure functions that take the platform as data (`hidden_windows_child_options(opts,
-is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tzdata` with a
-`sys_platform == 'win32'` marker"). Setting a module-level `IS_WINDOWS` flag and calling
-`windows_detach_flags()` IS a fake. The line: **if the test needs the interpreter to believe it
+/ `macos_only`, never by patching `sys.platform`. Host-independent things stay
+unmarked: pure functions that take the platform as data and declaration/packaging invariants.
+The line: **if the test needs the interpreter to believe it
 is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
-The `platforms` marker generalizes the trio: any number of spec strings with
+The `platforms` marker generalizes these: any number of spec strings with
 any-of semantics, plus optional architecture filters.
 
 ```python
 @pytest.mark.platforms("linux")                  # only on Linux
 @pytest.mark.platforms("not macos")              # anywhere except macOS
-@pytest.mark.platforms("windows", arch="arm64")  # native Windows on arm64
 @pytest.mark.platforms("posix")                  # linux or macOS
 ```
 
-Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
-`platforms` is the canonical form; the legacy `linux_only` / `macos_only` /
-`windows_only` markers remain accepted as aliases routing through the same
+Specs: `linux`, `macos`, `posix`, `any`, and `not <spec>`.
+`platforms` is the canonical form; the legacy `linux_only` / `macos_only`
+markers remain accepted as aliases routing through the same
 conftest gate. New tests should prefer `platforms`.
-
-Things that are host-independent can stay unmarked:
-
-- **Pure functions that take a platform as data** —
-  `hidden_windows_child_options(opts, is_windows=True)` is input→output, not a
-  fake host. (Contrast: setting a module-level `IS_WINDOWS` flag and then
-  calling `windows_detach_flags()` *is* a fake.)
-- **Declaration/packaging invariants** — "pyproject declares `tzdata` with a
-  `sys.platform == 'win32'` marker" asserts about a file, not about runtime.
 
 The line: **if the test needs the interpreter to believe it is on another OS
 in order to pass, it belongs on that OS.**
 When one test body walks several platforms in sequence, split it.
 Keep the host-native arm on the Linux lane and move the other arm into its own marked test.
 
-**Live Windows process-topology E2E: the `wine2e` lane.** For claims about
-real Windows process behavior that mocks cannot reproduce (venv-holder
-scans, process-tree parentage, launcher/worker chains, detach semantics),
-there is an on-demand workflow `windows-venv-e2e.yml` that runs
-`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
-`windows-latest` runner — spawning actual processes and driving the real
-detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
-branches (inert on PRs and main; costs nothing on normal work). The proven
-workflow: write probes that pin CORRECT behavior, push to a `wine2e/`
-branch to reproduce the bugs live on unfixed code, build the fix, iterate
-until the lane is green, then open the PR — the live receipt on the exact
-head is the Windows proof reviewers ask for. Extend the live suite when
-touching that subsystem; assert against the gateway ANCESTOR found by
-argv, not the direct parent (the venv shim makes every spawn a
-launcher/worker chain).
-
 **Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
 decides which files the macOS lane imports by grepping for the quoted spec
 inside `platforms(...)`, and the lane then selects with `-m platforms` while
 the conftest's per-test host skips do the actual gating. A test gated with
-`@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
+`@pytest.mark.skipif(sys.platform != "darwin")` therefore runs on no host at
 all, silently — it is never imported by the lane that would run it, and the
 full-suite lanes skip it. Don't stack a module-level `pytestmark =
 platforms(...)` on a file whose tests carry their own host marker — the
@@ -1592,14 +1558,8 @@ A test that reads a `.py`/`.ts`/`.tsx` file's text tests the *shape of the sourc
 behavior — banned outright. It passes when the implementation is subtly broken (regex matches
 a mis-wired call site) and fails on correct refactors; it can't run against bundled/minified
 artifacts; it blocks structural cleanup; it gives false confidence. Don't
-`fs.readFileSync('main.ts')` + `assert.match(source, /spawn\(...hiddenWindowsChildOptions/)`.
-Do extract the logic into a pure/DI-testable function and call it:
-```ts
-export function hiddenWindowsChildOptions(options = {}, isWindows = process.platform === 'win32') {
-  if (!isWindows || 'windowsHide' in options) return options
-  return { ...options, windowsHide: true }
-}
-```
+`fs.readFileSync('main.ts')` + `assert.match(source, /spawn\(.../)`.
+Do extract the logic into a pure/DI-testable function and call it.
 If the logic lives inline in a god-file and extraction feels disruptive, that is the signal to
 extract, not to regex around it.
 

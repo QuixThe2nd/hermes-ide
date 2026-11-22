@@ -30,12 +30,6 @@ def _extract_heredoc_soul(install_sh: str) -> str:
     return match.group(1)
 
 
-def _extract_here_string_soul(install_ps1: str) -> str:
-    match = re.search(r'\$soulContent = @"\r?\n(.*?)\r?\n"@', install_ps1, re.DOTALL)
-    assert match, "$soulContent here-string not found in scripts/install.ps1"
-    return match.group(1)
-
-
 def test_default_soul_contains_credential_preflight():
     assert PREFLIGHT_PHRASE in DEFAULT_SOUL_MD
 
@@ -52,14 +46,6 @@ def test_default_soul_is_stock_safe():
 def test_install_sh_soul_seed_matches_default():
     text = (REPO_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
     assert _normalize(_extract_heredoc_soul(text)) == _normalize(DEFAULT_SOUL_MD)
-
-
-def test_install_ps1_soul_seed_matches_default():
-    text = (REPO_ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
-    # install.ps1 must stay pure ASCII, so it seeds "--" where the canonical
-    # DEFAULT_SOUL_MD uses an em dash. Runtime upgrades the ASCII seed in place.
-    seeded = _extract_here_string_soul(text).replace("--", "\u2014")
-    assert _normalize(seeded) == _normalize(DEFAULT_SOUL_MD)
 
 
 def test_docker_soul_md_matches_default():

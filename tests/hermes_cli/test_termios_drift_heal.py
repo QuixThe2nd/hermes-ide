@@ -14,12 +14,8 @@ These tests exercise the healer against a REAL pty pair — no mocks.
 """
 
 import os
-import sys
 
 import pytest
-
-if sys.platform == "win32":  # pragma: no cover
-    pytest.skip("termios drift healing is POSIX-only", allow_module_level=True)
 
 import termios
 import tty as _tty

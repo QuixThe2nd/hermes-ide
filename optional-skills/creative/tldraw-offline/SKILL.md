@@ -4,7 +4,7 @@ description: Drive and script tldraw offline canvases with an agent.
 version: 1.0.0
 author: Teknium + Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [tldraw, canvas, whiteboard, document-script, diagramming]

@@ -4,7 +4,7 @@ description: "AST-aware structural code search and rewrite via ast-grep."
 version: 1.0.0
 author: Yeongyu Kim (code-yeongyu), adapted by Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [ast, codemod, refactoring, structural-search, code-search, rewrite, tree-sitter]
@@ -16,7 +16,7 @@ metadata:
 
 `ast-grep` (binary also named `sg`) is an **AST-aware search and rewrite tool** across 25 languages. It treats your pattern as code, parses it the same way it parses your project, and matches structurally. It is the right tool whenever your question depends on **code shape** rather than text bytes.
 
-This skill ships a Python wrapper at `scripts/ast_grep_helper.py` and platform install scripts at `install.sh` (POSIX) and `install.ps1` (Windows). The helper adds offline pattern validation, the two-pass write trick, and binary auto-resolution. Use it as your default entry point.
+This skill ships a Python wrapper at `scripts/ast_grep_helper.py` and an install script at `install.sh`. The helper adds offline pattern validation, the two-pass write trick, and binary auto-resolution. Use it as your default entry point.
 
 Upstream source: vendored from [code-yeongyu/ast-grep-skill](https://github.com/code-yeongyu/ast-grep-skill) (MIT), as shipped in oh-my-openagent's shared-skills bundle.
 
@@ -142,7 +142,7 @@ python scripts/ast_grep_helper.py validate 'console.log($MSG)' --lang ts
 ```bash
 python scripts/ast_grep_helper.py langs       # list 25 supported languages and aliases
 python scripts/ast_grep_helper.py doctor      # check ast-grep binary availability
-python scripts/ast_grep_helper.py install     # delegate to install.sh / install.ps1
+python scripts/ast_grep_helper.py install     # delegate to install.sh
 ```
 
 `new` and `test` subcommands proxy directly to `sg new` and `sg test`.

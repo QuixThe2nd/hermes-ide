@@ -162,8 +162,7 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _find_binary(ctx, "pyright", ("pyright-langserver", "pyright"), "pyright")
     if bin_path is None:
         return None
-    # If we got the cli ``pyright``, the langserver is its sibling — same suffix, since on Windows
-    # the bare sibling is npm's unrunnable POSIX shim.
+    # If we got the cli ``pyright``, the langserver is its sibling (same suffix).
     stem, suffix = os.path.splitext(os.path.basename(bin_path))
     if stem == "pyright":
         sibling = os.path.join(os.path.dirname(bin_path), f"pyright-langserver{suffix}")
@@ -192,7 +191,7 @@ def _pm_store_python() -> Optional[str]:
         if not fact or "entry" not in fact:
             return None
         entry = paths.store_root() / fact["entry"]
-        exe = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+        exe = entry / "bin/python3"
         return str(exe) if exe.exists() else None
     except Exception:
         return None
@@ -205,7 +204,7 @@ def _detect_python(root: str) -> Optional[str]:
     if pm_python:
         return pm_python
     venvs = [os.path.join(root, ".venv"), os.path.join(root, "venv")]
-    paths = (os.path.join(v, sub) for v in venvs for sub in ("bin/python", "bin/python3", "Scripts/python.exe"))
+    paths = (os.path.join(v, sub) for v in venvs for sub in ("bin/python", "bin/python3"))
     return next((p for p in paths if os.path.exists(p)), None)
 
 

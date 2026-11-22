@@ -18,13 +18,10 @@ def _hold_gil(secs: int) -> None:
     """Block in a foreign call that keeps the GIL — mirrors native ``primp``.
     ``ctypes.PyDLL`` (unlike ``CDLL``/``WinDLL``) does not release the GIL."""
     import ctypes
-    if sys.platform == "win32":
-        sleep, secs = ctypes.PyDLL("kernel32").Sleep, secs * 1000
-    else:
-        try:
-            sleep = ctypes.PyDLL(None).sleep
-        except AttributeError:  # pragma: no cover — macOS libSystem fallback
-            sleep = ctypes.PyDLL("/usr/lib/libSystem.B.dylib").sleep
+    try:
+        sleep = ctypes.PyDLL(None).sleep
+    except AttributeError:  # pragma: no cover — macOS libSystem fallback
+        sleep = ctypes.PyDLL("/usr/lib/libSystem.B.dylib").sleep
     sleep.argtypes = [ctypes.c_uint]
     sleep(int(secs))
 

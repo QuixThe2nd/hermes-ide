@@ -14,7 +14,6 @@ semantics cannot be mocked.
 
 import os
 import signal
-import sys
 import textwrap
 import threading
 import time
@@ -22,10 +21,6 @@ import time
 import pytest
 
 from agent.shell_hooks import ShellHookSpec, _spawn
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX process-group semantics"
-)
 
 
 def _spec(command: str, timeout: int = 2) -> ShellHookSpec:

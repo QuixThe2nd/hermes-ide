@@ -144,8 +144,7 @@ class TestReadJournalMode:
         finally:
             holder.close()
 
-    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
     def test_read_only_directory_is_still_readable(self, tmp_path):
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
@@ -286,14 +285,7 @@ class TestUnreadableReason:
 
         assert "No such file or directory" in reason
 
-    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(
-        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
-        # collection time — calling it unguarded would raise AttributeError
-        # and take the whole module down on Windows.
-        hasattr(os, "geteuid") and os.geteuid() == 0,
-        reason="root ignores file permissions",
-    )
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
     def test_unreadable_file_is_reported_as_permission_denied(self, tmp_path):
         db = tmp_path / "state.db"
         _make_db(db)
@@ -398,8 +390,7 @@ class TestReportDatabaseJournalModes:
         out = capsys.readouterr().out
         assert "state.db: rollback journal mode" in out
 
-    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
     def test_unreadable_database_does_not_crash(self, tmp_path, capsys):
         db = tmp_path / "state.db"
         _make_db(db)
@@ -460,7 +451,6 @@ class TestConfiguredDeleteNeverApplied:
         assert "state.db: WAL journal mode" not in out
         assert ("To clear the exposure:" in out) is exposed
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="holder scan has no Windows backend")
     def test_wal_db_under_configured_delete_names_its_holders(self, tmp_path, capsys, monkeypatch):
         # The offline conversion needs the file quiet, so doctor must say WHICH process to stop — a
         # subprocess holding a real connection is named by PID; the doctor process itself is not a holder.

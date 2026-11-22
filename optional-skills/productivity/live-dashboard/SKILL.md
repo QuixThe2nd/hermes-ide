@@ -4,7 +4,7 @@ description: "Build self-updating dashboards from live sources."
 version: 0.2.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [dashboards, monitoring, status, automation, reporting]

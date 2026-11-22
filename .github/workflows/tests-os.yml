@@ -4,15 +4,14 @@ name: OS-specific tests
 #
 # The main Python suite (.github/workflows/tests.yml) runs on
 # ubuntu-latest and covers everything that is either platform-agnostic or
-# genuinely Linux-specific. Tests whose subject is macOS- or
-# Windows-specific behaviour carry a marker (see the ``_OS_MARKS`` block
+# genuinely Linux-specific. Tests whose subject is macOS-specific
+# behaviour carry a marker (see the ``_OS_MARKS`` block
 # comment in tests/conftest.py) and are SKIPPED on Linux, because faking
 # ``sys.platform`` on a Linux runner selects the branch under test without
 # reproducing any of the OS behaviour that branch exists for. This workflow
 # is where those markers actually execute:
 #
 #   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
@@ -48,9 +47,6 @@ jobs:
           - name: macOS-only tests
             runner: macos-latest
             marker: macos
-          - name: Windows-only tests
-            runner: windows-latest
-            marker: windows
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -75,7 +71,7 @@ jobs:
       - name: Install dependencies
         # Same extras as the Linux test lane so an OS-marked test can import
         # anything its Linux siblings can. ``[all]`` is deliberately
-        # Windows/macOS-installable (see the policy comment on the extra in
+        # macOS-installable (see the policy comment on the extra in
         # pyproject.toml — matrix/python-olm was removed from it precisely
         # because it could not build here).
         uses: ./.github/actions/retry
@@ -105,8 +101,7 @@ jobs:
         # repeating ``not integration``).
         #
         # ``--timeout-method`` needs no override: tests/conftest.py's
-        # pytest_configure already downgrades the signal-based timer on
-        # Windows, which has no SIGALRM.
+        # pytest_configure already handles the timer method per host.
         shell: bash
         run: |
           set -uo pipefail
@@ -128,10 +123,6 @@ jobs:
           echo "selected file(s) for ${{ matrix.marker }}:"
           cat "$LIST"
 
-          # ``tr -d '\r'``: on Windows the helper's redirected stdout gains
-          # CRLF line endings; a stray \r would corrupt the path. The list
-          # uses the native path-list separator consumed by --files.
-          #
           # Any non-zero exit propagates red: real test failures, or the
           # runner's own zero-run guard (every file filtered to empty by
           # ``-m`` — "must never pass without running its OS's tests").

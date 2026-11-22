@@ -93,13 +93,9 @@ def sideenv_python(root: Path | None = None) -> Path | None:
     gen = _active_generation(root)
     if gen is None:
         return None
-    # Probe both standard venv layouts. Keeping the layout pair host-independent
-    # also lets the same installation record be inspected by setup/health probes
-    # running on another host (and avoids making the fixtures fake the host OS).
-    for scripts, exe in (("Scripts", "python.exe"), ("bin", "python")):
-        candidate = gen / ".venv" / scripts / exe
-        if candidate.is_file():
-            return candidate
+    candidate = gen / ".venv" / "bin" / "python"
+    if candidate.is_file():
+        return candidate
     return None
 
 

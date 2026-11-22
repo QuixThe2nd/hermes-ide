@@ -9,7 +9,6 @@ that answer.
 
 import logging
 import os
-import sys
 import threading
 from unittest.mock import patch
 
@@ -18,7 +17,6 @@ import pytest
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ExecuteResult, ShellFileOperations
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell probes")
 
 READ_PROBE_MARK = "__HERMES_RF_"
 

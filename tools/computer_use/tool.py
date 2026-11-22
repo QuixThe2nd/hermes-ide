@@ -1,4 +1,4 @@
-"""`computer_use` tool entry point: any-model desktop control (macOS/Windows/Linux) via cua-driver.
+"""`computer_use` tool entry point: any-model desktop control (macOS/Linux) via cua-driver.
 Return contract: text-only results are a JSON string; captures / `capture_after=True` return
 ``{"_multimodal": True, "content": [text, image_url], "text_summary": <fallback>}`` (run_agent.py /
 the Anthropic adapter turn it into provider-specific image tool content)."""
@@ -762,8 +762,8 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
 def check_computer_use_requirements() -> bool:
-    """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
-    if sys.platform not in ("darwin", "win32", "linux"):
+    """macOS/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
+    if sys.platform not in ("darwin", "linux"):
         return False
     from tools.computer_use.cua_backend_driver import cua_driver_binary_available
     return cua_driver_binary_available()

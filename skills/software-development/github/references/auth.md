@@ -149,8 +149,6 @@ If `gh` is installed, it handles both API access and git credentials in one step
 
 ### Interactive Browser Login (Desktop)
 
-> **PITFALL (agent-driven sessions on Windows):** when driving `gh auth login` through a pty background process, answer prompts with `process(submit)` — never `process(write)` with a bare `\n`. Enter on a Windows PTY (ConPTY/pywinpty) is a carriage return; a lone `\n` is not delivered as a line terminator, so gh's "Press Enter to open the browser" prompt (a blocking line read) silently never returns and the login hangs. Also note the browser may not open on the user's desktop from a background session — if they report that, fall back to the device flow below.
-
 ```bash
 gh auth login
 # Select: GitHub.com
@@ -197,8 +195,6 @@ while true; do
   esac
 done
 ```
-
-Note: on Windows winget installs, gh lands at `/c/Program Files/GitHub CLI` — add it to PATH in the same shell: `export PATH="$PATH:/c/Program Files/GitHub CLI"`.
 
 > **PITFALL (headless Linux): `gh auth login --with-token` can hang forever.**
 > On keyring-less/headless boxes (VPS, containers, no dbus session), gh's

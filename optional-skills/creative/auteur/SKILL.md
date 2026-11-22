@@ -4,7 +4,7 @@ description: Design and build cinematic, award-level web pages.
 version: 1.3.1
 author: agiwhitelist (https://github.com/agiwhitelist, upstream agiwhitelist/auteur), ported by Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [web-design, cinematic, scroll-animation, design-system, anti-slop, frontend]

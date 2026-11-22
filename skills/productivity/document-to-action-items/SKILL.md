@@ -4,7 +4,7 @@ description: "Extract cited obligations, deadlines, tasks from documents."
 version: 0.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Documents, OCR, Action-Items, Deadlines, Extraction]

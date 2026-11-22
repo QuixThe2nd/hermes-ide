@@ -8,13 +8,10 @@ so tests monkeypatching it there keep working."""
 
 import logging
 import os
-import platform
 import sys
 from pathlib import Path
 
 from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
-
-_IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger("tools.environments.local")
 
@@ -34,11 +31,10 @@ def _same_path(left: Path, right: Path) -> bool:
 def _build_hermes_repo_root_aliases(
     resolved_root: Path, lexical_root: Path, configured_home: Path,
 ) -> tuple[Path, ...]:
-    """Exact repo-root spellings emitted by Hermes launchers. Mirrors
-    ``gateway_windows._preserve_hermes_home_path`` (physical path under the resolved
-    HERMES_HOME -> configured spelling) so a junction-backed install matches without
-    treating arbitrary HERMES_HOME descendants as Hermes-owned. A repo-level junction
-    (possibly cross-drive) is accepted only when a strict resolve proves
+    """Exact repo-root spellings emitted by Hermes launchers. A symlinked or
+    junction-backed install must match without treating arbitrary HERMES_HOME
+    descendants as Hermes-owned. A repo-level link (possibly cross-drive) is
+    accepted only when a strict resolve proves
     <root>/<repo dirname> is the physical root (fail-closed)."""
     candidates = [resolved_root, lexical_root]
     # Profile re-home: with --profile the configured home is <root>/profiles/<name>
@@ -104,8 +100,7 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
                 pass
             if not result:
                 pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
-                result.append(Path(sys.prefix) / "Lib" / "site-packages" if _IS_WINDOWS
-                              else Path(sys.prefix) / "lib" / pyver / "site-packages")
+                result.append(Path(sys.prefix) / "lib" / pyver / "site-packages")
         local._hermes_site_packages = list(result)
     result = list(local._hermes_site_packages)
 

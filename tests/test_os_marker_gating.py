@@ -29,7 +29,7 @@ class _FakeItem:
 def test_single_platforms_marker_is_accepted():
     items = [
         _FakeItem("t.py::test_linux", pytest.mark.platforms("linux")),
-        _FakeItem("t.py::test_win", pytest.mark.platforms("windows", arch="arm64")),
+        _FakeItem("t.py::test_arch", pytest.mark.platforms("macos", arch="arm64")),
         _FakeItem("t.py::test_not", pytest.mark.platforms("not macos")),
     ]
     _reject_contradictory_platform_marks(items)  # must not raise
@@ -50,7 +50,7 @@ def test_two_platforms_markers_fail_collection():
         _FakeItem(
             "t.py::test_bad",
             pytest.mark.platforms("linux"),
-            pytest.mark.platforms("windows"),
+            pytest.mark.platforms("macos"),
         ),
     ]
     with pytest.raises(pytest.UsageError) as excinfo:

@@ -363,8 +363,6 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
             "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
         }
-        if os.name == "nt":
-            return False
         kwargs["start_new_session"] = True
         try:
             await asyncio.to_thread(

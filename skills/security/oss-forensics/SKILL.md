@@ -4,7 +4,7 @@ description: "GitHub supply-chain forensics: recovery, IOCs, reporting."
 version: 1.0.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 category: security
 triggers:
   - "investigate this repository"

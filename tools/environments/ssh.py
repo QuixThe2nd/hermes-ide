@@ -20,10 +20,8 @@ from tools.environments.remote_common import (
 
 logger = logging.getLogger(__name__)
 
-# Windows OpenSSH has no Unix-socket ControlMaster: ControlPath/ControlMaster options
-# fail the connection outright ('getsockname failed: Not a socket'). Skip multiplexing there.
-# Skip multiplexing there; each command pays a fresh connection but the backend works. See #73927.
-_SSH_MULTIPLEX = os.name != "nt"
+# ControlMaster multiplexing: reuse one authenticated master connection per host.
+_SSH_MULTIPLEX = True
 
 # Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars

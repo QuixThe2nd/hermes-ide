@@ -385,34 +385,6 @@ def test_non_rg_command_cache_keeps_cached_misses_and_bool_values():
     assert len([c for c in env.commands if c.startswith("command -v find")]) == 1
 
 
-@pytest.mark.platforms("windows")
-def test_off_path_windows_rg_miss_is_reprobed_then_success_is_cached(
-    tmp_path, monkeypatch
-):
-    local_app_data = tmp_path / "Local Data"
-    candidate = local_app_data / "Microsoft" / "WinGet" / "Links" / "rg.exe"
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "User Profile"))
-    monkeypatch.delenv("SCOOP", raising=False)
-    ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))
-    probes = []
-
-    def command_v_miss(command, **kwargs):
-        probes.append(command)
-        from tools.file_operations import ExecuteResult
-        return ExecuteResult(stdout="", exit_code=1)
-
-    monkeypatch.setattr(ops, "_exec", command_v_miss)
-
-    assert ops._resolve_command("rg") is None
-    candidate.parent.mkdir(parents=True)
-    candidate.write_text("")
-    expected = str(candidate).replace("\\", "/")
-    assert ops._resolve_command("rg") == expected
-    assert ops._resolve_command("rg") == expected
-    assert probes == ["command -v rg 2>/dev/null", "command -v rg 2>/dev/null"]
-
-
 def test_remote_resolution_never_probes_controller_host_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "controller-local"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "controller-user"))
@@ -428,42 +400,6 @@ def test_remote_resolution_never_probes_controller_host_paths(tmp_path, monkeypa
     assert ops._resolve_command("rg") is None
     assert env.commands == ["command -v rg 2>/dev/null"]
     assert str(tmp_path) not in env.commands[0]
-
-
-@pytest.mark.platforms("windows")
-def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
-    env = RecordingEnvironment()
-
-    def execute(command, **kwargs):
-        env.commands.append(command)
-        if command.startswith("test -e "):
-            return {"output": "exists\n", "returncode": 0}
-        if command.startswith("command -v rg"):
-            return {"output": "/c/remote-tools/rg\n", "returncode": 0}
-        if "--files" in command:
-            return {"output": "/repo/a.py\n", "returncode": 0}
-        return {"output": "", "returncode": 1}
-
-    env.execute = execute
-
-    result = ShellFileOperations(env).search("*.py", path="/repo", target="files")
-
-    assert result.files
-    assert "'/c/remote-tools/rg' --files" in env.rg_commands[0]
-    assert "C:/remote-tools/rg" not in env.rg_commands[0]
-
-
-@pytest.mark.platforms("windows")
-def test_every_windows_drive_root_is_broad_even_when_home_is_on_another_drive(
-    tmp_path, monkeypatch
-):
-    import tools.file_operations as file_operations
-
-    monkeypatch.setattr(file_operations, "_HOME", "C:/Users/alice")
-    ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))
-
-    assert ops._is_broad_local_search_root("D:/") is True
-    assert ops._is_broad_local_search_root("D:/repo") is False
 
 
 def test_modified_multi_path_search_preserves_exact_order_request():

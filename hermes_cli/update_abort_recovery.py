@@ -119,11 +119,7 @@ def _run_fresh_recovery_process(
         # Gateway profiles run sequentially at up to 90s each, plus the serve pass's own
         # restart + settle budget — don't kill a recovery that was working.
         "timeout": max(180, 30 + 90 * len(profiles) + (150 if recover_serve else 0))}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0))
-    else:
-        kwargs["start_new_session"] = True
+    kwargs["start_new_session"] = True
     try:
         return subprocess.run(command, **kwargs)
     except (OSError, subprocess.TimeoutExpired) as exc:

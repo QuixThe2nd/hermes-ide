@@ -362,33 +362,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     return expand_result.stdout.strip() + path[1 + len(username):]
         return path
 
-    def _escape_shell_arg(self, arg: str, translate_path: bool = True) -> str:
-        """Single-quote ``arg`` for the shell. On Windows, native drive paths and
-        mixed MSYS leftovers are first rewritten to the Git Bash ``/c/Users/x``
-        form via the env-layer ``_bash_safe_path`` (bash eats backslashes; MSYS
-        mangles drive paths), so shell file ops and the terminal ``cd`` agree.
-
-        ``translate_path=False`` skips that translation for non-path values
-        (regex patterns) whose backslashes are meaningful. Bash single
-        quotes preserve those bytes; only path arguments are translated.
-        """
-        from tools.environments.local import _IS_WINDOWS, _bash_safe_path
-
-        if translate_path:
-            arg = _bash_safe_path(arg)
-        elif _IS_WINDOWS:
-            arg = arg.replace("\\", "\\\\")
-        # Use single quotes and escape any single quotes in the string
-        return "'" + arg.replace("'", "'\"'\"'") + "'"
-
-    def _escape_native_tool_arg(self, arg: str) -> str:
-        """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't
-        understand the MSYS ``/c/...`` form and Hermes disables MSYS argument
-        conversion, so nothing translates it back (→ ``os error 3``). ``C:/Users/x``
-        is accepted by every layer. Identical to ``_escape_shell_arg`` off Windows."""
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
-        if _IS_WINDOWS and arg:
-            arg = _msys_to_windows_path(arg).replace("\\", "/")
+    def _escape_shell_arg(self, arg: str) -> str:
+        """Single-quote ``arg`` for the shell. Bash single quotes preserve the
+        bytes verbatim, including any backslashes."""
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
@@ -720,16 +696,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             file_size=file_size, file_ends_with_newline=file_ends_with_newline)
 
     def _native_read_enabled(self) -> bool:
-        """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
-        (file is on this host, path already native; Windows keeps the shell path since
-        file_operations holds Git-Bash-style paths there). ``HERMES_NATIVE_FILE_READ=0``
-        turns the fast path off."""
+        """Whether ``read_file`` and ``search_files`` may bypass the shell: only
+        ``LocalEnvironment`` (file is on this host, path already native).
+        ``HERMES_NATIVE_FILE_READ=0`` turns the fast path off."""
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False
         # Same "is this env the local host" test the LSP path uses; isinstance is
         # microseconds and self.env is never rebound, so nothing to memoize.
-        return sys.platform != "win32" and self._lsp_local_only()
+        return self._lsp_local_only()
 
     def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
         """``read_file`` without a shell — same contract as the shell path, byte for

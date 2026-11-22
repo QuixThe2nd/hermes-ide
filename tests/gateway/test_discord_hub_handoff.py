@@ -1149,7 +1149,6 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     monkeypatch.setattr(gateway_run, "_enable_multiplex_log_routing", lambda config: None)
     monkeypatch.setattr(gateway_run, "_start_gateway_claim_pid_file", lambda: GATEWAY_CLAIM_SUCCESSOR_PENDING)
     monkeypatch.setattr(gateway_run, "_discover_gateway_mcp_tools", AsyncMock())
-    monkeypatch.setattr("gateway.run._ensure_windows_gateway_venv_imports", lambda: None)
     monkeypatch.setattr("gateway.shutdown_flush.recover_pending_to_db", lambda **kwargs: 0)
     replace = AsyncMock()
     monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", replace)

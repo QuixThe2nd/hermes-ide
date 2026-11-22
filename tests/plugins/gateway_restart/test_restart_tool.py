@@ -420,7 +420,7 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     assert result["via_service"] is True
     assert "active_agents" in result
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True
+        detached=False, via_service=True, from_update=False
     )
 
 
@@ -439,7 +439,7 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
     assert result["status"] == "restarting"
     assert result["via_service"] is False
     runner.request_restart.assert_called_once_with(
-        detached=True, via_service=False
+        detached=True, via_service=False, from_update=False
     )
 
 
@@ -458,7 +458,7 @@ def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
     assert result["success"] is True
     assert result["via_service"] is True
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True
+        detached=False, via_service=True, from_update=False
     )
 
 

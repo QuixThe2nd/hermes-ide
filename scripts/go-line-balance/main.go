@@ -4,12 +4,18 @@
 // It counts lines added between the merge-base of a base ref and a head
 // ref, classifies them by path suffix (.py / .go), and fails when Python
 // additions exceed Go additions. Added lines only — deletions never
-// offset additions — and binary diffs are ignored. No path filters, no
-// exemptions.
+// offset additions — and binary diffs are ignored. No path filters.
+//
+// One exemption: a diff whose Python deleted lines are at least 10x its
+// Python added lines passes even when additions exceed Go additions.
+// Removal and cleanup PRs can leave a few dedented lines that git counts
+// as additions; when deletions dominate by an order of magnitude, the
+// change is still net-removal and is not blocked.
 //
 // Exit codes:
 //
-//	0  go added lines >= python added lines
+//	0  go added lines >= python added lines, or net-deletion exemption
+//	   (python deleted lines >= 10x python added lines)
 //	1  python added lines > go added lines
 //	2  git or input error
 package main
@@ -27,9 +33,10 @@ import (
 )
 
 const (
-	exitBalanced  = 0
-	exitViolation = 1
-	exitError     = 2
+	exitBalanced      = 0
+	exitViolation     = 1
+	exitError         = 2
+	netDeletionFactor = 10
 )
 
 func main() {
@@ -56,7 +63,14 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "base: %s\n", counts.Base)
 	fmt.Fprintf(stdout, "head: %s\n", counts.Head)
 	fmt.Fprintf(stdout, "python added lines: %d\n", counts.Python)
+	fmt.Fprintf(stdout, "python deleted lines: %d\n", counts.PythonDeleted)
 	fmt.Fprintf(stdout, "go added lines: %d\n", counts.Go)
+	if counts.Python > counts.Go && counts.netPythonDeletion() {
+		fmt.Fprintf(stdout, "net-deletion exemption: python deleted >= %dx added\n", netDeletionFactor)
+		fmt.Fprintf(stdout, "OK: python deleted lines (%d) >= %d x python added lines (%d)\n",
+			counts.PythonDeleted, netDeletionFactor, counts.Python)
+		return exitBalanced
+	}
 	if counts.Python > counts.Go {
 		fmt.Fprintf(stdout, "FAIL: python added lines (%d) exceed go added lines (%d)\n",
 			counts.Python, counts.Go)
@@ -69,10 +83,17 @@ func run(argv []string, stdout, stderr io.Writer) int {
 
 // lineCounts holds the resolved refs and added-line totals of one diff.
 type lineCounts struct {
-	Base   string
-	Head   string
-	Python int
-	Go     int
+	Base          string
+	Head          string
+	Python        int
+	PythonDeleted int
+	Go            int
+}
+
+// netPythonDeletion reports whether the diff removes at least 10 Python
+// lines for every Python line it adds — a net Python deletion.
+func (c lineCounts) netPythonDeletion() bool {
+	return c.Python > 0 && c.PythonDeleted >= netDeletionFactor*c.Python
 }
 
 func countAddedLines(ctx context.Context, repo, base, head string) (lineCounts, error) {
@@ -116,10 +137,15 @@ func (c *lineCounts) addNumstat(out string) {
 		if err != nil {
 			continue
 		}
+		d, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
 		path := bPath(fields[2])
 		switch {
 		case strings.HasSuffix(path, ".py"):
 			c.Python += n
+			c.PythonDeleted += d
 		case strings.HasSuffix(path, ".go"):
 			c.Go += n
 		}

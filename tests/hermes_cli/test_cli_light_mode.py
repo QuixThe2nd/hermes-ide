@@ -402,7 +402,6 @@ def repo_root():
     return pathlib.Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX PTY test")
 class TestOsc11Da1Fence:
     def test_herdr_style_da1_only_returns_none_without_leak(self, repo_root):
         """Terminal answers DA1 instantly but swallows OSC 11 (herdr)."""

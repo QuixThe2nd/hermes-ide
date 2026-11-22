@@ -2,7 +2,7 @@
 """List the test files that carry a platforms() gate for a given platform.
 
 Used by the marked-OS lane of ``.github/workflows/tests-os.yml`` to scope
-what the macOS/Windows lanes import: ``-m platforms`` filters AFTER
+what the macOS lane imports: ``-m platforms`` filters AFTER
 collection, and collection imports every test module under ``tests/``, so
 narrowing the imported paths keeps each lane's failure signal about its
 own tests instead of failing on ~900 unrelated imports.
@@ -38,16 +38,15 @@ import os
 import sys
 from pathlib import Path
 
-_VALID_PLATFORMS = ("linux", "macos", "windows")
+_VALID_PLATFORMS = ("linux", "macos")
 
 # Host sets each positive leaf spec can run on (mirrors the conftest's
 # _PLATFORM_ALIASES evaluation, expressed over lane names).
 _SPEC_HOSTS = {
     "linux": {"linux"},
     "macos": {"macos"},
-    "windows": {"windows"},
     "posix": {"linux", "macos"},
-    "any": {"linux", "macos", "windows"},
+    "any": {"linux", "macos"},
 }
 
 

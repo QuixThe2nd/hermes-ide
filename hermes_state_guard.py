@@ -28,11 +28,7 @@ def _real_platform_state_root() -> Optional[Path]:
     reads HOME/passwd, which the conftest never rewrites."""
     try:
         home = Path(os.path.expanduser("~"))
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA", "").strip()
-            root = Path(base) / "hermes" if base else home / "AppData" / "Local" / "hermes"
-        else:
-            root = home / ".hermes"
+        root = home / ".hermes"
         return root.resolve()
     except Exception:
         return None

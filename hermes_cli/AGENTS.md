@@ -113,17 +113,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   torn-restore states across schema generations. Quick snapshots are FILE-LOSS RECOVERY (the
   per-profile cron-jobs safety net restores from them), NOT code-rollback insurance; `--backup`
   full mode owns rollback.
-- **Apply**: git pull, or the Windows ZIP fallback — which fires ONLY when git itself failed
-  (`_should_zip_fallback_on_update_error`, argv-classified; a dependency-install failure must never
-  trigger a tree-clobbering re-download), REFUSES a dirty working tree (`-uall` + a pre-swap TOCTOU
-  re-check — but classifies a `!!` line by whether the swap would destroy it: an ignored path under a
-  root entry the ZIP does not ship (`.bytecode-fingerprint`, `.hermes-bootstrap-complete`,
-  `hermes_agent.egg-info/`; tracked root entries stand in for the ZIP set before the download, the
-  re-check gets the real one), a nested `__pycache__`/`node_modules`, or a `_ZIP_PRESERVED_NESTED`
-  output is admitted; other ignored files under shipped dirs still block), and grafts the live nested
-  build outputs (`_ZIP_PRESERVED_NESTED`: `ui-tui/{dist,node_modules,packages/hermes-ink/dist}`,
-  `scripts/whatsapp-bridge/node_modules`) into the staged swap by hardlink (the GitHub source ZIP has
-  none of them; without the graft the swap deletes them).
+- **Apply**: git pull.
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE (every `hermes-gateway*` unit /
   `ai.hermes.gateway*` LaunchAgent), drain-first (SIGUSR1), with per-unit/per-label failure
   isolation. Restarting only the invoking profile's service leaves siblings on stale `sys.modules`
@@ -141,9 +131,9 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   `resume_update_receipt` carry it across, so one run still yields exactly one receipt. A write
   failure prints `⚠ Update receipt not written` and logs at WARNING, never debug.
 - **Nothing runs pulled code in the pre-pull interpreter** (`update_handoff.py`). The process that
-  started `hermes update` imported the PRE-pull tree; once git (or the ZIP swap) has replaced the
+  started `hermes update` imported the PRE-pull tree; once git has replaced the
   checkout it stops, writes the hand-off payload (open receipt, pre-update plan, pre-update
-  version/active features, Windows pause token) and re-executes
+  version/active features) and re-executes
   `hermes update <same flags> --post-swap <file>` under the venv interpreter, which imports only the
   pulled tree and owns the tail (deps, Node, maintenance, config migration, fleet
   restart, verification, receipt); the parent relays the exit code. Every "purge `sys.modules`" /
@@ -214,7 +204,7 @@ every KeepAlive respawn, #110637).
 Service installs are a matrix, not a unit file: `gateway.py::generate_systemd_unit(system=,
 run_as_user=)` (user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
 never a dir-owner fallback), `generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
-`~/Library/LaunchAgents` glob), Windows Scheduled Task all carry the
+`~/Library/LaunchAgents` glob) all carry the
 profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an
 empty environment, so the env override that makes `-p` work interactively does not exist there. A
 change to install/restart/status regenerates and diffs every kind; both user and system units are

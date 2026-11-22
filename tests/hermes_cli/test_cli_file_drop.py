@@ -168,22 +168,6 @@ class TestEscapedSpaces:
         assert result["remainder"] == "what is this?"
 
 
-    # ``platforms("windows")`` rather than ``skipif(os.name != "nt")``: the Windows CI
-    # job selects ``-m platforms("windows")``, so a bare skipif would leave this
-    # skipped on Linux AND unselected there — dead on every host.
-    @pytest.mark.platforms("windows")
-    def test_windows_drive_letter_file_uri_drops_url_leading_slash(self, tmp_path):
-        image = tmp_path / "drive-uri.png"
-        image.write_bytes(b"\x89PNG\r\n\x1a\n")
-        uri = image.as_uri()
-        assert uri.startswith("file:///") and ":/" in uri
-
-        result = _detect_file_drop(uri)
-
-        assert result is not None
-        assert result["path"] == image
-
-
 # ---------------------------------------------------------------------------
 # Tests: edge cases
 # ---------------------------------------------------------------------------

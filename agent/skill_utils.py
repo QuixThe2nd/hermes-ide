@@ -18,7 +18,7 @@ from hermes_constants import (
 
 logger = logging.getLogger(__name__)
 
-PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
+PLATFORM_MAP = {"macos": "darwin", "linux": "linux"}
 
 EXCLUDED_SKILL_DIRS = frozenset((
     ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",

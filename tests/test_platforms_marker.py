@@ -1,7 +1,7 @@
 """The composable ``platforms`` marker: spec evaluation + collection gating.
 
 Behavior-contract tests for the gate introduced alongside the fixed
-platforms("linux")/platforms("macos")/platforms("windows") trio: any-of semantics, negation,
+platforms("linux")/platforms("macos") pair: any-of semantics, negation,
 POSIX grouping, arch filters, and the hard errors on unknown specs and
 stray keyword arguments.
 """
@@ -19,18 +19,13 @@ class TestSpecEvaluation:
     # (specs, host_platform, expected_ok)
     CASES = [
         (("linux",), "linux", True),
-        (("linux",), "win32", False),
+        (("linux",), "darwin", False),
         (("macos",), "darwin", True),
-        (("windows",), "win32", True),
-        (("windows",), "linux", False),
         (("posix",), "linux", True),
         (("posix",), "darwin", True),
-        (("posix",), "win32", False),
         (("not macos",), "linux", True),
         (("not macos",), "darwin", False),
-        (("not windows",), "win32", False),
-        (("not windows",), "linux", True),
-        (("linux", "win32host-mismatch"), "win32", False),  # unknown spec never matches
+        (("linux", "win32host-mismatch"), "darwin", False),  # unknown spec never matches
         (("any",), "linux", True),
         ((), "linux", True),  # no specs = documentation form, matches all
     ]
@@ -54,8 +49,8 @@ class TestSpecEvaluation:
         assert "unknown spec" in reason
 
     def test_case_insensitive_specs(self, monkeypatch):
-        monkeypatch.setattr("tests.conftest.sys.platform", "win32")
-        ok, _ = _host_matches_platforms(("WINDOWS",))
+        monkeypatch.setattr("tests.conftest.sys.platform", "linux")
+        ok, _ = _host_matches_platforms(("LINUX",))
         assert ok is True
 
 
@@ -71,15 +66,15 @@ class TestArchFilter:
         ],
     )
     def test_arch_matrix(self, arch, machine, negate, expected, monkeypatch):
-        monkeypatch.setattr("tests.conftest.sys.platform", "win32")
+        monkeypatch.setattr("tests.conftest.sys.platform", "linux")
         monkeypatch.setattr("tests.conftest._platform_machine", lambda: machine)
-        ok, reason = _host_matches_platforms(("windows",), arch=arch, arch_negate=negate)
+        ok, reason = _host_matches_platforms(("linux",), arch=arch, arch_negate=negate)
         assert ok is expected, reason
 
     def test_arch_reason_names_the_machine(self, monkeypatch):
-        monkeypatch.setattr("tests.conftest.sys.platform", "win32")
+        monkeypatch.setattr("tests.conftest.sys.platform", "linux")
         monkeypatch.setattr("tests.conftest._platform_machine", lambda: "x86_64")
-        ok, reason = _host_matches_platforms(("windows",), arch="arm64")
+        ok, reason = _host_matches_platforms(("linux",), arch="arm64")
         assert ok is False
         assert "x86_64" in reason
 
@@ -104,17 +99,13 @@ class TestCollectionGating:
     @pytest.mark.platforms("not " + __import__("sys").platform.split("_")[0])
     def test_never_runs_on_this_host_shape(self):
         # The spec is built to exclude whatever this host is (linux → "not
-        # linux", win32 → "not windows"); if it RUNS the gate is broken.
+        # linux"); if it RUNS the gate is broken.
         raise AssertionError("platforms() gate failed to skip this host")
 
     @pytest.mark.platforms("any")
     def test_any_spec_runs_everywhere(self):
         assert True
 
-    @pytest.mark.skipif(
-        __import__("sys").platform == "win32",
-        reason="linux-host assertion; inverted on the linux lane below",
-    )
     @pytest.mark.platforms("linux")
     def test_runs_on_linux(self):
         assert True

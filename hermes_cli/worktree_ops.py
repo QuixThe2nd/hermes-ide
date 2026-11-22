@@ -52,20 +52,10 @@ def _git_quiet(args, cwd, timeout: float = 10, log: str | None = None, **kwargs)
             logger.debug("%s: %s", log, e)
 
 
-def _normalize_git_bash_path(p: Optional[str]) -> Optional[str]:
-    """Translate a Git Bash path (``/c/..``, ``/cygdrive/c/..``, ``/mnt/c/..``) to ``C:\\..`` on Windows."""
-    if not p or sys.platform != "win32":
-        return p
-    m = re.match(r"^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])/(.*)$", p)
-    if m:
-        return f"{m.group(1).upper()}:\\{m.group(2).replace('/', chr(92))}"
-    return p
-
-
 def _git_repo_root() -> Optional[str]:
-    """Return the git repo root for CWD (Git-Bash-normalized), or None if not in a repo."""
+    """Return the git repo root for CWD, or None if not in a repo."""
     try:
-        return _normalize_git_bash_path(_git_out(["rev-parse", "--show-toplevel"], None, timeout=5))
+        return _git_out(["rev-parse", "--show-toplevel"], None, timeout=5)
     except Exception:
         return None
 
@@ -159,14 +149,9 @@ def _run_bounded_repack(repo_root: str) -> None:
     left the grandchild packing for days, and a daemon thread's child outlived the CLI the same
     way. A new session/process group + ``atexit`` reaps both cases.
     """
-    cmd = ["git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
-    if os.name == "posix":
-        cmd = ["nice", "-n", "19", *cmd]
-        group_kw: dict = {"process_group": 0}
-    else:
-        group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    cmd = ["nice", "-n", "19", "git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
     proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, **group_kw)
+                            stderr=subprocess.DEVNULL, process_group=0)
 
     def _reap() -> None:
         if proc.poll() is None:
@@ -340,20 +325,9 @@ def _copy_worktree_includes(repo_root: str, wt_path: Path) -> None:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(str(src), str(dst))
             elif src.is_dir() and not dst.exists():
-                # Symlink directories (no disk). Windows needs Developer Mode for symlinks: copy there.
+                # Symlink directories (no disk).
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.symlink(str(src_resolved), str(dst))
-                except (OSError, NotImplementedError) as _sym_err:
-                    if sys.platform != "win32":
-                        raise
-                    logger.info(".worktreeinclude: symlink failed (%s) — falling back to copytree on Windows.",
-                                _sym_err)
-                    try:
-                        shutil.copytree(str(src_resolved), str(dst), symlinks=True, dirs_exist_ok=False)
-                    except Exception as _copy_err:
-                        logger.warning(".worktreeinclude: copy fallback also failed for %s -> %s: %s",
-                                       src, dst, _copy_err)
+                os.symlink(str(src_resolved), str(dst))
     except Exception as e:
         logger.debug("Error copying .worktreeinclude entries: %s", e)
 

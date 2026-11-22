@@ -2,31 +2,24 @@
 """Diagnose how prompt_toolkit identifies keystrokes in the current terminal.
 
 Useful when adding a keybinding to Hermes (or any prompt_toolkit app) and you
-need to know what the terminal actually delivers — particularly on Windows,
-where terminals can collapse, intercept, or silently remap key combinations.
+need to know what the terminal actually delivers — terminals can collapse,
+intercept, or silently remap key combinations.
 
 Usage:
-    # POSIX
-    python scripts/keystroke_diagnostic.py
 
-    # Windows (PowerShell / git-bash / cmd)
-    python scripts\\keystroke_diagnostic.py
+    python scripts/keystroke_diagnostic.py
 
 Press the key combinations you care about. Each keystroke prints the
 prompt_toolkit `Keys.*` identifier and the raw escape bytes the terminal
 sent. The last 20 keystrokes stay on screen. Ctrl+Q or Ctrl+C to quit.
 
 Common questions this answers:
-    - Does my terminal distinguish Ctrl+Enter from plain Enter?
-      (On Windows Terminal: yes, Ctrl+Enter → c-j, Enter → c-m.)
-    - Does Alt+Enter reach the app, or does the terminal eat it?
-      (Windows Terminal eats it for fullscreen; mintty may too.)
     - Does Shift+Enter register as a separate key?
       (Almost never — most terminals collapse it to Enter.)
     - What byte sequence does Home/End/PageUp/etc. produce?
 
-Example output for Ctrl+Enter on Windows Terminal + PowerShell:
-    key=<Keys.ControlJ: 'c-j'> data='\\n'
+Example output for Ctrl+Enter:
+    key=<Keys.ControlJ: 'c-j'> data='\n'
 
 Then in Hermes, bind the newline behaviour to that key:
     @kb.add('c-j')

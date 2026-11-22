@@ -1294,7 +1294,6 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
     assert "done: fast member" in format_process_notification(evt)
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
 def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
     """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
     HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600

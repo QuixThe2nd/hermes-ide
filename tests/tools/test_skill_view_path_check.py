@@ -75,32 +75,3 @@ class TestSkillViewPathBoundaryCheck:
         assert _path_escapes_skill_dir(resolved, skill_dir_resolved) is False
 
 
-class TestOldCheckWouldFail:
-    """Demonstrate the bug: the old hardcoded '/' check fails on Windows."""
-
-    def _old_path_escapes(self, resolved: Path, skill_dir_resolved: Path) -> bool:
-        """The BROKEN check that used hardcoded '/'."""
-        return (
-            not str(resolved).startswith(str(skill_dir_resolved) + "/")
-            and resolved != skill_dir_resolved
-        )
-
-    # ``platforms("windows")`` rather than ``skipif(os.sep == "/")``: the Windows CI
-    # job greps for the marker to decide which files to import, so a bare
-    # skipif leaves this running on no host at all.
-    @pytest.mark.platforms("windows")
-    def test_old_check_false_positive_on_windows(self, tmp_path):
-        """On Windows, the old check incorrectly blocks valid subpaths."""
-        skill_dir = tmp_path / "skills" / "axolotl"
-        ref_file = skill_dir / "references" / "api.md"
-        skill_dir.mkdir(parents=True)
-        ref_file.parent.mkdir()
-        ref_file.write_text("content")
-
-        resolved = ref_file.resolve()
-        skill_dir_resolved = skill_dir.resolve()
-
-        # Old check says it escapes (WRONG on Windows)
-        assert self._old_path_escapes(resolved, skill_dir_resolved) is True
-        # New check correctly allows it
-        assert _path_escapes_skill_dir(resolved, skill_dir_resolved) is False

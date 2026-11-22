@@ -25,8 +25,8 @@ _BAR = "=" * 68
 def _git_run(git_cmd, args, cwd=None, *, check=False):
     """Run ``git_cmd + args`` and return the CompletedProcess.
 
-    The updater's git runner: capture all output and decode as UTF-8 regardless of the
-    Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit.
+    The updater's git runner: capture all output and decode as UTF-8 regardless of locale
+    (#52649). ``check=True`` raises on non-zero exit.
     """
     return subprocess.run(
         git_cmd + list(args),
@@ -240,73 +240,6 @@ def _print_fetch_failure(stderr: str) -> None:
         print(f"  {stderr.splitlines()[0]}")
 
 
-def _probe_fork_bomb(argv: list) -> Optional[bool]:
-    """Run ``<argv> --version``; True/False = guard message seen/absent, None = probe itself failed."""
-    try:
-        result = subprocess.run(argv + ["--version"], timeout=15, **_GIT_TEXT_KW)
-    except Exception:
-        return None
-    return "fork bomb" in ((result.stdout or "") + (result.stderr or "")).lower()
-
-
-def _git_is_trampoline(git_cmd: list) -> bool:
-    """Whether *git_cmd* is a broken Git-for-Windows trampoline shim.
-
-    The ~46KB ``bin\\git.exe``/``cmd\\git.exe`` shims re-exec git-core; when they can't find it every call
-    dies with the launcher's guard message (a PATH problem, not network). Never raises; unknown states
-    report False so a probe failure can't block an update.
-
-    Git for Windows ships two ~46KB shims (``bin\\git.exe``, ``cmd\\git.exe``) that re-exec the real
-    ``mingw64\\libexec\\git-core\\git.exe``. See #87876.
-    """
-    return _probe_fork_bomb(git_cmd) is True
-
-
-def _portable_git_candidates() -> list:
-    """PortableGit candidates: shared root first (where the managed tree actually lives, not the
-    profile-scoped HERMES_HOME), then profile home as a fallback for custom layouts.
-
-    The Hermes-managed PortableGit tree lives under the SHARED root (``<root>/git/...``), not the
-    profile-scoped HERMES_HOME (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look
-    there (monerostar review, #87876).
-    """
-    from hermes_cli.update_cmd import get_default_hermes_root, get_hermes_home
-    candidates = []
-    with suppress(Exception):
-        candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
-    return candidates
-
-
-def _locate_real_git() -> Optional[Path]:
-    """Find a real Git-for-Windows ``git-core/git.exe`` (standard locations + managed PortableGit) that runs
-    without the trampoline guard. None when nothing suits — callers keep the broken command and let the
-    fetch-failure ZIP fallback handle it. A failed probe (None) disqualifies a candidate like a guard hit.
-
-    The trampoline symptom is PATH-level: ``bin\\git.exe`` / ``cmd\\git.exe`` (both ~46KB shims) fail to
-    re-exec git-core, while the real binary at ``mingw64\\libexec\\git-core\\git.exe`` (≈4.4MB) works when
-    invoked directly (#87876).
-    """
-    candidates = [
-        Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
-        for base in (r"C:\Program Files", r"C:\Program Files (x86)")
-        for arch in ("clangarm64", "mingw64", "mingw32")
-    ] + _portable_git_candidates()
-    return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
-
-
-def _ensure_non_trampoline_git(git_cmd: list) -> list:
-    """Swap a broken Git-for-Windows trampoline for a real git binary so fetch/pull/checkout keep working;
-    if none is found leave the command untouched (fetch-failure handler falls back to ZIP). No-op off
-    Windows and when git is healthy."""
-    from hermes_cli.update_cmd import _locate_real_git
-    if sys.platform != "win32" or not _git_is_trampoline(git_cmd):
-        return git_cmd
-    real_git = _locate_real_git()
-    if real_git is None:
-        print("⚠ Detected a broken git trampoline and could not locate a real git binary — the update will fall back to the ZIP path.")
-        return git_cmd
-    print(f"⚠ Detected a broken git trampoline; switching to real git at {real_git}")
-    return [str(real_git)] + list(git_cmd[1:])
 
 
 def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
@@ -407,7 +340,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
         if eol_only is None:
             return
         if eol_only:
-            # Pathspec via stdin: thousands of paths exceed the Windows argv limit.
+            # Pathspec via stdin: thousands of paths exceed the OS argv limit.
             _probe_run("checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--",
                        input="\0".join(sorted(eol_only)), check=False)
             if _eol_only():  # still dirty: pinning would only surface churn we failed to clear

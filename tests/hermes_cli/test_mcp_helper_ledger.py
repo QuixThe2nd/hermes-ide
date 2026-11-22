@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import time
 from unittest.mock import patch
 
@@ -25,9 +24,6 @@ import pytest
 
 from hermes_cli import process_identity as pi
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="uses POSIX sleep children"
-)
 
 
 @pytest.fixture
@@ -175,24 +171,6 @@ def test_reap_ignores_non_mcp_purposes(ledger, child):
     _orphan_entry_for(child.pid)
     assert pi.reap_orphaned_mcp_helpers() == []
     assert psutil.pid_exists(child.pid)
-
-
-# ---------------------------------------------------------------------------
-# Updater rung (_ledger_reapable_backend_pids) flow-through
-# ---------------------------------------------------------------------------
-
-def test_updater_ledger_rung_flows_mcp_helper(ledger, child):
-    from hermes_cli import update_cmd
-
-    pi.register_child(child.pid, "mcp-helper")
-    matches = [(child.pid, "python", "sleep 300")]
-
-    # Live spawner (this process) → never selected.
-    assert update_cmd._ledger_reapable_backend_pids(matches) == []
-
-    # Provably dead spawner → positively identified as reapable.
-    _orphan_entry_for(child.pid)
-    assert update_cmd._ledger_reapable_backend_pids(matches) == [child.pid]
 
 
 # ---------------------------------------------------------------------------

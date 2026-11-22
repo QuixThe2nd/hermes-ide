@@ -1,6 +1,6 @@
 """Cross-platform Computer Use readiness + macOS permission helpers. "Ready to drive" differs per platform: macOS
 needs explicit TCC grants (Accessibility + Screen Recording) via cua-driver ``permissions status`` / ``permissions
-grant``; Windows/Linux have no TCC toggles, so readiness == driver health. The grants attach to cua-driver's OWN
+grant``; Linux has no TCC toggles, so readiness == driver health. The grants attach to cua-driver's OWN
 identity (``com.trycua.driver``), not Hermes, so ``grant`` launches CuaDriver via LaunchServices for correct dialog
 attribution. ``cua-driver doctor --json`` is the universal signal; ``computer_use_status`` folds it with the macOS
 detail into one payload for the desktop card, the ``permissions`` CLI and ``/api/tools/computer-use/status``."""
@@ -14,9 +14,7 @@ import sys
 from contextlib import suppress
 from typing import Any, Dict, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-
-_RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})  # mirrors the toolset platform_gate
+_RUNTIME_PLATFORMS = frozenset({"darwin", "linux"})  # mirrors the toolset platform_gate
 _BOOLS = ("accessibility", "screen_recording", "screen_recording_capturable")
 
 def _child_env() -> Dict[str, str]:
@@ -33,7 +31,7 @@ def _child_env() -> Dict[str, str]:
 
 def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run([binary, *args], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                          timeout=timeout, env=_child_env(), stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                          timeout=timeout, env=_child_env(), stdin=subprocess.DEVNULL)
 
 def _json_out(binary: str, *args: str, timeout: float) -> Any:
     """Run ``binary args`` and parse stdout as JSON (``None`` on empty output)."""

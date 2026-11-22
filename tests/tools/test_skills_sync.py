@@ -51,7 +51,6 @@ class TestReadWriteManifest:
 
         assert result == {"old-skill": "", "new-skill": "abc123"}
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
     def test_write_manifest_preserves_existing_file_mode(self, tmp_path):
         manifest_file = tmp_path / ".bundled_manifest"
         manifest_file.write_text("old-skill:oldhash\n", encoding="utf-8")

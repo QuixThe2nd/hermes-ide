@@ -4,7 +4,7 @@ description: "Rewrite text to ASD-STE100 Simplified Technical English."
 version: 1.2.0
 author: AminBlg (https://github.com/AminBlg/SimpleEnglish), ported by Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [writing, documentation, ste, asd-ste100, technical-writing, editing, anti-ai-slop]

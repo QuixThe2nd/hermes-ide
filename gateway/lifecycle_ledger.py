@@ -121,7 +121,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
     later than the claim is a reuser."""
     try:
         pid_int = int(pid)
-        # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the target's console group.
+        # NOT bare os.kill(pid, 0): the shared probe also rejects oversized/invalid PIDs.
         from gateway.status import _pid_exists
 
         if pid_int <= 0 or not _pid_exists(pid_int):
@@ -222,7 +222,7 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
-        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
+        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill of "
         "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
@@ -242,7 +242,7 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     try:
         claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
-        # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
+        # imports finish): the start attestation binds PIDs to birth time (#110020 review).
         from hermes_cli.process_identity import _process_create_time
 
         create_time = _process_create_time(os.getpid())
@@ -274,7 +274,7 @@ def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdow
             return
         exited: Dict[str, Any] = {"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
                                   "exited_at": _now_iso()}
-        # Carry the incarnation identity: the Windows start attestation matches a clean exit by
+        # Carry the incarnation identity: the start attestation matches a clean exit by
         # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).
         for key in ("start_time", "create_time"):
             if sentinel is not None and sentinel.get(key) is not None:

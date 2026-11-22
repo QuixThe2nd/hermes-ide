@@ -791,20 +791,3 @@ class TestPathCanonicalization:
             "execution_cwd-relative path and absolute path must overlap; "
             "process cwd must not be used when execution_cwd is provided"
         )
-
-
-    # ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
-    # Windows CI job greps for the marker to decide which files to import, so
-    # a bare skipif leaves this running on no host at all.
-    @pytest.mark.platforms("windows")
-    def test_case_insensitive_paths_overlap_windows(self, tmp_path):
-        """On Windows, FILE.txt and file.txt are the same file — they must
-        be detected as overlapping after normcase() canonicalisation."""
-        from agent.tool_dispatch_helpers import _canonical_path, _paths_overlap
-
-        upper = _canonical_path(str(tmp_path / "FILE.txt"), execution_cwd=tmp_path)
-        lower = _canonical_path(str(tmp_path / "file.txt"), execution_cwd=tmp_path)
-
-        assert _paths_overlap(upper, lower), (
-            "Case-insensitive aliases must overlap on Windows"
-        )

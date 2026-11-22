@@ -5,7 +5,7 @@ version: 1.0.1
 author: Hermes Agent
 license: MIT
 dependencies: []
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Excalidraw, Diagrams, Flowcharts, Architecture, Visualization, JSON]

@@ -190,14 +190,9 @@ def _lease_paths(
 
 
 def _flock(fh, *, lock: bool) -> None:
-    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows)."""
-    if os.name == "nt":
-        import msvcrt
-        fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+    """Exclusive whole-file lock/unlock on ``fh`` (fcntl)."""
+    import fcntl
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
 
 
 class _FileLock:

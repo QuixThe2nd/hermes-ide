@@ -1,6 +1,6 @@
 """MemoryStore — bounded, file-backed curated memory (MEMORY.md / USER.md).
 Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independent).
-Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
+Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
 import logging
@@ -147,15 +147,12 @@ class MemoryStore:
     def _file_lock(path: Path):
         """Exclusive lock on a separate .lock file so the memory file itself can
         still be atomically replaced."""
-        from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
-        fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
+        from tools import memory_tool as _mt  # fcntl lives (and is patched) there
+        fcntl = _mt.fcntl
         lock_path = path.with_suffix(path.suffix + ".lock")
         from hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(lock_path.parent)
-        if fcntl is None and msvcrt is None:
-            yield
-            return
         flags = os.O_RDWR | os.O_CREAT
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -173,11 +170,7 @@ class MemoryStore:
             raise
         with fd:
             def _flock(unlock: bool):
-                if fcntl:
-                    fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)
-                else:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK if unlock else msvcrt.LK_LOCK, 1)
+                fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)
             _flock(False)
             try:
                 yield

@@ -206,13 +206,9 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     encoding. ``network=True`` (ls-remote/fetch) detaches stdin and disables git/GCM prompts so a
     passive update check can never hang on a ``Username for 'https://github.com':`` prompt.
     """
-    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+    from hermes_cli._subprocess_compat import noninteractive_git_env
 
-    # The banner/update probes run from GUI-hosted backends too (desktop-spawned
-    # ``hermes serve``), where a bare git child flashes a console window.
-    kwargs: dict = {"creationflags": windows_hide_flags()}
-    if network:
-        kwargs.update({"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()})
+    kwargs: dict = {"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()} if network else {}
     try:
         return subprocess.run(
             ["git", *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
@@ -493,6 +489,25 @@ def _baked_banner_state() -> Optional[dict]:
     """Banner state from the build-time install stamp (packaged builds), or None."""
     baked = _quiet(_stamped_sha8)
     return {"upstream": baked, "local": baked, "ahead": 0} if baked else None
+
+
+def _stamped_sha8() -> Optional[str]:
+    """Return the install stamp's commit (8 chars), or None.
+
+    Packaged builds (Docker/Nix) carry no ``.git``; their provenance comes
+    from the build-time install stamp read by ``hermes_cli.version_info``.
+    A ``git``-sourced result means there is no stamp — return None so the
+    caller doesn't fabricate a frozen state for a live checkout.
+    """
+    try:
+        from hermes_cli.version_info import get_version_info
+
+        info = get_version_info()
+        if info.commit and info.source != "git":
+            return info.commit[:8]
+    except Exception:
+        pass
+    return None
 
 
 def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:

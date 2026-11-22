@@ -124,7 +124,7 @@ _FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
 
 class LintMixin:
     """Post-write syntax lint + LSP diagnostics. Requires ``_exec``,
-    ``_has_command``, ``_escape_shell_arg``, ``_escape_native_tool_arg`` and
+    ``_has_command``, ``_escape_shell_arg`` and
     ``env`` from the host class."""
 
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:
@@ -160,7 +160,7 @@ class LintMixin:
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
         # Native Windows binaries need C:/... not MSYS /c/... (→ phantom ENOENT).
-        result = self._exec(linter_cmd.replace("{file}", self._escape_native_tool_arg(path)), timeout=30)
+        result = self._exec(linter_cmd.replace("{file}", self._escape_shell_arg(path)), timeout=30)
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
             from tools.ansi_strip import strip_ansi
             cleaned = strip_ansi(result.stdout).strip()

@@ -9,7 +9,7 @@
 Valoramos las contribuciones en este orden:
 
 1. **Correcciones de errores** — bloqueos, comportamiento incorrecto, pérdida de datos. Siempre la máxima prioridad.
-2. **Compatibilidad entre plataformas** — macOS, diferentes distribuciones de Linux y WSL2 en Windows. Queremos que Hermes funcione en todas partes.
+2. **Compatibilidad entre plataformas** — macOS y diferentes distribuciones de Linux.
 3. **Fortalecimiento de seguridad** — inyección de shell, inyección de prompts, traversal de rutas, escalada de privilegios. Ver [Consideraciones de Seguridad](#consideraciones-de-seguridad).
 4. **Rendimiento y robustez** — lógica de reintento, manejo de errores, degradación elegante.
 5. **Nuevas habilidades** — pero solo las ampliamente útiles. Ver [¿Debería ser una Habilidad o una Herramienta?](#debería-ser-una-habilidad-o-una-herramienta)
@@ -188,7 +188,6 @@ hermes-agent/
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS
-│   ├── install.ps1               # Instalador Windows PowerShell
 │   └── whatsapp-bridge/          # Puente WhatsApp Node.js (Baileys)
 │
 ├── skills/                   # Habilidades incluidas (copiadas a ~/.hermes/skills/ en la instalación)
@@ -251,7 +250,6 @@ Mensaje del usuario → AIAgent._run_agent_loop()
 - **PEP 8** con excepciones prácticas (no imponemos longitud de línea estricta)
 - **Comentarios**: Solo cuando se explica la intención no obvia, compromisos o peculiaridades de API. No narres lo que hace el código
 - **Manejo de errores**: Captura excepciones específicas. Registra con `logger.warning()`/`logger.error()` — usa `exc_info=True` para errores inesperados
-- **Multiplataforma**: Nunca asumas Unix. Ver [Compatibilidad Multiplataforma](#compatibilidad-multiplataforma)
 
 ---
 
@@ -453,34 +451,8 @@ Añade al dict `_BUILTIN_SKINS` en `hermes_cli/skin_engine.py`. Usa el mismo esq
 
 ## Compatibilidad Multiplataforma
 
-Hermes se ejecuta en Linux, macOS y Windows nativo (además de WSL2). Al escribir código
-que toca el SO, asume que *cualquier* plataforma puede alcanzar tu ruta de código.
-
-> **Antes de hacer PR:** ejecuta `scripts/check-windows-footguns.py` para detectar
-> los patrones inseguros comunes de Windows en tu diff. Es basado en grep y barato;
-> CI también lo ejecuta en cada PR.
-
-### Reglas críticas
-
-1. **Nunca llames `os.kill(pid, 0)` para comprobaciones de liveness.** En Windows **NO es una operación sin efecto**. Usa `psutil.pid_exists(pid)` en su lugar.
-
-2. **Usa `shutil.which()` antes de hacer shell — no asumas que Windows tiene las herramientas que tiene Linux.** `ps`, `kill`, `grep`, `awk`, etc. simplemente no existen en Windows.
-
-3. **`termios` y `fcntl` son solo de Unix.** Siempre captura tanto `ImportError` como `NotImplementedError`.
-
-4. **Codificación de archivos.** Windows puede guardar archivos `.env` en `cp1252`. Siempre maneja errores de codificación.
-
-5. **Gestión de procesos.** `os.setsid()`, `os.killpg()`, `os.fork()`, `os.getuid()` y el manejo de señales POSIX difieren en Windows.
-
-6. **Señales que no existen en Windows:** `SIGALRM`, `SIGCHLD`, `SIGHUP`, `SIGUSR1`, `SIGUSR2`, etc.
-
-7. **Separadores de ruta.** Usa `pathlib.Path` en lugar de concatenación de cadenas con `/`.
-
-8. **Los enlaces simbólicos necesitan privilegios elevados en Windows** (a menos que el Modo Desarrollador esté activado).
-
-9. **Los modos de archivo POSIX (0o600, 0o644, etc.) NO se aplican en NTFS** por defecto.
-
-10. **Los daemons de fondo desacoplados en Windows necesitan `pythonw.exe`, NO `python.exe`.**
+Hermes se ejecuta en Linux y macOS. Al escribir código
+que toca el SO, asume que cualquiera de las dos plataformas puede alcanzar tu ruta de código.
 
 ---
 

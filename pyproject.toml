@@ -108,30 +108,16 @@ dependencies = [
   # cryptography<49, so [tool.uv] also holds an override. Read that comment
   # before you move this version.
   "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
-  # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
-  # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
-  # out of the box.  ``tzdata`` ships the Olson database as a data package
-  # Python resolves automatically.  No-op on Linux/macOS (which have
-  # /usr/share/zoneinfo).  Credits: PR #13182 (@sprmn24).
-  "tzdata==2025.3; sys_platform == 'win32'",
   # Cross-platform process / PID management.  `psutil` is the canonical
   # answer for "is this PID alive" and process-tree walking across Linux,
-  # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
-  # (which is a silent killer on Windows — see CONTRIBUTING.md) and
-  # `os.killpg` (which doesn't exist on Windows).
+  # and macOS.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
+  # and `os.killpg`.
   "psutil==7.2.2",
   # Gateway relay and streaming speech transports use this directly.
   "websockets==15.0.1",
   # .gitignore-aware file matching for web build stamps.
   "pathspec==1.1.1",
-  "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
-  # pywinpty ships win_amd64 wheels only (winpty has no ARM64 support), so
-  # win32-arm64 would build the Rust sdist from source and fail — same
-  "pywinpty>=2.0.0,<3; sys_platform == 'win32' and platform_machine != 'ARM64'",
-  # Windows SSH's remote runtime (hermes_cli/windows_ssh_runtime.py)
-  # imports win32security/win32file/etc. directly — declare pywin32 rather than
-  # relying on the concurrent-log-handler → portalocker transitive chain.
-  "pywin32>=306,<312; sys_platform == 'win32'",
+  "ptyprocess>=0.7.0,<1",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and
@@ -148,20 +134,6 @@ dependencies = [
   # Ships prebuilt wheels bundling libheif for the common platforms (no system
   # libs needed), so it's safe in the base install alongside Pillow.
   "pillow-heif>=1.4.0,<2",
-  # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
-  # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
-  # Windows whenever any other process holds an append-mode handle on
-  # ``agent.log`` (always the case in Hermes — TUI, gateway, ``hy_memory``
-  # server, MCP servers, and on-demand CLI commands all log from separate
-  # processes), pinning ``agent.log`` at the 5 MiB threshold and spamming
-  # stderr on every emit (see #44873). ``concurrent-log-handler`` wraps the
-  # rename in a cross-process file lock (via ``portalocker``: pywin32 on
-  # Windows) so only one process rotates at a time. ``hermes_logging.py``
-  # aliases it ONLY on Windows — POSIX renames an open file fine, so stdlib
-  # already works there and managed-mode perms depend on its exact lifecycle.
-  # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
-  # / pywin32 tree) ships only where it's actually used.
-  "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
   # First-party lifecycle and shared-metrics runtime. Relay 0.8 is the supported
   # native runtime and provider-codec baseline. Managed calls pass request and
   # response data through this native module in-process; shared metrics installs
@@ -176,7 +148,7 @@ dependencies = [
   # 738 CPython reports sys_platform == 'android' and never matched.) Pre-GKI
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
-  "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
+  "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release)",
 ]
 
 [project.optional-dependencies]
@@ -195,11 +167,11 @@ dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0"
 messaging = ["discord.py==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 # Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
-# vendored libolm (archived 2023) cannot build on Windows or modern macOS:
+# vendored libolm (archived 2023) cannot build on modern macOS:
 # no wheels for those targets AND the sdist fails to compile on current
 # clang/MSVC (olm/list.hh const-iterator error) and on CMake >= 4. It is
 # linux-only — gate the whole extra so `uv sync --all-extras` (the bundle
-# build) doesn't try to build python-olm on the win/darwin lanes. The
+# build) doesn't try to build python-olm on the darwin lanes. The
 # matrix adapter degrades gracefully without mautrix (import stubs).
 matrix = [
   "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
@@ -225,10 +197,9 @@ trace-upload = ["huggingface-hub==1.24.0"]
 # CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
 # alias so existing requests for the `vision` extra resolve.
 vision = []
-# Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
-# in the main `dependencies` list (with the same platform markers), so
-# any existing requests for the `pty` extra resolve cleanly
-# without pulling in extra packages.
+# Kept as a no-op back-compat alias — `ptyprocess` is now in the main
+# `dependencies` list, so any existing requests for the `pty` extra
+# resolve cleanly without pulling in extra packages.
 pty = []
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack. Before
@@ -322,8 +293,8 @@ all = [
   #
   # Why: the matrix extra in particular pulls `mautrix[encryption]`
   # which depends on `python-olm`. python-olm has Linux-only wheels and
-  # no native build path on Windows or modern macOS. With matrix in
-  # [all], `uv sync --locked` on Windows tried to build it from sdist
+  # no native build path on modern macOS. With matrix in
+  # [all], `uv sync --locked` tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
@@ -337,7 +308,7 @@ all = [
 [build-system]
 # setuptools.build_meta + our setup.py bdist_wheel guard import wheel during
 # PEP 517 isolated builds (uv sync / uv pip install -e .). Without wheel in
-# requires, the isolation sandbox only gets setuptools and Windows installer
+# requires, the isolation sandbox only gets setuptools and the installer
 # fails with ModuleNotFoundError: wheel.cli (#96488).
 requires = ["setuptools==83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -354,10 +325,8 @@ hermes-agent = "run_agent:main"
 # resolver needs them for --all-extras); this table is the readable
 # single-authority for WHICH extra is supported WHERE.
 [tool.hermes.extras-platforms]
-# mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
+# mautrix[encryption] → python-olm: linux-only wheels, no darwin build.
 matrix = "sys_platform == 'linux'"
-# grpcio (via google-cloud-pubsub) has no win_arm64 wheel.
-google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 
 [tool.uv]
 override-dependencies = [
@@ -433,7 +402,6 @@ asyncpg = false
 azure-identity = false
 brotlicffi = false
 certifi = false
-concurrent-log-handler = false
 croniter = false
 cryptography = false
 debugpy = false
@@ -498,7 +466,6 @@ slack-sdk = false
 starlette = false
 tenacity = false
 ty = false
-tzdata = false
 unpaddedbase64 = false
 uvicorn = false
 websockets = false
@@ -550,10 +517,9 @@ markers = [
     "allow_real_home_io: opt out of the real-home I/O tripwire",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
     "linux_only: exercises Linux-specific behaviour; skipped on other hosts",
-    "require_symlinks: test needs symlink creation (unsupported on Windows hosts)",
+    "require_symlinks: test needs symlink creation",
     "macos_only: exercises macOS-specific behaviour; skipped on other hosts",
-    "windows_only: exercises native-Windows behaviour; skipped on other hosts",
-    "platforms(*specs, arch=None, arch_negate=False): run only on hosts matching at least one spec — linux/macos/windows/posix/any, 'not X' negation, optional arch filter",
+    "platforms(*specs, arch=None, arch_negate=False): run only on hosts matching at least one spec — linux/macos/posix/any, 'not X' negation, optional arch filter",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"
@@ -572,9 +538,9 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # All other lints are intentionally disabled (see comment history on this
 # file) while we wrangle typechecks — but PLW1514 is too load-bearing to
 # keep off.  Bare open()/read_text()/write_text() in text mode defaults to
-# the system locale encoding on Windows (cp1252 on US-locale installs),
+# the system locale encoding,
 # which silently corrupts any non-ASCII file content.  We had three
-# separate Windows sandbox regressions in one debug session before
+# separate sandbox regressions in one debug session before
 # adding the explicit encoding.  This rule keeps new code honest.
 #
 # ASYNC210/220/221/251: blocking calls inside `async def` freeze the whole

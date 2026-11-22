@@ -172,7 +172,6 @@ def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusa
     assert attempts == ([[], [f"Authorization: basic {expected}"]] if outcome == "refused" else [[]])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell askpass stub + local HTTP server")
 def test_anonymous_attempt_fails_fast_under_inherited_askpass(tmp_path, monkeypatch):
     """With an inherited ``GIT_ASKPASS`` (VS Code terminal, ksshaskpass) the anonymous attempt
     against a remote answering 401 must still fail fast with the classifiable "could not read
@@ -220,7 +219,6 @@ def test_anonymous_attempt_fails_fast_under_inherited_askpass(tmp_path, monkeypa
     assert all("GIT_ASKPASS" not in env for env in attempts)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stub credential helper")
 def test_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch):
     helper = tmp_path / "helper.sh"
     helper.write_text("#!/bin/sh\n[ \"$1\" = get ] && printf 'username=bob\\npassword=pw-from-helper\\n'\n")

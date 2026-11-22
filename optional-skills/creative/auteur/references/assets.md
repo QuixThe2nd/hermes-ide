@@ -239,8 +239,8 @@ If `MINIMAX_API_KEY` is set, generate ONE short, loopable ambient bed matched to
 
 Blender 5.1 is already on `PATH`; `cli-anything-blender` is also available for inspection. Keep the asset build reproducible with one native headless command:
 
-```powershell
-blender --background --python tools\build_dolly.py
+```bash
+blender --background --python tools/build_dolly.py
 ```
 
 This complete `tools/build_dolly.py` builds a lit scene, moves `PathCamera` along a Bezier curve while tracking an Empty, bakes the camera transform, exports glTF 2.0 with camera + animation, then renders a 16-bit near-white/far-black depth master:

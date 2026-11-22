@@ -56,7 +56,7 @@ def test_computer_use_status_returns_zero_for_compatible_driver(
     from hermes_cli import tools_config
     import hermes_cli.tools_config_cua as tools_config_cua
 
-    driver = r"C:\Users\tester\.local\bin\cua-driver.exe"
+    driver = "/home/tester/.local/bin/cua-driver"
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
     monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: driver)
     monkeypatch.setattr(
@@ -96,7 +96,7 @@ def test_computer_use_status_returns_nonzero_for_incompatible_standard_driver(
     from hermes_cli import tools_config
     import hermes_cli.tools_config_cua as tools_config_cua
 
-    driver = r"C:\Users\tester\.local\bin\cua-driver.exe"
+    driver = "/home/tester/.local/bin/cua-driver"
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
     monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: driver)
     monkeypatch.setattr(
@@ -129,7 +129,7 @@ def test_computer_use_status_returns_nonzero_for_incompatible_custom_driver(
     from hermes_cli import tools_config
     import hermes_cli.tools_config_cua as tools_config_cua
 
-    driver = r"C:\custom\cmd.exe"
+    driver = "/custom/cmd"
     monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", driver)
     monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: driver)
     monkeypatch.setattr(
@@ -181,7 +181,7 @@ def test_computer_use_install_returns_nonzero_for_unrepairable_custom_override(
     from hermes_cli import tools_config
     import hermes_cli.tools_config_cua as tools_config_cua
 
-    driver = r"C:\custom\cmd.exe"
+    driver = "/custom/cmd"
     monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", driver)
     install = Mock(return_value=False)
     contract = Mock(side_effect=AssertionError("failed install must short-circuit"))

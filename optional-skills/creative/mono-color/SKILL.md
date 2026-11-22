@@ -5,7 +5,7 @@ version: 1.0.0
 author: Yan Liu (adapted by Nous Research)
 license: MIT
 dependencies: []
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [design, poster, print, duotone, risograph, editorial, image-generation]
