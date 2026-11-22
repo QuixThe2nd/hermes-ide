@@ -56,3 +56,10 @@ def test_cron_list_json_flag():
     assert ns.json is True
     assert ns.all is True
     assert parser.parse_args(["cron", "list"]).json is False
+
+
+def test_cron_edit_show_flag():
+    parser = _build()
+    ns = parser.parse_args(["cron", "edit", "j", "--show"])
+    assert ns.show is True
+    assert parser.parse_args(["cron", "edit", "j"]).show is False

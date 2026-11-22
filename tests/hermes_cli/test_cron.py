@@ -744,3 +744,31 @@ class TestCronListJson:
         assert "Scheduled Jobs" in out
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(out)
+
+
+class TestCronEditShow:
+    def test_edit_show_prints_prompt_without_updating(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        ns = SimpleNamespace(cron_command="edit", job_id=job["id"], show=True,
+                             schedule=None, prompt=None, name=None, deliver=None,
+                             failure_deliver=None, repeat=None, skill=None, skills=None,
+                             clear_skills=False, add_skills=None, remove_skills=None,
+                             script=None, workdir=None, no_agent=None, continuity=None,
+                             monitor_script=None, monitor_url=None, paused=None,
+                             paused_reason=None)
+        assert cron_command(ns) == 0
+        out = capsys.readouterr().out
+        assert "Daily report" in out
+        assert "every 60m" in out
+        updated = get_job(job["id"])
+        assert updated["prompt"] == "Daily report"
+        assert updated["schedule_display"] == "every 60m"
+
+    def test_edit_show_uses_parser(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Parser-shown prompt", schedule="every 30m")
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+        args = parser.parse_args(["cron", "edit", job["id"], "--show"])
+        cron_command(args)
+        assert "Parser-shown prompt" in capsys.readouterr().out
