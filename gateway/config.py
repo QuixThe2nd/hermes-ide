@@ -464,6 +464,8 @@ class ResponseGateConfig:
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
     model: str = "jev-1.14.0"
+    #: Optional judge-facing identity. ``None`` resolves the connected Discord user at startup.
+    bot_name: Optional[str] = None
     #: Optional loopback-only override for the Decisions endpoint, so judge calls can
     #: traverse a local metering proxy. ``None`` (default) keeps the fixed endpoint
     #: and its exact request shape. Anything non-loopback is refused at load: the
@@ -506,6 +508,8 @@ class ResponseGateConfig:
             "context_chars": self.context_chars,
             "model": self.model,
         }
+        if self.bot_name is not None:
+            result["bot_name"] = self.bot_name
         if self.channels:
             result["channels"] = list(self.channels)
         if self.echo_channels:
@@ -565,6 +569,11 @@ class ResponseGateConfig:
         model = str(data.get("model", "jev-1.14.0")).strip()
         if not model:
             raise ValueError("response_gate: model must be a non-empty model slug")
+        bot_name = data.get("bot_name")
+        if bot_name is not None:
+            if not isinstance(bot_name, str) or not bot_name.strip():
+                raise ValueError("response_gate.bot_name must be a non-empty string or null")
+            bot_name = bot_name.strip()
         decisions_url = data.get("decisions_url")
         if decisions_url is not None:
             decisions_url = str(decisions_url).strip()
@@ -588,7 +597,8 @@ class ResponseGateConfig:
             provider=provider, channels=channels, echo_channels=echo_channels, mode=mode,
             threshold=threshold, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
-            decisions_url=decisions_url, threads_require_membership=threads_require_membership,
+            bot_name=bot_name, decisions_url=decisions_url,
+            threads_require_membership=threads_require_membership,
             addresses_bot_min=addresses_bot_min,
             continues_bot_thread_min=continues_bot_thread_min,
             noise_max=noise_max,

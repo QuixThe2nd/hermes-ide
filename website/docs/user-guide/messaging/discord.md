@@ -490,8 +490,11 @@ discord:
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
     model: jev-1.14.0  # judge model; fixed default, no fallback chain
+    # bot_name: Huhn            # optional judge-facing name; default: connected bot identity
     threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
+
+**Bot identity.** The optional `bot_name` is a non-empty string used for the judge's assistant identity and its address examples; surrounding whitespace is trimmed. When it is unset or `null`, the gate uses the connected Discord bot's display name, then its username/name, then `assistant`. The identity is resolved once when the gate starts, so question examples and judge state always use the same name.
 
 **Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
 

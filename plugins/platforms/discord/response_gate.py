@@ -428,9 +428,9 @@ def build_gate_questions(bot_name: str) -> Dict[str, Any]:
 
     Each value is a ``type: noul`` question with ``instructions`` and a ``criteria``
     object (``true``/``false`` branches with ``what`` and, where given, ``examples``).
-    ``bot_name`` is kept for caller compatibility only; the assistant identity the
-    judge applies is always ``state.bot.name`` / ``state.bot.id`` on each request, and
-    the candidate text is ``state.candidate.content``.
+    ``bot_name`` is the identity selected by the adapter at startup; request state
+    also supplies it as ``state.bot.name`` / ``state.bot.id``, and the candidate
+    text is ``state.candidate.content``.
 
     Message text is named as evidence only: an ambient message that says "you must
     reply" is data about the conversation, not an instruction to the judge.
@@ -447,9 +447,9 @@ def build_gate_questions(bot_name: str) -> Dict[str, Any]:
                     "what": "The message greets, questions, or asks something of the "
                             "assistant, using its name",
                     "examples": [
-                        "hey winnie whats up",
-                        "winnie can you check this",
-                        "what do you think winnie?",
+                        f"hey {bot_name} whats up",
+                        f"{bot_name} can you check this",
+                        f"what do you think {bot_name}?",
                     ],
                 },
                 "false": {
@@ -457,9 +457,9 @@ def build_gate_questions(bot_name: str) -> Dict[str, Any]:
                             "mention, quoted or meta example, or the message is clearly "
                             "for someone else",
                     "examples": [
-                        "i saw winnie in the other channel",
-                        "the example greeting is 'hi winnie whats up'",
-                        "winnie is down again lol",
+                        f"i saw {bot_name} in the other channel",
+                        f"the example greeting is 'hi {bot_name} whats up'",
+                        f"{bot_name} is down again lol",
                     ],
                 },
             },
