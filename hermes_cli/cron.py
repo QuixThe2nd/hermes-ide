@@ -712,6 +712,24 @@ def cron_create(args):
     return 0
 
 
+def _print_job_show(job: Dict[str, Any]) -> None:
+    """Print one job's full current definition (``hermes cron edit <id> --show``).
+
+    Same rows as ``hermes cron list`` plus the prompt itself, so prompt maintenance
+    never requires reading jobs.json by hand (crontab -l parity).
+    """
+    from cron.jobs import effective_job_state
+    badge = _STATE_BADGES.get(effective_job_state(job)) or (
+        ("[active]", Colors.GREEN) if job.get("enabled", True) else ("[disabled]", Colors.RED))
+    print(f"  {color(job.get('id', '?'), Colors.YELLOW)} {color(*badge)}")
+    for label, value in _job_rows(job):
+        print(f"    {label + ':':<11}{value}")
+    print(f"    {'Prompt:':<11}{job.get('prompt') or '(none)'}")
+    for line in _job_warnings(job):
+        print(f"    {line}")
+    _warn_if_gateway_not_running()
+
+
 def cron_edit(args):
     from cron.jobs import AmbiguousJobReference, resolve_job_ref
     try:
@@ -724,6 +742,9 @@ def cron_edit(args):
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
+    if getattr(args, "show", False):
+        _print_job_show(job)
+        return 0
     existing_skills = list(job.get("skills") or ([job["skill"]] if job.get("skill") else []))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
     add_skills = _normalize_skills(None, getattr(args, "add_skills", None)) or []
