@@ -122,6 +122,11 @@ func TestApplyServedByFirstTurnAfterHandoff(t *testing.T) {
 	if store.setCalls != 1 {
 		t.Errorf("write-on-change: set called %d times, want 1", store.setCalls)
 	}
+	// Once the new process's note has been seen, the unchanged repeat is
+	// fully suppressed — the handoff already rode, nothing new to say.
+	if notes := ApplyServedBy("discord:42", current, store.get, store.set); len(notes) != 0 {
+		t.Fatalf("post-handoff repeat must settle, got %q", notes)
+	}
 }
 
 // TestApplyServedBySameProcessTurnSkipsWrite pins the point-read discipline
@@ -162,12 +167,18 @@ func TestApplyServedByNoteGate(t *testing.T) {
 		t.Fatalf("suppressed turn must not write again, got %d writes", store.setCalls)
 	}
 	// Same process, new wording (a queued restart starts draining): the
-	// note's claim materially changes, so it rides — then settles.
+	// note's claim materially changes, so it rides — then settles. The gate
+	// keys on what the note SAYS, not just pid identity. No hub ack yet, so
+	// the successor is "starting" — never a takeover claim — and the same
+	// process means no transition note beside it.
 	draining := Snapshot{PID: current.PID, StartTime: current.StartTime,
 		RestartRequested: true, SuccessorPID: 4242}
 	if notes := ApplyServedBy("s", draining, store.get, store.set); len(notes) != 1 ||
-		!strings.Contains(notes[0], "draining for a queued restart") {
-		t.Fatalf("wording change must ride, got %q", notes)
+		!strings.Contains(notes[0], "draining for a queued restart") ||
+		!strings.Contains(notes[0], "pid 4242") ||
+		!strings.Contains(notes[0], "is starting") ||
+		strings.Contains(notes[0], "has already taken over") {
+		t.Fatalf("wording change must ride with unattested-successor wording, got %q", notes)
 	}
 	if StoredNote(store.records[MetaKey("s")]) != RuntimeNote(draining) {
 		t.Fatalf("wording change must rewrite the note proof, got %q",
@@ -175,6 +186,93 @@ func TestApplyServedByNoteGate(t *testing.T) {
 	}
 	if notes := ApplyServedBy("s", draining, store.get, store.set); len(notes) != 0 {
 		t.Fatalf("same drain wording must not ride twice, got %q", notes)
+	}
+}
+
+// TestApplyServedBySuppressionIsPerSession pins that the note gate keys on
+// the SESSION's own record: another session's proof never silences a first
+// turn, and each session suppresses only from its own second unchanged turn.
+func TestApplyServedBySuppressionIsPerSession(t *testing.T) {
+	current := Snapshot{PID: 1531038, StartTime: 3005678}
+	store := newMapStore(nil)
+	if notes := ApplyServedBy("sess-a", current, store.get, store.set); len(notes) != 1 {
+		t.Fatalf("session A first turn: got %q", notes)
+	}
+	// Session B has no record of its own: its FIRST turn must still learn
+	// which process serves it — session A's proof never silences B.
+	if notes := ApplyServedBy("sess-b", current, store.get, store.set); len(notes) != 1 {
+		t.Fatalf("session B first turn must emit: %q", notes)
+	}
+	if notes := ApplyServedBy("sess-a", current, store.get, store.set); len(notes) != 0 {
+		t.Fatalf("session A second unchanged turn must suppress: %q", notes)
+	}
+	if notes := ApplyServedBy("sess-b", current, store.get, store.set); len(notes) != 0 {
+		t.Fatalf("session B second unchanged turn must suppress: %q", notes)
+	}
+}
+
+// TestApplyServedByUnprovableRecordEmitsThenSettles pins the
+// emit-when-unprovable rule at the full-decision level: an absent, corrupt,
+// or legacy (pre-gate, no note proof) record never suppresses the identity
+// note — but the emitting turn makes the proof durable, so the unchanged
+// repeat settles.
+func TestApplyServedByUnprovableRecordEmitsThenSettles(t *testing.T) {
+	current := Snapshot{PID: 1531038, StartTime: 3005678}
+	flavors := []struct {
+		name   string
+		stored map[string]string
+	}{
+		{"absent record", nil},
+		{"corrupt record", map[string]string{MetaKey("s"): "not-json{"}},
+		// Written by a pre-gate build: it names THIS process, but carries no
+		// proof the conversation ever saw the note.
+		{"legacy record without note proof", map[string]string{
+			MetaKey("s"): `{"pid":1531038,"start_time":3005678}`}},
+	}
+	for _, flavor := range flavors {
+		store := newMapStore(flavor.stored)
+		notes := ApplyServedBy("s", current, store.get, store.set)
+		if len(notes) != 1 || !strings.Contains(notes[0], "This turn is served by") {
+			t.Fatalf("%s: an unprovable 'already saw it' must emit, got %q",
+				flavor.name, notes)
+		}
+		if StoredNote(store.records[MetaKey("s")]) != RuntimeNote(current) {
+			t.Fatalf("%s: emitting turn must establish the note proof, got %q",
+				flavor.name, store.records[MetaKey("s")])
+		}
+		if repeat := ApplyServedBy("s", current, store.get, store.set); len(repeat) != 0 {
+			t.Fatalf("%s: unchanged repeat must settle, got %q", flavor.name, repeat)
+		}
+	}
+}
+
+// TestApplyServedByDrainReadinessAckChangesWording pins that the hub
+// readiness ack materially changes the drain note's claim ("is starting" →
+// "has already taken over new turns"), so the new wording rides on the SAME
+// process — then settles like any other proven-seen note. Spawn is not
+// readiness: without the ack the note never claims takeover.
+func TestApplyServedByDrainReadinessAckChangesWording(t *testing.T) {
+	store := newMapStore(nil)
+	unattested := Snapshot{PID: 1531038, StartTime: 3005678,
+		RestartRequested: true, SuccessorPID: 4242}
+	notes := ApplyServedBy("s", unattested, store.get, store.set)
+	if len(notes) != 1 || !strings.Contains(notes[0], "is starting") ||
+		strings.Contains(notes[0], "has already taken over") {
+		t.Fatalf("unattested successor must be 'starting', never a takeover claim: %q", notes)
+	}
+	// The hub attests the successor: the note's claim materially changes.
+	attested := unattested
+	attested.SuccessorReady = true
+	notes = ApplyServedBy("s", attested, store.get, store.set)
+	if len(notes) != 1 || !strings.Contains(notes[0], "has already taken over new turns") {
+		t.Fatalf("attested-successor wording must ride: %q", notes)
+	}
+	if StoredNote(store.records[MetaKey("s")]) != RuntimeNote(attested) {
+		t.Fatalf("attested wording must rewrite the note proof, got %q",
+			store.records[MetaKey("s")])
+	}
+	if repeat := ApplyServedBy("s", attested, store.get, store.set); len(repeat) != 0 {
+		t.Fatalf("same attested wording must not ride twice: %q", repeat)
 	}
 }
 
@@ -188,6 +286,19 @@ func TestApplyServedByDegradesGracefully(t *testing.T) {
 	store.getErr = errors.New("db locked")
 	if notes := ApplyServedBy("s", current, store.get, store.set); len(notes) != 1 {
 		t.Errorf("unreadable store: got %q", notes)
+	}
+	// Failure-safe read (the Python twin's degrade): a failing get
+	// establishes no proof, so it must not suppress an otherwise identical
+	// note — even when the store's record WOULD have proven it seen.
+	provenSeen := newMapStore(map[string]string{
+		MetaKey("s"): EncodeRecord(current, RuntimeNote(current))})
+	provenSeen.getErr = errors.New("db locked")
+	if notes := ApplyServedBy("s", current, provenSeen.get, provenSeen.set); len(notes) != 1 {
+		t.Errorf("failing get must not suppress an otherwise identical note: %q", notes)
+	}
+	// No get hook at all (no reachable store): same rule — never suppress.
+	if notes := ApplyServedBy("s", current, nil, nil); len(notes) != 1 {
+		t.Errorf("no store at all: got %q", notes)
 	}
 	// Failing write: notes render, record stays absent, no panic.
 	store = newMapStore(nil)

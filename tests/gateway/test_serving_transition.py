@@ -252,6 +252,19 @@ def test_wire_first_turn_has_identity_note_without_transition(tmp_path):
     assert "moved to a new" not in agent._gateway_continuation_note
 
 
+def test_wire_suppressed_note_absent_from_both_turn_note_channels(tmp_path):
+    db = _db(tmp_path)
+    ctx = _seam_ctx("sess-w")
+    first = _wire(_runner(session_store=db), ctx)
+    assert "This turn is served by" in first._gateway_turn_context_notes
+    assert "This turn is served by" in first._gateway_continuation_note
+    # The redundant unchanged repeat must not reach the model on either the
+    # turn-note sidecar or the transparent-continuation channel.
+    second = _wire(_runner(session_store=db), ctx)
+    assert "This turn is served by" not in (second._gateway_turn_context_notes or "")
+    assert "This turn is served by" not in (second._gateway_continuation_note or "")
+
+
 def test_wire_transition_after_handoff_on_both_channels(tmp_path, monkeypatch):
     db = _db(tmp_path)
     ctx = _seam_ctx("sess-w")
