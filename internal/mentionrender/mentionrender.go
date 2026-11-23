@@ -14,9 +14,18 @@
 //
 // Display names are user-controlled text: SanitizeName strips control and
 // format characters, collapses whitespace, drops the characters that could
-// forge a mention token or a mass ping, refuses names that ARE a mass ping
-// ("everyone"/"here"), and caps the length. A name that is empty after
+// forge a mention token or a mass ping (including their fullwidth and
+// small-form lookalikes), refuses names that hold a mass ping, and caps the
+// length. A name that is empty or carries no visible character after
 // cleaning counts as unresolvable.
+//
+// Cleaning alone is not the safety story: a cleaned name can still combine
+// with the text around it (stray angle brackets, a dropped mention joining
+// its neighbours) into a forged token or mass ping. Render therefore
+// VERIFIES the output against the input after rendering — every output
+// mention token must be a token the input carried, and pings may not
+// multiply — and falls back to a name-free rendering, then to the raw
+// input, when the property does not hold (see mentionContractOK).
 package mentionrender
 
 import (
@@ -88,28 +97,36 @@ func parseToken(tok string) (tokenKind, string) {
 
 // SanitizeName makes a user-controlled display name safe to inline into text
 // the model reads: control and zero-width format characters are removed,
-// whitespace collapses to single spaces, and '<', '>' and '@' are dropped so
-// the name cannot forge a mention token or an @everyone/@here ping. A name
-// that IS a mass ping, or that is empty after cleaning, is unresolvable.
+// whitespace collapses to single spaces, and every character that could
+// build a mention token or a ping — '<', '>', '@' plus their fullwidth and
+// small-form lookalikes — is dropped. A name whose '@'-prefixed form holds
+// a mass ping, or that has no visible character after cleaning, is
+// unresolvable.
 func SanitizeName(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
+	visible := false
 	for _, r := range name {
 		switch {
 		case unicode.IsSpace(r):
 			b.WriteByte(' ')
-		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) ||
-			r == '<' || r == '>' || r == '@':
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || isForgeryRune(r):
 			// dropped
 		default:
 			b.WriteRune(r)
+			if !isInvisibleRune(r) {
+				visible = true
+			}
 		}
 	}
 	cleaned := strings.Join(strings.Fields(b.String()), " ")
-	if cleaned == "" {
+	if cleaned == "" || !visible {
 		return ""
 	}
-	if strings.EqualFold(cleaned, "everyone") || strings.EqualFold(cleaned, "here") {
+	// The rendered form is always "@"+name: refuse any name whose rendered
+	// form already holds a mass ping on its own. Combinations with the text
+	// around the name are the output contract's job (mentionContractOK).
+	if massPing.MatchString("@" + cleaned) {
 		return ""
 	}
 	runes := []rune(cleaned)
@@ -119,21 +136,126 @@ func SanitizeName(name string) string {
 	return cleaned
 }
 
-// Render dispatches on Request.Mode. Callers validate the mode, so an
-// unknown mode falls through to the body renderer.
+// isForgeryRune reports whether r can build a mention token or a ping when
+// inlined into text: the ASCII token characters plus their fullwidth and
+// small-form lookalikes. An explicit list, not a Unicode-range guess — only
+// these shapes read as mention syntax to a human or a downstream renderer.
+func isForgeryRune(r rune) bool {
+	switch r {
+	case '<', '>', '@',
+		'\uFF1C', '\uFF1E', '\uFF20', // fullwidth < > @
+		'﹤', '﹥', '﹫': // small-form < > @
+		return true
+	}
+	return false
+}
+
+// isInvisibleRune reports whether r shows no glyph on its own: combining
+// marks need a base character, and filler/blank codepoints are empty by
+// design. A name with no visible rune would render as a bare '@'.
+func isInvisibleRune(r rune) bool {
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+		return true
+	}
+	switch r {
+	case '\u3164', '\u2800': // hangul filler, braille blank
+		return true
+	}
+	return false
+}
+
+// massPing matches the mass pings the output contract (I2) bounds.
+var massPing = regexp.MustCompile(`(?i)@(everyone|here)`)
+
+// mentionContractOK enforces the render safety invariants as a property of
+// the output, not only of the cleaned names:
+//
+//   - I1: every mention token in the output must be a token the input
+//     already carried (same kind and snowflake) — a name, the text around
+//     a name, or a deletion joining two neighbours can never mint a token
+//     for an id that was not mentioned.
+//   - I2: the output holds no more @everyone/@here pings (case-insensitive)
+//     than the input did.
+//
+// A legitimate render always passes: it only copies input text verbatim,
+// drops tokens, or emits the " (<@id>)" suffix for an id it just read from
+// the input, and name sanitization refuses self-pinging names, so pings in
+// the output are exactly pings the input carried.
+func mentionContractOK(input, output string) bool {
+	budget := map[tokenKey]int{}
+	for _, tok := range mentionToken.FindAllString(input, -1) {
+		kind, id := parseToken(tok)
+		budget[tokenKey{kind, id}]++
+	}
+	for _, tok := range mentionToken.FindAllString(output, -1) {
+		kind, id := parseToken(tok)
+		key := tokenKey{kind, id}
+		if budget[key] == 0 {
+			return false
+		}
+		budget[key]--
+	}
+	pingsIn := len(massPing.FindAllString(input, -1))
+	pingsOut := len(massPing.FindAllString(output, -1))
+	return pingsOut <= pingsIn
+}
+
+type tokenKey struct {
+	kind tokenKind
+	id   string
+}
+
+// Render dispatches on Request.Mode and guarantees the output contract
+// (mentionContractOK): the full render is returned when it verifies, else a
+// name-free rendering (every mention keeps or drops its raw token exactly
+// as if no name resolved), else the safest possible shape — the raw input
+// for body text, the fixed placeholder for titles. Callers validate the
+// mode, so an unknown mode falls through to the body renderer.
 func Render(req Request) string {
 	if req.Mode == ModeTitle {
-		return renderTitle(req)
+		return renderTitleVerified(req)
 	}
-	return renderBody(req)
+	return renderBodyVerified(req)
+}
+
+// withoutNames returns the request with every name fact removed: the render
+// then treats all mentions as unresolvable, the always-safe fallback shape.
+func withoutNames(req Request) Request {
+	req.Names = nil
+	req.BotName = ""
+	return req
+}
+
+func renderBodyVerified(req Request) string {
+	if out := renderBody(req); mentionContractOK(req.Content, out) {
+		return out
+	}
+	// Name-free body: only the addressing run is dropped (a prefix deletion
+	// cannot join neighbours), every other token stays raw.
+	if out := renderBody(withoutNames(req)); mentionContractOK(req.Content, out) {
+		return out
+	}
+	return strings.TrimSpace(req.Content)
+}
+
+func renderTitleVerified(req Request) string {
+	if out := renderTitle(req); mentionContractOK(req.Content, out) {
+		return out
+	}
+	// Name-free title drops every mention; a drop can join the text on both
+	// sides into a forged token or ping, so it is verified too.
+	if out := renderTitle(withoutNames(req)); mentionContractOK(req.Content, out) {
+		return out
+	}
+	return emptyTitle
 }
 
 // renderBody renders the text the model receives. The bot's own token inside
 // the addressing run (whitespace and mention tokens at the very start of the
 // message) is an address prefix and is dropped; anywhere else it becomes the
-// bot's display name. Other user mentions become "@name (<@id>)", or stay
-// raw when no name resolves. Role and channel tokens stay raw — body text
-// never rewrote them.
+// bot's display name, or stays raw when the bot's name is unresolvable.
+// Other user mentions become "@name (<@id>)", or stay raw when no name
+// resolves. Role and channel tokens stay raw — body text never rewrote them.
 func renderBody(req Request) string {
 	content := req.Content
 	matches := mentionToken.FindAllStringIndex(content, -1)
@@ -174,6 +296,10 @@ func renderBody(req Request) string {
 			if botName != "" {
 				b.WriteByte('@')
 				b.WriteString(botName)
+			} else {
+				// An unresolvable bot name gets the same rule as any other
+				// unresolvable user: keep the raw token, never leave a hole.
+				b.WriteString(tok)
 			}
 		default:
 			if name := SanitizeName(req.Names[id]); name != "" {

@@ -241,8 +241,9 @@ func FuzzRenderContract(f *testing.F) {
 
 // TestSharedCaseProperties pins invariants across every table row, not just
 // the frozen strings: a title never carries any mention token, and body text
-// never carries the bot's own raw token when its name is known (the "hole"
-// bug this module exists to fix).
+// never carries the bot's own raw token when its name is known — except when
+// the safety fallback fired (the full render failed the output contract and
+// the name-free shape, where every token stays raw, is the intended result).
 func TestSharedCaseProperties(t *testing.T) {
 	for _, tc := range loadCases(t) {
 		got := Render(Request{
@@ -256,6 +257,16 @@ func TestSharedCaseProperties(t *testing.T) {
 			t.Fatalf("%s: title %q still holds a mention token", tc.Name, got)
 		}
 		if tc.Mode == ModeBody && tc.BotName != "" && tc.BotID != "" {
+			safeFallback := renderBody(withoutNames(Request{
+				Content: tc.Content,
+				BotID:   tc.BotID,
+				BotName: tc.BotName,
+				Names:   tc.Names,
+				Mode:    tc.Mode,
+			}))
+			if got == safeFallback {
+				continue // safety fallback: raw tokens are the contract
+			}
 			for _, raw := range []string{"<@" + tc.BotID + ">", "<@!" + tc.BotID + ">"} {
 				if strings.Contains(got, raw) {
 					t.Fatalf("%s: body %q still holds the bot's raw token %s", tc.Name, got, raw)
@@ -351,9 +362,14 @@ func TestSanitizeNameBoundaries(t *testing.T) {
 	if got := SanitizeName("  everyone  "); got != "" {
 		t.Fatalf("padded mass ping rendered as %q", got)
 	}
-	// A name that merely CONTAINS a ping word is fine once '@' is dropped.
-	if got := SanitizeName("@everyone fan club"); got == "" || strings.Contains(got, "@") {
-		t.Fatalf("SanitizeName(\"@everyone fan club\") = %q", got)
+	// A name whose rendered form ("@"+name) holds a mass ping is refused:
+	// "@everyone fan club" would inline a live @everyone into model text.
+	if got := SanitizeName("@everyone fan club"); got != "" {
+		t.Fatalf("SanitizeName(\"@everyone fan club\") = %q, want refused", got)
+	}
+	// A name that merely contains a ping word away from the '@' is fine.
+	if got := SanitizeName("@fan of everyone"); got == "" || strings.Contains(got, "@") {
+		t.Fatalf("SanitizeName(\"@fan of everyone\") = %q", got)
 	}
 }
 

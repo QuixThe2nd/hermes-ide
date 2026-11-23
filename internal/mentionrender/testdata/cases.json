@@ -154,13 +154,13 @@
       "want": "ask @aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (<@111>) about it"
     },
     {
-      "name": "body: self mention with no bot name falls back to removal",
+      "name": "body: self mention with no bot name keeps the raw token",
       "mode": "body",
       "content": "hi <@222> there",
       "bot_id": "222",
       "bot_name": "",
       "names": {},
-      "want": "hi  there"
+      "want": "hi <@222> there"
     },
     {
       "name": "body: role and channel mentions stay raw",
