@@ -417,6 +417,9 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
                 "config": self.config.to_dict(),
                 "gate_credential": gate_credential,
                 "reaction_gate_reload": reaction_gate_reload,
+                # The hub-side adapter pins per-owner state (thread participation)
+                # to this home; resolved under the owning profile's scope above.
+                "hermes_home": str(get_hermes_home()),
                 **overlap_attachment(),
             })
             self.hub_pid = int(result["pid"])

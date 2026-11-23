@@ -486,10 +486,17 @@ class DiscordHubServer:
     async def _attach_adapter(self, generation_id: str, config_data: Dict[str, Any], profile: str,
                               profile_routes: Optional[list] = None,
                               gate_credential: Optional[str] = None,
-                              reaction_gate_reload: Optional[Dict[str, Any]] = None) -> None:
+                              reaction_gate_reload: Optional[Dict[str, Any]] = None,
+                              hermes_home: Optional[str] = None) -> None:
         from gateway.config import PlatformConfig
+        from gateway.platforms.helpers import ThreadParticipationTracker
         from gateway.profile_routing import parse_profile_routes
         from plugins.platforms.discord.adapter import DiscordAdapter
+
+        if hermes_home is not None:
+            hermes_home = str(hermes_home).strip()
+            if not hermes_home:
+                raise ValueError("Discord hub attach hermes_home must be non-empty when supplied")
 
         config = PlatformConfig.from_dict(config_data)
         if not config.token:
@@ -535,6 +542,22 @@ class DiscordHubServer:
                     adapter._capture_response_gate_credential()
                     adapter._hub_reaction_gate_reload_scope = next_scope
                     adapter._reaction_gate_start_reload_watcher()
+                if hermes_home is not None:
+                    # The tracker owner is pinned independently of the reaction-gate
+                    # scope so the adoption rule also holds for home-only attaches;
+                    # legacy adapters fall back to the gate identity computed above.
+                    thread_owner = str(
+                        getattr(adapter, "_hub_thread_scope_profile", "") or ""
+                    ).strip() or current_profile
+                    may_adopt_home = thread_owner == incoming_profile or (
+                        thread_owner == "default" and incoming_profile != "default"
+                    )
+                    if may_adopt_home:
+                        # Rebind to the adopting profile's home. The new tracker
+                        # reloads from that home's file, so the previous owner's
+                        # in-memory set is not carried across.
+                        adapter._threads = ThreadParticipationTracker("discord", home=hermes_home)
+                        adapter._hub_thread_scope_profile = incoming_profile
                 return
             adapter = DiscordAdapter(config)
             adapter._owner_profile = None
@@ -548,6 +571,11 @@ class DiscordHubServer:
                 # supplied, never substitute the hub process's default-profile home.
                 adapter._hub_reaction_gate_reload_scope = dict(reaction_gate_reload)
                 adapter._hub_reaction_gate_reload_scope["profile_name"] = profile_name
+            if hermes_home is not None:
+                # Pin the thread tracker to the attaching profile's home before
+                # connect(); legacy attaches keep the hub-local default.
+                adapter._threads = ThreadParticipationTracker("discord", home=hermes_home)
+                adapter._hub_thread_scope_profile = profile_name.strip() or "default"
             adapter.gateway_runner = _HubProfileResolver(self, key)
             adapter.handle_message = self._make_inbound_handler(adapter, key)
             adapter._fatal_error_handler = (
@@ -680,7 +708,8 @@ class DiscordHubServer:
                                 generation, config_data, str(params.get("profile") or "default"),
                                 params.get("profile_routes") or [],
                                 params.get("gate_credential"),
-                                reaction_gate_reload=params.get("reaction_gate_reload"))
+                                reaction_gate_reload=params.get("reaction_gate_reload"),
+                                hermes_home=params.get("hermes_home"))
                             router = self._router_for(token_key)
                         else:
                             raise ValueError(f"unknown hub platform: {platform_name}")
