@@ -1,8 +1,14 @@
-"""Synchronous OMP subprocess backend for configured delegation lanes."""
+"""Synchronous OMP subprocess backend for configured delegation lanes.
+
+Each run's workdir is also recorded in the per-home run registry
+(``plugins/omp_viewer/runs.py``) the moment its live session is written,
+so the omp-viewer web UI discovers runs wherever their workdir lives.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import selectors
@@ -24,6 +30,8 @@ from tools.harness_persist import (
     register_surviving_harness,
     wait_service,
 )
+
+logger = logging.getLogger(__name__)
 
 _QUOTA_STATUSES = {403, 429}
 _QUOTA_MARKERS = (
@@ -539,6 +547,13 @@ def _write_live(workdir: Path, session_dir: Path, model: str) -> None:
     temporary.write_text(payload + "\n", encoding="utf-8")
     os.chmod(temporary, 0o600)
     temporary.replace(lane / "live.json")
+    try:
+        from plugins.omp_viewer.runs import record_lane_run
+
+        record_lane_run(workdir, session_dir, model)
+    except Exception:
+        # A viewer-registry failure must never fail the lane run itself.
+        logger.debug("omp lane run registry record failed", exc_info=True)
 
 
 def _session_jsonl(session_dir: Path) -> Optional[Path]:
@@ -728,6 +743,13 @@ def run_omp_lane(
     session_dir = _lane_session_dir(directory, model)
     _write_live(directory, session_dir, model)
     base["session_dir"] = str(session_dir)
+    try:
+        # Best-effort: a viewer-notice failure must never fail the lane run.
+        from plugins.omp_viewer.watch import emit_lane_watch_notice
+
+        emit_lane_watch_notice(session_dir)
+    except Exception:
+        logger.debug("omp lane watch notice failed", exc_info=True)
     config = dict(omp_config if omp_config is not None else (_cfg().get("omp") or {}))
     if spec.get("goal") is True:
         return run_omp_goal(
