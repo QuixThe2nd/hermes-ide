@@ -5,10 +5,12 @@ freeze the live repo's current percentages (no change-detector assertions).
 """
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 _SPEC = importlib.util.spec_from_file_location(
     "divergence_badges", Path(__file__).resolve().parents[2] / "scripts" / "divergence_badges.py"
@@ -111,4 +113,63 @@ def test_badge_percent_is_encoded_once():
     )
     assert "57%25" in side and "23%25" in side
     assert "57%2525" not in side
+
+
+_REPO = Path(__file__).resolve().parents[2]
+_BADGE_WORKFLOW = _REPO / ".github" / "workflows" / "divergence-badges.yml"
+
+
+def _badge_workflow():
+    return yaml.safe_load(_BADGE_WORKFLOW.read_text(encoding="utf-8-sig"))
+
+
+def _badge_step_runs(workflow):
+    """run: blocks of the steps that invoke divergence_badges.py."""
+    runs = []
+    for job in (workflow.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            if isinstance(step, dict) and "divergence_badges.py" in str(step.get("run", "")):
+                runs.append(step["run"])
+    return runs
+
+
+def test_workflow_computes_on_fetched_tip_not_checkout():
+    """Every badge-compute step must fetch origin/main and land on it BEFORE
+    the script runs. The badge commit used to be parented on the checkout-time
+    SHA; once main moved, every push died with "! [rejected] main -> main
+    (fetch first)". The README edit is the only local change, so the fix is
+    fetch + hard-reset onto the tip + recompute — never a rebase.
+    """
+    workflow = _badge_workflow()
+    runs = _badge_step_runs(workflow)
+    assert runs, "no step invokes divergence_badges.py"
+    for run in runs:
+        compute = run.index("divergence_badges.py")
+        assert run.index("git fetch origin main") < compute
+        assert run.index("git reset --hard origin/main") < compute
+        # the stale edit is dropped before the reset so it can never be lost by it
+        assert run.index("git checkout -- README.md") < run.index("git reset --hard origin/main")
+
+
+def test_workflow_push_retry_is_bounded_and_fails_loudly():
+    for run in _badge_step_runs(_badge_workflow()):
+        assert "for attempt in 1 2 3" in run  # bounded, not infinite
+        assert "::error::" in run  # exhausted retries annotate the job, visibly
+        assert re.search(r"\bexit 1\b", run)
+        # success paths exit inside the loop; nothing falls through after it
+        assert run.rstrip().endswith("exit 1")
+
+
+def test_workflow_keeps_trigger_and_push_prerequisites():
+    workflow = _badge_workflow()
+    # `on:` parses as the YAML 1.1 boolean True; the badge commit must not retrigger
+    assert workflow[True]["push"]["paths-ignore"] == ["README.md"]
+    assert "workflow_dispatch" in workflow[True]
+    assert workflow["permissions"] == {"contents": "write"}  # GITHUB_TOKEN may push
+    job = workflow["jobs"]["refresh"]
+    assert job["timeout-minutes"]
+    for step in job["steps"]:
+        uses = step.get("uses", "")
+        if uses:
+            assert re.fullmatch(r"[0-9a-f]{40}", uses.split("@", 1)[1]), f"unpinned action: {uses}"
 
