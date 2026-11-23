@@ -778,9 +778,6 @@ _SYSTEM_PROMPT_TAILS = {
 class HindsightMemoryProvider(MemoryProvider):
     """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
 
-    # Each server-side op status poll is a round trip — coarser than the 0.05s queue poll.
-    _RETAIN_OP_POLL_INTERVAL_S = 0.5
-
     def backup_paths(self) -> List[str]:
         """Legacy shared config + embedded-mode profile env files live under ~/.hindsight."""
         with contextlib.suppress(Exception):
@@ -799,7 +796,7 @@ class HindsightMemoryProvider(MemoryProvider):
             setattr(self, f"_{name}", "")
         self._session_id = self._parent_session_id = self._document_id = ""
         # Serializes client (re)construction so concurrent first-use callers
-        # (foreground tool thread, prefetch thread, writer thread) can't each
+        # (foreground tool thread, writer thread) can't each
         # build a client and leak all but the last one.
         self._client_lock = threading.Lock()
         # Serializes PUBLICATION of a client into ``self._client`` against
@@ -883,18 +880,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_counter = self._turn_index = 0
         self._session_turns: list[str] = []  # ALL turns for the session
         self._last_retained_turn_count = 0  # append-mode delta watermark
-        # Server-side async retain ops still in flight: aretain_batch returns on
-        # *acceptance*, not durability, so the prefetch gates on these via
-        # get_operation_status (a drained local queue is not a read-after-write signal).
-        self._pending_retain_ops: set[str] = set()
-        self._pending_retain_ops_lock = threading.Lock()
-        self._retain_ops_bank_id = ""
         self._apply_retain_policy({})
 
-        # Recall: pending prefetch block + count, and the indicator state (recall_status()).
-        self._prefetch_result, self._prefetch_count = "", 0
-        self._prefetch_lock = threading.Lock()
-        self._prefetch_thread = None
+        # Recall indicator state (recall_status()/recalled_count()).
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
@@ -972,14 +960,11 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_min_scores", "description": "Per-stage score floors for recall (inclusive, AND-ed) — drop results scoring below any floor. Keys: semantic, keyword, reranker, final. Object or JSON string, e.g. {\"final\": 0.5} or {\"semantic\": 0.2, \"final\": 0.5}. Unset/empty = no floors.", "default": ""},
             {"key": "recall_max_results", "description": "Keep only the top N ranked recall results after score filtering (0 = no cap)", "default": 0},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
-            {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
             {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory. Off by default — the gateway's '🧠 Injecting N memories' card already reports the count; set true to opt back in.", "default": False},
             {"key": "retain_indicator", "description": "Show a '👁️ Hindsight — saving to memory…' status line when a turn is saved to memory (turn off for customer-facing agents)", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
-            {"key": "prefetch_waits_for_retain", "description": "Have the background next-turn prefetch wait for the just-completed retain to become recall-visible on the server (local queue drain + async operation completion) before recalling, so recall includes the just-completed turn (runs off the reply path, adds no response latency)", "default": True},
-            {"key": "prefetch_retain_drain_timeout", "description": "Max seconds the background prefetch waits for the retain to become recall-visible (queue drain + server-side completion) before recalling anyway", "default": 10.0},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
@@ -1052,7 +1037,7 @@ class HindsightMemoryProvider(MemoryProvider):
         (aiohttp.helpers.TimerContext finds no current task on the session's
         loop). Construction on the loop keeps construct/use/retry/close all on
         one owning loop no matter which thread triggers the first call
-        (foreground tool, prefetch, writer, bank defaults, session switch).
+        (foreground tool, writer, bank defaults, session switch).
         """
         if self._client is None:
             if _on_hindsight_loop_thread():
@@ -2208,7 +2193,7 @@ class HindsightMemoryProvider(MemoryProvider):
         Hindsight loop, never on the calling thread. hindsight-client ships
         several methods as sync ``_run_async`` wrappers that execute on
         ``asyncio.get_event_loop()`` of whichever thread calls them; when such
-        a call runs on a foreground/writer/prefetch thread it binds the SDK's
+        a call runs on a foreground/writer thread it binds the SDK's
         aiohttp session to that thread's loop, and every subsequent call
         scheduled here fails with aiohttp's "Timeout context manager should
         be used inside a task". Evaluating the callable on the owning loop
@@ -2235,87 +2220,6 @@ class HindsightMemoryProvider(MemoryProvider):
             )
             client = self._recreate_client(client)
             return self._run_sync(_invoke(client))
-
-    def _track_retain_ops(self, retain_response, bank_id: str) -> None:
-        """Record the async ``operation_id``/``operation_ids`` of an aretain_batch reply
-        (pending until recall-visible). No id (older API / sync completion) leaves
-        only the local queue drain as a signal."""
-        raw_ids = [getattr(retain_response, "operation_id", None), *(getattr(retain_response, "operation_ids", None) or [])]
-        if ids := [str(op) for op in raw_ids if op]:
-            self._retain_ops_bank_id = bank_id
-            with self._pending_retain_ops_lock:
-                self._pending_retain_ops.update(ids)
-
-    def _is_retain_op_complete(self, bank_id: str, op_id: str) -> bool:
-        """True when a server-side retain op is done or gone (completed ops are evicted,
-        so 404 = no longer pending). Transient errors -> False, caller keeps waiting."""
-        from hindsight_client_api.exceptions import NotFoundException
-
-        try:
-            resp = self._run_hindsight_operation(
-                lambda client: client.operations.get_operation_status(bank_id=bank_id, operation_id=op_id)
-            )
-        except NotFoundException:
-            return True
-        except Exception as exc:
-            logger.debug("Prefetch: operation status check failed for %s: %s", op_id, exc)
-            return False
-        return str(getattr(resp, "status", "") or "").lower() in {"completed", "failed"}
-
-    def _wait_for_retains_drained(self, timeout: float) -> bool:
-        """Block up to *timeout* s for the last retain to become recall-visible
-        (prefetch thread only, never the reply path). Two barriers on one budget:
-        (1) the writer queue drains — polls ``unfinished_tasks`` rather than
-        ``queue.join()`` so a wedged write can't hang the prefetch; (2) the
-        server-side async ops complete (async retain returns on acceptance, not
-        durability). False on timeout/shutdown."""
-        deadline = None if timeout <= 0 else time.monotonic() + timeout
-        expired = lambda: deadline is not None and time.monotonic() >= deadline  # noqa: E731
-        while self._retain_queue.unfinished_tasks > 0:
-            if self._shutting_down.is_set():
-                return False
-            if expired():
-                logger.debug("Prefetch: retain drain timed out after %.1fs (%d pending)",
-                             timeout, self._retain_queue.unfinished_tasks)
-                return False
-            time.sleep(0.05)
-        return self._wait_for_server_retain_ops(expired, timeout)
-
-    def _wait_for_server_retain_ops(self, _expired: Callable[[], bool], timeout: float) -> bool:
-        """Poll tracked async retain ops until complete or *_expired()* (deadline
-        predicate). Ops still pending at the deadline are DROPPED: keeping them
-        would let a permanently failing status endpoint burn the full timeout on
-        EVERY later prefetch (a per-turn latency penalty via prefetch()'s bounded
-        join). Trades a possibly-stale recall for liveness; WARNING once per prefetch."""
-        while True:
-            with self._pending_retain_ops_lock:
-                bank_id = self._retain_ops_bank_id or self._bank_id
-                pending = list(self._pending_retain_ops)
-            if not pending:
-                return True
-            if self._shutting_down.is_set():
-                return False
-            done: set[str] = set()
-            for op_id in pending:
-                if self._shutting_down.is_set():
-                    return False
-                if _expired():
-                    break
-                if self._is_retain_op_complete(bank_id, op_id):
-                    done.add(op_id)
-            with self._pending_retain_ops_lock:
-                self._pending_retain_ops.difference_update(done)
-                if not self._pending_retain_ops:
-                    return True
-                dropped = len(self._pending_retain_ops) if _expired() else 0
-                if dropped:
-                    self._pending_retain_ops.clear()
-            if dropped:
-                logger.warning("Prefetch: server retain visibility timed out after %.1fs; "
-                               "dropping %d unresolved op(s) so later prefetches stay "
-                               "bounded (recall may miss the just-completed turn)", timeout, dropped)
-                return False
-            time.sleep(self._RETAIN_OP_POLL_INTERVAL_S)
 
     # -- retain target -----------------------------------------------------------
 
@@ -2461,18 +2365,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # On by default so the user SEES memory working whether or not the model
         # mentions it; off switch for customer-facing agents (recall_indicator too).
         self._retain_indicator = bool(cfg.get("retain_indicator", True))
-        # The next turn's warm prefetch could read BEFORE an async retain is
-        # recall-visible; when True it first waits (bounded, off the reply path)
-        # for the queue to drain AND the server-side op(s) to complete.
-        self._prefetch_waits_for_retain = cfg.get("prefetch_waits_for_retain", True)
-        self._prefetch_retain_drain_timeout = float(cfg.get("prefetch_retain_drain_timeout", 10.0))
 
     def _apply_recall_settings(self, cfg: dict) -> None:
         """Recall knobs are pure config too (``{}`` yields the defaults)."""
         self._recall_tags = cfg.get("recall_tags") or None
         self._recall_tags_match = cfg.get("recall_tags_match", "any")
         self._auto_recall = cfg.get("auto_recall", True)
-        self._recall_sync = bool(cfg.get("recall_sync", False))
         self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
         self._recall_max_input_chars = int(cfg.get("recall_max_input_chars", 800))
         # None -> observation-only (Hindsight's consolidated, deduplicated layer; raw
@@ -2539,7 +2437,7 @@ class HindsightMemoryProvider(MemoryProvider):
     # -- recall ------------------------------------------------------------------
 
     def _recall_disabled(self) -> bool:
-        """Guards shared by the async and synchronous recall paths."""
+        """Guards for the synchronous auto-recall path."""
         why = ("tools-only mode" if self._memory_mode == "tools" else "auto_recall disabled" if not self._auto_recall
                else "shutting down" if self._shutting_down.is_set() else None)
         if why:
@@ -2564,7 +2462,7 @@ class HindsightMemoryProvider(MemoryProvider):
         return resp.text
 
     def _do_recall(self, query: str) -> tuple[str, int]:
-        """One recall/reflect for *query* (background prefetch and ``recall_sync`` paths)
+        """One recall/reflect for *query* (the synchronous prefetch path)
         -> (text, memory count); the count is 0 for reflect (synthesis) and on error."""
         if self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
@@ -2600,25 +2498,11 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         return f"{header}\n\n{result}"
 
-    def _join_prefetch(self, timeout: float, *, log: bool = False) -> None:
-        if not (self._prefetch_thread and self._prefetch_thread.is_alive()):
-            return
-        if log:
-            logger.debug("Prefetch: waiting for background thread to complete")
-        self._prefetch_thread.join(timeout=timeout)
-
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        # Opt-in: recall synchronously against the *current* message so the
-        # injected memories match this turn's query, not the previous turn's.
+        # Recall synchronously against the *current* message so the injected
+        # memories match this turn's query — the only auto-recall path.
         # See NousResearch/hermes-agent#5820.
-        if self._recall_sync:
-            return self._finish_prefetch(*(("", 0) if self._recall_disabled() else self._do_recall(query)))
-        # Default: the background worker's result for the previous turn (capped join).
-        self._join_prefetch(3.0, log=True)
-        with self._prefetch_lock:
-            result, count = self._prefetch_result, self._prefetch_count
-            self._prefetch_result, self._prefetch_count = "", 0
-        return self._finish_prefetch(result, count)
+        return self._finish_prefetch(*(("", 0) if self._recall_disabled() else self._do_recall(query)))
 
     def recall_status(self) -> Optional[RecallStatus]:
         """Count injected by the last prefetch; None if nothing injected or ``recall_indicator=false``."""
@@ -2635,24 +2519,6 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._last_recall_returned:
             return None
         return self._last_recall_count
-
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        # Sync mode recalls live each turn — nothing to prime in the background.
-        if self._recall_sync or self._recall_disabled():
-            return
-
-        def _run():
-            # Wait (bounded, off the reply path) for the just-completed turn's
-            # retain to be recall-visible so the warmed context includes it.
-            if self._prefetch_waits_for_retain:
-                self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
-            text, count = self._do_recall(query)
-            if text:
-                with self._prefetch_lock:
-                    self._prefetch_result, self._prefetch_count = text, count
-
-        self._prefetch_thread = spawn_context_thread(_run, name="hindsight-prefetch")
-        self._prefetch_thread.start()
 
     # -- retain ------------------------------------------------------------------
 
@@ -2703,7 +2569,7 @@ class HindsightMemoryProvider(MemoryProvider):
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
     def _make_turn_retain_job(self, turns: list[str], *, document_id: str, update_mode: str | None,
-                              label: str, track_ops: bool = True) -> Callable[[], None]:
+                              label: str) -> Callable[[], None]:
         """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
         writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
         content = "[" + ",".join(turns) + "]"
@@ -2721,11 +2587,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # rate limit does NOT enter the backlog (a replayed append-mode
             # document re-appends its tail; chunk-hash recovery only dedupes
             # byte-identical chunks). The failure surfaces unchanged.
-            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
-            # Async retains are only *accepted* here; track the op id(s) so the
-            # next-turn prefetch can wait for true server-side completion.
-            if retain_async and track_ops:
-                self._track_retain_ops(resp, bank_id)
+            self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
             logger.debug("Hindsight %s succeeded", label)
 
         return _job
@@ -3035,8 +2897,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Rotate per-session state (/resume, /branch, /reset, /new, compression) so
         writes don't land in the previous session's document. Always: flush buffered
         turns under the OLD ids first (``retain_every_n_turns > 1`` would silently
-        lose them), join the in-flight prefetch and drop its result (no stale recall
-        for the new session), then set ``_session_id``, mint a fresh ``_document_id``
+        lose them), then set ``_session_id``, mint a fresh ``_document_id``
         and clear the batch buffers. ``reset`` is accepted but unneeded: buffer
         clearing is correct for every switch.
 
@@ -3057,8 +2918,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._session_turns:
             old_document_id, old_update_mode = self._resolve_retain_target(self._document_id)
             job = self._make_turn_retain_job(list(self._session_turns), document_id=old_document_id,
-                                             update_mode=old_update_mode, label="flush-on-switch",
-                                             track_ops=False)
+                                             update_mode=old_update_mode, label="flush-on-switch")
 
             def _flush():
                 try:
@@ -3070,12 +2930,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if not self._shutting_down.is_set():
                 self._enqueue_retain(_flush)
 
-        # 2. Drain the old session's in-flight prefetch and drop its result.
-        self._join_prefetch(3.0)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-
-        # 3. Rotate to the new session.
+        # 2. Rotate to the new session.
         if parent_session_id:
             self._parent_session_id = str(parent_session_id).strip()
         self._session_id, self._document_id = new_id, _mint_document_id(new_id)
@@ -3108,8 +2963,6 @@ class HindsightMemoryProvider(MemoryProvider):
                     "abandoning %d pending retain(s)",
                     self._retain_queue.qsize(),
                 )
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=5.0)
         # Drop the reference first, then close: _close_client() releases the
         # session on the shared owning loop (never from this thread), the same
         # path a retry-displaced client already went through. The
