@@ -1041,6 +1041,55 @@ def test_failed_refresh_thread_start_serves_stale_and_recovers(
     assert new_workdir in server.find_lane_workdirs()
 
 
+def test_scan_warmup_start_failure_leaves_the_cold_walk_serving(
+    scan_root: Path, monkeypatch
+) -> None:
+    """A Thread.start() failure on warm-up is not fatal: the first serving
+    call runs the same cold walk in its own thread."""
+    _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [])
+    roots = server._resolved_scan_roots()
+
+    class _StartFailThread:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(threading, "Thread", _StartFailThread)
+
+    server._start_scan_warmup(roots)  # must not raise
+
+    assert server.find_lane_workdirs() == [scan_root.resolve() / "proj"]
+
+
+def test_scan_warmup_publishes_the_walk_result_without_a_serving_call(
+    scan_root: Path, monkeypatch
+) -> None:
+    """Warm-up alone (no find_lane_workdirs first) publishes the scan
+    result; a later serving call is a pure cache hit."""
+    _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [])
+    roots = server._resolved_scan_roots()
+    counts = _counted_listings(scan_root, monkeypatch)
+
+    published = threading.Event()
+    real_complete = server._complete_walk
+
+    def publishing_complete(state, result):
+        real_complete(state, result)
+        if result is not None:
+            published.set()
+
+    monkeypatch.setattr(server, "_complete_walk", publishing_complete)
+
+    server._start_scan_warmup(roots)
+
+    assert published.wait(timeout=10), "warm-up walk never published its result"
+    walks_after_warmup = dict(counts)
+    assert server.find_lane_workdirs() == [scan_root.resolve() / "proj"]
+    assert counts == walks_after_warmup, "serving call rewalked despite the warm-up publication"
+
+
 def test_cached_workdir_with_symlinked_lane_dir_is_dropped_inside_window(
     scan_root: Path, monkeypatch
 ) -> None:

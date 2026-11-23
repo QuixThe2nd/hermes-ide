@@ -284,6 +284,21 @@ def _scan_workdirs_cached(roots: list[Path]) -> dict[str, Path]:
     return dict(result)
 
 
+def _start_scan_warmup(roots: list[Path]) -> None:
+    """Warm the scan-walk cache in a background thread at startup.
+
+    Optimisation only: if the thread cannot be started the server must
+    still come up — the first /api/runs performs the same cold walk in
+    its own thread.
+    """
+    if not roots:
+        return
+    try:
+        threading.Thread(target=_scan_workdirs_cached, args=(roots,), daemon=True).start()
+    except Exception:  # startup hardening: a failed warm-up is never fatal
+        pass
+
+
 def find_lane_workdirs() -> list[Path]:
     """Workdirs carrying a ``.hermes-lane`` dir, bounded depth, no symlinks.
 
@@ -1012,9 +1027,7 @@ def main() -> None:
 
     # Cold start: warm the scan-walk cache in the background, so the first
     # /api/runs waits on this ONE in-flight walk instead of starting its own.
-    roots = _resolved_scan_roots()
-    if roots:
-        threading.Thread(target=_scan_workdirs_cached, args=(roots,), daemon=True).start()
+    _start_scan_warmup(_resolved_scan_roots())
 
 
     httpd = ThreadingHTTPServer((SERVER_BIND, SERVER_PORT), OmpViewerHandler)
