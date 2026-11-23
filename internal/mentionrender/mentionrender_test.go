@@ -105,7 +105,7 @@ func TestMentionTokenDocumentsAcceptedForms(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		"<@abc>", // non-numeric id
+		"<@abc>",  // non-numeric id
 		"<@123",   // unterminated
 		"<@>",     // empty id
 		"@123>",   // missing opener
