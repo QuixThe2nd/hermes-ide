@@ -43,7 +43,7 @@ We keep the parts that work until their replacement is ready. We don't need a fu
 
 ## Opinions
 
-- **Discord first.** Discord is the operator surface, not just another adapter. Your home server is mission control. Mentions arrive as readable names — `@Alice (<@111>)`, not a raw `<@111>` token or a hole where the bot itself was named — and auto-thread titles read the same way, so the agent always knows who was mentioned and can ping them back.
+- **Discord first.** Discord is the operator surface, not just another adapter. Your home server is mission control. Mentions arrive as readable names — `@Alice (<@111>)`, not a raw `<@111>` token or a hole where the bot itself was named — and auto-thread titles read the same way, so the agent always knows who was mentioned and can ping them back. When one message mentions several Hermes bots, the losers of Discord's one-thread-per-message race adopt the winner's thread and answer there instead of dropping the request.
 - **Code is delegated, not written in chat.** Coding lanes (Claude Code and friends) do the work; the agent plans, verifies, and publishes.
 - **Delegated coding agents own the codebase.** They merge duplicates, fix related bugs, and keep adjacent cleanups in separate tested commits.
 - **Batteries included.** Tooling, pipelines and integrations live in this tree. Upstream ships slim; we ship ready.

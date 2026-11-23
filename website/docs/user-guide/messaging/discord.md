@@ -587,6 +587,8 @@ When enabled, every `@mention` in a regular text channel automatically creates a
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead — except free-response channels that are also listed in `discord.thread_free_response_channels`, which do auto-thread. Quote-replies (`discord.MessageType.reply`) are auto-threaded like any other admitted message unless [`discord.auto_thread_replies`](#discordauto_thread_replies) is `false`.
 
+Discord allows exactly one thread per message. When several Hermes bots share a server and one message `@mention`s more than one of them, the first bot creates the thread and the others adopt it: they answer in the shared thread instead of failing with a "could not create a Discord thread" notice or spinning off a second thread nobody is watching. An adopted thread keeps the name its creator chose — the adopting bot never applies its own session-title rename to it.
+
 #### `discord.auto_thread_replies`
 
 **Type:** boolean — **Default:** `true`
