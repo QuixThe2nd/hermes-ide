@@ -2510,7 +2510,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     parent_id = str(message.channel.parent_id)
                 free_channels = self._discord_free_response_channels()
                 channel_keys = self._discord_channel_keys(message, parent_id)
-                if "*" not in free_channels and not (channel_keys & free_channels):
+                if not self._discord_free_response_match(message, channel_keys, free_channels):
                     # Ambient text that pings a human (not us) would be dropped here by the
                     # legacy prefilter. In a gate-selected channel the probe still records it
                     # so the judge — not this prefilter — decides; the verdict is unchanged.
@@ -3352,8 +3352,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             free_channels = self._discord_free_response_channels()
             if (
                 self._discord_require_mention()
-                and "*" not in free_channels
-                and not (channel_keys & free_channels)
+                and not self._discord_free_response_match(message, channel_keys, free_channels)
                 and not self._in_bot_thread(message)
                 and not self._self_is_explicitly_mentioned(message)
                 # Same rule as live dispatch: in a gate-selected channel the judge decides
@@ -6315,6 +6314,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             keys.add(f"#{parent_name}")
         return keys
 
+    def _discord_free_response_match(self, message: Any, channel_keys: Any, free_channels: Any) -> bool:
+        """A thread is free-response only on its own id; parent membership must not exempt it."""
+        if "*" in free_channels:
+            return True
+        if isinstance(getattr(message, "channel", None), discord.Thread):
+            return str(getattr(message.channel, "id", "")) in free_channels
+        return bool(channel_keys & free_channels)
+
     def _discord_thread_require_mention(self) -> bool:
         """Whether threads still require @mention after the bot has participated (default False).
         Set True when multiple bots share a thread to avoid bot-to-bot loops."""
@@ -7611,10 +7618,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return False
             free_channels = self._discord_free_response_channels()
             require_mention = self._discord_require_mention()
-            is_free_channel = (
-                "*" in free_channels
-                or bool(channel_keys & free_channels)
-            )
+            is_free_channel = self._discord_free_response_match(message, channel_keys, free_channels)
             in_bot_thread = self._in_bot_thread(message)
             # An enforce-approved ambient message was already admitted by the gate in
             # _dispatch_discord_message; this is the same decision, not a new exemption.

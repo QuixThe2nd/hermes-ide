@@ -1402,3 +1402,48 @@ async def test_bare_mention_acks_with_eyes_and_starts_no_turn(adapter, monkeypat
     assert await adapter._handle_message(message) is False
     adapter.handle_message.assert_not_awaited()
     adapter._add_reaction.assert_awaited_once_with(message, "👀")
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_does_not_inherit_parent_free_response(adapter, monkeypatch):
+    """A thread is not free-response just because its parent channel is listed."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    parent = FakeTextChannel(channel_id=789)
+    thread = FakeThread(channel_id=999, name="thread", parent=parent)
+
+    message = make_message(channel=thread, content="casual in thread")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_parent_channel_still_free_response(adapter, monkeypatch):
+    """The parent channel itself remains free-response when listed."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="casual in parent")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_own_id_listed_is_free_response(adapter, monkeypatch):
+    """A thread whose own id is listed is free-response."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "999")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    parent = FakeTextChannel(channel_id=789)
+    thread = FakeThread(channel_id=999, name="thread", parent=parent)
+
+    message = make_message(channel=thread, content="casual in listed thread")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
