@@ -44,7 +44,13 @@ class TestContextRouteMismatchNamedCustomProvider:
             is True
         )
 
-    def test_catalog_provider_rejects_non_default_runtime_url(self):
+    def test_catalog_provider_rejects_non_default_runtime_url(self, monkeypatch):
+        # The catalog default route set is cache-backed (models.dev): seed it so
+        # the logic under test does not depend on the runner's catalog state.
+        monkeypatch.setattr(
+            "agent.agent_init._provider_default_routes",
+            lambda provider: {"https://openrouter.ai/api/v1"} if provider == "openrouter" else set(),
+        )
         assert (
             _context_route_mismatch(
                 None,
