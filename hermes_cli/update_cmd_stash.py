@@ -5,6 +5,7 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 """
 
 import logging
+import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -267,6 +268,94 @@ def _confirm_restore(stash_ref: str, input_fn) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Conflict auto-resolution. Go twin: internal/stashconflict
+# (Prompt / Classify / DriftNote) - keep the wording and verdict order in sync.
+# ---------------------------------------------------------------------------
+
+_CONFLICT_RESOLVE_TIMEOUT = 600
+
+
+def _conflict_resolution_prompt(unmerged_paths: list[str], stash_ref: str) -> str:
+    paths = "\n".join(f"- {p}" for p in unmerged_paths)
+    return (
+        "Resolve a git stash conflict in this checkout.\n\n"
+        f"`hermes update` stashed local edits, pulled upstream, then re-applied {stash_ref} and hit\n"
+        "conflicts. Leave the stash in place.\n\n"
+        f"Conflicted files:\n{paths}\n\n"
+        "Keep the newly pulled upstream behaviour and re-apply the local intent in the smallest form\n"
+        "that still works: no conflict markers left, no unrelated rewrites, no dropped features.\n"
+        "Touch only the files above. Do not commit, do not push, do not drop the stash.\n"
+        "Finish when `git diff --name-only --diff-filter=U` prints nothing.\n"
+    )
+
+
+def _classify_conflict_outcome(exit_code: int, unmerged_paths: list[str]) -> str:
+    if unmerged_paths:  # a tree that did not merge is never resolved, whatever the exit code says
+        return "still-conflicted"
+    return "resolved" if exit_code == 0 else "failed"
+
+
+def _conflict_drift_note(resolved_paths: list[str]) -> str:
+    if not resolved_paths:
+        return ""
+    listed = "\n".join(f"  \u2022 {p}" for p in resolved_paths)
+    return (
+        "These were local-only changes to core files. Upstream keeps editing them, so they will\n"
+        f"conflict again: open a PR for what belongs in Hermes, or make it a plugin.\n{listed}"
+    )
+
+
+def _conflict_auto_resolve_enabled() -> bool:
+    from hermes_cli.update_cmd import _updates_config
+    try:
+        return bool(_updates_config().get("auto_resolve_conflicts", True))
+    except Exception:  # a broken config read must never decide the updater's fate
+        return False
+
+
+def _auto_resolve_stash_conflict(
+    git_cmd: list[str], cwd: Path, stash_ref: str, unmerged_paths: list[str],
+) -> bool:
+    """Hand a conflicted stash re-apply to a fresh one-shot session.
+
+    False keeps the caller's reset-and-park path, so a failed resolution costs nothing
+    that the old behaviour did not already cost.
+    """
+    from hermes_cli.update_cmd_git import _git_run
+    if not _conflict_auto_resolve_enabled():
+        print("  Conflict auto-resolve is off (updates.auto_resolve_conflicts: false).")
+        return False
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin is None:
+        print("  Conflict auto-resolve skipped: no `hermes` executable on PATH to open a session.")
+        return False
+    print("\n\u2192 Handing the conflict to a fresh agent session to resolve...")
+    try:
+        run = subprocess.run(
+            [hermes_bin, "-z", _conflict_resolution_prompt(unmerged_paths, stash_ref)],
+            cwd=cwd, capture_output=True, text=True, timeout=_CONFLICT_RESOLVE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"  Conflict auto-resolve failed: {exc}")
+        return False
+    remaining = [
+        p for p in _git_run(git_cmd, ["diff", "--name-only", "--diff-filter=U"], cwd).stdout.split() if p
+    ]
+    outcome = _classify_conflict_outcome(run.returncode, remaining)
+    if outcome != "resolved":
+        print(f"  Conflict auto-resolve did not finish ({outcome}).")
+        if remaining:
+            print("  Still conflicted: " + ", ".join(remaining))
+        _print_nonempty(run.stderr)
+        return False
+    print("\u2192 Conflict resolved by a fresh session; validating the restored tree...")
+    note = _conflict_drift_note(unmerged_paths)
+    if note:
+        print(note)
+    return True
+
+
 def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
     """``git stash apply``; False (tree reset, stash kept) on conflicts or any failure other than the
     undeletable-untracked class."""
@@ -289,6 +378,10 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
         print("\nConflicted files:")
         for f in conflicted_files.splitlines():
             print(f"  • {f}")
+    if conflicted_files and _auto_resolve_stash_conflict(
+        git_cmd, cwd, stash_ref, conflicted_files.splitlines()
+    ):
+        return True
     print("\nYour stashed changes are preserved — nothing is lost.")
     print(f"  Stash ref: {stash_ref}")
     _reset_hard(git_cmd, cwd)  # conflict markers make hermes unrunnable; changes stay in the stash

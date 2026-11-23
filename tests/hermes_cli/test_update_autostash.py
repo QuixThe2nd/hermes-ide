@@ -1213,3 +1213,90 @@ def test_prune_orphan_rescue_refs_with_real_git_unpins_objects(tmp_path):
     # And gc can now reclaim the snapshot's objects.
     git("gc", "-q", "--prune=now")
     assert git("cat-file", "-e", snap_sha, check=False).returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# Conflicted autostash: hand the conflict to a fresh session instead of
+# throwing the local work away.
+# ---------------------------------------------------------------------------
+
+def _git_in(repo: Path, *args: str):
+    import subprocess
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+
+
+def _conflicted_repo(tmp_path: Path) -> Path:
+    """Repo whose stash conflicts with a later commit touching the same line."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_in(repo, "init", "-q")
+    _git_in(repo, "config", "user.email", "t@example.com")
+    _git_in(repo, "config", "user.name", "t")
+    (repo / "tracked.txt").write_text("base\n")
+    _git_in(repo, "add", "tracked.txt")
+    _git_in(repo, "commit", "-qm", "base")
+    (repo / "tracked.txt").write_text("local edit\n")
+    _git_in(repo, "stash", "push", "-m", "hermes-update-autostash")
+    (repo / "tracked.txt").write_text("upstream edit\n")
+    _git_in(repo, "commit", "-qam", "upstream")
+    return repo
+
+
+def _fake_hermes(tmp_path: Path, monkeypatch, body: str) -> None:
+    """Put a fake `hermes` on PATH; its shell body runs with the repo as cwd."""
+    import os
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "hermes").write_text("#!/bin/sh\n" + body)
+    (bin_dir / "hermes").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+
+def test_conflicted_autostash_is_handed_to_a_fresh_session(tmp_path, monkeypatch, capsys):
+    from hermes_cli.update_cmd_stash import _apply_stash
+    repo = _conflicted_repo(tmp_path)
+    argv = tmp_path / "argv.txt"
+    _fake_hermes(tmp_path, monkeypatch,
+                 f'echo "$@" > "{argv}"\nprintf "merged edit\\n" > tracked.txt\ngit add tracked.txt\n')
+    assert _apply_stash(["git"], repo, "stash@{0}") is True
+    out = capsys.readouterr().out
+    assert "Handing the conflict to a fresh agent session" in out
+    assert "local-only changes to core files" in out
+    assert (repo / "tracked.txt").read_text() == "merged edit\n"
+    handed = argv.read_text()
+    assert "tracked.txt" in handed and "stash@{0}" in handed
+
+
+def test_conflicted_autostash_falls_back_when_session_leaves_markers(tmp_path, monkeypatch, capsys):
+    from hermes_cli.update_cmd_stash import _apply_stash
+    repo = _conflicted_repo(tmp_path)
+    _fake_hermes(tmp_path, monkeypatch, "exit 0\n")
+    assert _apply_stash(["git"], repo, "stash@{0}") is False
+    out = capsys.readouterr().out
+    assert "did not finish (still-conflicted)" in out
+    assert "Working tree reset to clean state." in out
+    assert _git_in(repo, "status", "--porcelain").stdout.strip() == ""
+    assert _git_in(repo, "stash", "list").stdout.strip(), "stash must be preserved"
+    assert (repo / "tracked.txt").read_text() == "upstream edit\n"
+
+
+def test_conflicted_autostash_rejects_a_crashed_session(tmp_path, monkeypatch, capsys):
+    from hermes_cli.update_cmd_stash import _apply_stash
+    repo = _conflicted_repo(tmp_path)
+    _fake_hermes(tmp_path, monkeypatch,
+                 'printf "merged edit\\n" > tracked.txt\ngit add tracked.txt\nexit 7\n')
+    assert _apply_stash(["git"], repo, "stash@{0}") is False
+    assert "did not finish (failed)" in capsys.readouterr().out
+    assert _git_in(repo, "stash", "list").stdout.strip(), "stash must be preserved"
+
+
+def test_conflicted_autostash_skips_the_session_when_disabled(tmp_path, monkeypatch, capsys):
+    from hermes_cli.update_cmd_stash import _apply_stash
+    repo = _conflicted_repo(tmp_path)
+    marker = tmp_path / "invoked"
+    _fake_hermes(tmp_path, monkeypatch, f'touch "{marker}"\n')
+    monkeypatch.setattr(update_cmd, "_updates_config", lambda: {"auto_resolve_conflicts": False})
+    assert _apply_stash(["git"], repo, "stash@{0}") is False
+    assert not marker.exists()
+    assert "Conflict auto-resolve is off" in capsys.readouterr().out
+    assert _git_in(repo, "stash", "list").stdout.strip(), "stash must be preserved"
