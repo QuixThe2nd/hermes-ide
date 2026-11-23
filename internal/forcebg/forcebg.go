@@ -148,7 +148,7 @@ func (r *Registry) LiveCount(key string) int {
 	defer r.mu.Unlock()
 	n := 0
 	for _, w := range r.waits[key] {
-		if w.liveLocked() {
+		if w.live() {
 			n++
 		}
 	}
@@ -161,8 +161,14 @@ func (r *Registry) HasEligible(key string) bool {
 	return r.LiveCount(key) > 0
 }
 
-// liveLocked is live() under the registry lock.
-func (w *Wait) liveLocked() bool {
+// live reports whether the wait is still running and unadopted. It takes the
+// wait's own mutex: done and adopted are guarded by w.mu (written by
+// Complete and Adopt), NOT by the registry lock. Callers may hold r.mu —
+// r.mu → w.mu is the only lock order in the package (Complete, Adopt and
+// ReleasedBySteer never take r.mu), so this cannot deadlock.
+func (w *Wait) live() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return !w.done && !w.adopted
 }
 
@@ -287,7 +293,7 @@ func (r *Registry) SteerForcingBackground(agent Agent, text string) SteerOutcome
 	r.mu.Lock()
 	live := make([]*Wait, 0, len(r.waits[agent.Key]))
 	for _, w := range r.waits[agent.Key] {
-		if w.liveLocked() {
+		if w.live() {
 			live = append(live, w)
 		}
 	}
