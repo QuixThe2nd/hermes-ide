@@ -117,13 +117,19 @@ class ThreadParticipationTracker:
 
     _MAX_TRACKED = 20000
 
-    def __init__(self, platform_name: str, max_tracked: int = _MAX_TRACKED):
+    def __init__(self, platform_name: str, max_tracked: int = _MAX_TRACKED,
+                 home: "Path | str | None" = None):
         self._platform = platform_name
         self._max_tracked = max_tracked
+        # A hub-hosted adapter pins the owning profile's home here; in-process
+        # callers leave it None and follow get_hermes_home() (profile scope).
+        self._home = Path(home) if home is not None else None
         self._threads: dict[str, None] = dict.fromkeys(self._load() or [])
         self._state_stamp: "tuple[int, int, int] | None" = self._stamp()
 
     def _state_path(self) -> Path:
+        if self._home is not None:
+            return self._home / f"{self._platform}_threads.json"
         from hermes_constants import get_hermes_home
         return get_hermes_home() / f"{self._platform}_threads.json"
 
