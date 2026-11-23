@@ -8,6 +8,7 @@
     "surface_switch": "🔀 Injecting surface switch",
     "plugin": "🧩 Injecting plugin context",
     "process": "🖥️ Injecting process info",
+    "code_delta": "📝 Injecting code delta",
     "session": "🗺️ Injecting session context",
     "goal": "🎯 Injecting standing goal",
     "skill": "📚 Injecting skill",
@@ -305,6 +306,17 @@
       ],
       "expect_lines": [
         "📦 Large tool result saved to disk"
+      ]
+    },
+    {
+      "name": "code_delta_kind_renders_label",
+      "kinds": [
+        "process",
+        "code_delta"
+      ],
+      "expect_lines": [
+        "🖥️ Injecting process info",
+        "📝 Injecting code delta"
       ]
     }
   ],

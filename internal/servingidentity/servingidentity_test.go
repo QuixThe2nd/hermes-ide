@@ -153,6 +153,41 @@ func TestAckRewriteAndTurnNotesMatchSharedTable(t *testing.T) {
 	}
 }
 
+// TestCodeDeltaOpsMatchSharedTable drives the code-delta ops through the
+// shared honesty table: the record's build-sha proof decides the verdict,
+// and the note is never fabricated — a failed git render renders the
+// could-not-compute form, an unprovable predecessor says which reason, and
+// an unreadable current build stays quiet.
+func TestCodeDeltaOpsMatchSharedTable(t *testing.T) {
+	for _, c := range loadSharedCases(t) {
+		if c.Op != "code_delta_decision" && c.Op != "code_delta_note" {
+			continue
+		}
+		input, _ := c.Input.(map[string]any)
+		stored, currentSHA := tableString(input["stored"]), tableString(input["code_sha"])
+		if c.Op == "code_delta_decision" {
+			if got := CodeDeltaDecision(stored, currentSHA); got != c.expectString() {
+				t.Errorf("%s: got %q want %q", c.Name, got, c.expectString())
+			}
+			continue
+		}
+		if got := CodeDeltaNote(stored, currentSHA, tableDeltaRender(input)); got != c.expectString() {
+			t.Errorf("%s:\n got: %q\nwant: %q", c.Name, got, c.expectString())
+		}
+	}
+}
+
+// tableDeltaRender builds the fixed DeltaRender a code_delta_note case
+// describes: a failed git renders nothing; otherwise the case's commits and
+// stat render as a successful git read.
+func tableDeltaRender(input map[string]any) DeltaRender {
+	if tableString(input["git"]) == "failed" {
+		return nil
+	}
+	commits, stat := tableString(input["commits"]), tableString(input["stat"])
+	return func(string, string) (string, string, bool) { return commits, stat, true }
+}
+
 // tableIdentify maps a table identify answer {pid, overlap{...}} onto
 // Identify (nil when absent).
 func tableIdentify(raw any) *Identify {
@@ -277,8 +312,6 @@ func stateFromTable(input map[string]any) *StateFile {
 		RestartRequested: tableBool(raw["restart_requested"]),
 	}
 }
-
-
 
 func probeFromTable(input map[string]any) SuccessorIdentity {
 	v := tableString(input["successor_identity"])
@@ -481,7 +514,7 @@ func TestMetaKeyAndSessionID(t *testing.T) {
 // writes so the durable predecessor stays learnable.
 func TestRecordRoundtripAndWriteDiscipline(t *testing.T) {
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
-	encoded := EncodeRecord(current, RuntimeNote(current))
+	encoded := EncodeRecord(current, RuntimeNote(current), "")
 	parsed, ok := ParseRecord(encoded)
 	if !ok || parsed.PID != current.PID || parsed.StartTime != current.StartTime {
 		t.Fatalf("roundtrip: got %v ok=%v from %q", parsed, ok, encoded)
@@ -573,4 +606,3 @@ func TestOwnerActionMatrix(t *testing.T) {
 		}
 	}
 }
-

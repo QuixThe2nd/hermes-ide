@@ -35,6 +35,7 @@ _KIND_LABELS = [
     ("surface_switch", "🔀 Injecting surface switch"),
     ("plugin", "🧩 Injecting plugin context"),
     ("process", "🖥️ Injecting process info"),
+    ("code_delta", "📝 Injecting code delta"),
 ]
 
 
@@ -278,7 +279,7 @@ def test_runner_labels_each_spillover_event_as_a_new_card():
 # ---------------------------------------------------------------------------
 
 
-def _wire(consumed_notes, runtime_note="", transition_note=None):
+def _wire(consumed_notes, runtime_note="", transition_note=None, delta_note=None):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
     from gateway.run_turn_runner import TurnRunner
 
@@ -321,7 +322,8 @@ def _wire(consumed_notes, runtime_note="", transition_note=None):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "gateway.serving_transition.session_turn_notes",
-            lambda store, session_id, runner: (runtime_note, transition_note, None),
+            lambda store, session_id, runner: (
+                runtime_note, transition_note, delta_note, None),
         )
         TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
     return agent
@@ -353,6 +355,20 @@ def test_turn_wiring_tags_runtime_note_as_process_and_transition_as_restart():
     agent = _wire(consumed_notes=[], runtime_note="runtime note", transition_note="moved note")
     assert agent._gateway_turn_context_notes == "runtime note\n\nmoved note"
     assert agent._gateway_turn_note_kinds == ["process", "restart"]
+
+
+def test_turn_wiring_tags_delta_note_as_code_delta_on_both_channels():
+    # The build-change delta rides the process handoff as its own card:
+    # kind "code_delta" on the turn-note sidecar, and the continuation
+    # channel composes identity → transition → delta.
+    agent = _wire(
+        consumed_notes=[], runtime_note="runtime note",
+        transition_note="moved note", delta_note="build changed note")
+    assert agent._gateway_turn_context_notes == (
+        "runtime note\n\nmoved note\n\nbuild changed note")
+    assert agent._gateway_turn_note_kinds == ["process", "restart", "code_delta"]
+    assert agent._gateway_continuation_note == (
+        "runtime note\n\nmoved note\n\nbuild changed note")
 
 
 def test_turn_wiring_assigns_empty_kinds_when_no_notes_staged():

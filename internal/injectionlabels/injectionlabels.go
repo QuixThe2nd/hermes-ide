@@ -58,8 +58,8 @@ const SpilloverContinuationLabel = "📄 Large tool result saved to disk (contin
 // GenericLabel. The kinds split by surface:
 //
 //   - gateway envelope (message_id, restart, session_reset, intro,
-//     surface_switch, plugin, process) — bytes added around the clean user
-//     message;
+//     surface_switch, plugin, process, code_delta) — bytes added around the
+//     clean user message;
 //   - session — the once-per-session inventory of what the system prompt
 //     carries (identity, context files, skills index, workspace, …);
 //   - goal / skill — the current user message was assembled by the
@@ -76,6 +76,7 @@ var KindLabels = map[string]string{
 	"surface_switch": "🔀 Injecting surface switch",
 	"plugin":         "🧩 Injecting plugin context",
 	"process":        "🖥️ Injecting process info",
+	"code_delta":     "📝 Injecting code delta",
 	"session":        "🗺️ Injecting session context",
 	"goal":           "🎯 Injecting standing goal",
 	"skill":          "📚 Injecting skill",
