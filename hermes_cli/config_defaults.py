@@ -11,7 +11,7 @@ docs of config.yaml.
 # Explicit "unlimited" spellings ("none"/"unlimited"/"inf"/"null"/0/-1) still
 # resolve to the sys.maxsize sentinel — see resolve_turn_limit. (A YAML null
 # value is "unset", not "unlimited": it falls back to this default.)
-DEFAULT_MAX_TURNS = 256
+DEFAULT_MAX_TURNS = 512
 
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
-        # Default turn budget per conversation run. 256 headroom for
+        # Default turn budget per conversation run. 512 headroom for
         # tool-heavy work while still bounding a runaway loop; raise it or
         # use "none"/"unlimited"/"inf"/"null"/0/-1 for no limit — all
         # normalized by hermes_cli.config.resolve_turn_limit.
@@ -1064,7 +1064,9 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
         # Read from the profile that owns the session: false skips the automatic layer entirely
         # (no Jev intent call, no parked decision, no "stop" auto-pause); /goal keeps working.
-        "auto": {"enabled": True},
+        # The retrospective pass reclassifies the completed exchange and can recover a missed task;
+        # goals.auto.retrospective.enabled=false keeps only the arrival-time decision.
+        "auto": {"enabled": True, "retrospective": {"enabled": True}},
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially

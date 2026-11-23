@@ -4,13 +4,26 @@
 // It counts lines added between the merge-base of a base ref and a head
 // ref, classifies them by path suffix (.py / .go), and fails when Python
 // additions exceed Go additions. Added lines only — deletions never
-// offset additions — and binary diffs are ignored. No path filters.
+// offset additions — and binary diffs are ignored.
 //
-// One exemption: a diff whose Python deleted lines are at least 10x its
-// Python added lines passes even when additions exceed Go additions.
-// Removal and cleanup PRs can leave a few dedented lines that git counts
-// as additions; when deletions dominate by an order of magnitude, the
-// change is still net-removal and is not blocked.
+// Path exemptions: files under exemptPrefixes are excluded from the
+// counts entirely. Bundled viewer plugins (claude_viewer, omp_viewer)
+// are self-contained web-UI features whose value is proportional to
+// shipping them to all users in-tree, default-on, with repo update
+// support; their servers are interpreted Python mirroring each other
+// 1:1, and rewriting one in Go only to satisfy a line counter would
+// fork the two viewers' code paths and add a Go build toolchain
+// requirement for a feature that runs fine interpreted. The exemption
+// list is the narrow escape hatch: each entry is a deliberate
+// maintainer decision made in a PR, visible in the diff and in
+// `git blame` of this file — never a blanket plugins/ wildcard.
+//
+// One further exemption: a diff whose Python deleted lines are at
+// least 10x its Python added lines passes even when additions exceed
+// Go additions. Removal and cleanup PRs can leave a few dedented
+// lines that git counts as additions; when deletions dominate by an
+// order of magnitude, the change is still net-removal and is not
+// blocked.
 //
 // Exit codes:
 //
@@ -39,6 +52,27 @@ const (
 	netDeletionFactor = 10
 )
 
+// exemptPrefixes lists path prefixes excluded from the balance counts.
+// Each entry is a reviewed maintainer decision (see the package doc):
+// add one only in its own PR, scoped as narrowly as possible — never a
+// blanket plugins/ wildcard.
+var exemptPrefixes = []string{
+	"plugins/claude_viewer/",
+	"plugins/omp_viewer/",
+	"tests/plugins/claude_viewer/",
+	"tests/plugins/omp_viewer/",
+}
+
+// exemptPrefix returns the exempt prefix covering path, or "".
+func exemptPrefix(path string) string {
+	for _, p := range exemptPrefixes {
+		if strings.HasPrefix(path, p) {
+			return p
+		}
+	}
+	return ""
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -65,6 +99,10 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "python added lines: %d\n", counts.Python)
 	fmt.Fprintf(stdout, "python deleted lines: %d\n", counts.PythonDeleted)
 	fmt.Fprintf(stdout, "go added lines: %d\n", counts.Go)
+	if counts.ExemptFiles > 0 {
+		fmt.Fprintf(stdout, "excluded (exempt): %d lines across %d files (prefixes: %s)\n",
+			counts.ExemptLines, counts.ExemptFiles, strings.Join(counts.matchedExemptPrefixes(), ", "))
+	}
 	if counts.Python > counts.Go && counts.netPythonDeletion() {
 		fmt.Fprintf(stdout, "net-deletion exemption: python deleted >= %dx added\n", netDeletionFactor)
 		fmt.Fprintf(stdout, "OK: python deleted lines (%d) >= %d x python added lines (%d)\n",
@@ -88,6 +126,25 @@ type lineCounts struct {
 	Python        int
 	PythonDeleted int
 	Go            int
+
+	// ExemptFiles/ExemptLines count files under exemptPrefixes whose
+	// added lines were excluded from the Python/Go totals; hit tracks
+	// which prefixes fired, for the visibility line.
+	ExemptFiles int
+	ExemptLines int
+	hit         map[string]bool
+}
+
+// matchedExemptPrefixes returns the exempt prefixes that excluded at
+// least one file, in exemptPrefixes order.
+func (c lineCounts) matchedExemptPrefixes() []string {
+	var out []string
+	for _, p := range exemptPrefixes {
+		if c.hit[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // netPythonDeletion reports whether the diff removes at least 10 Python
@@ -142,6 +199,15 @@ func (c *lineCounts) addNumstat(out string) {
 			continue
 		}
 		path := bPath(fields[2])
+		if prefix := exemptPrefix(path); prefix != "" {
+			c.ExemptFiles++
+			c.ExemptLines += n
+			if c.hit == nil {
+				c.hit = map[string]bool{}
+			}
+			c.hit[prefix] = true
+			continue
+		}
 		switch {
 		case strings.HasSuffix(path, ".py"):
 			c.Python += n

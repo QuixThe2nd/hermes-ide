@@ -38,7 +38,7 @@ PURPOSE_GOAL_INTENT = "goal-intent"
 PURPOSE_RESPONSE_GATE = "response-gate"
 PURPOSE_REACTION_GATE = "reaction-gate"
 
-_BINARY_SOURCES = ("notice.go", "switch.go", "cmd/jevnotice/main.go")
+_BINARY_SOURCES = ("notice.go", "switch.go", "retrospective.go", "cmd/jevnotice/main.go")
 
 _bridge_lock = threading.Lock()
 _bridge_binary: Optional[str] = None

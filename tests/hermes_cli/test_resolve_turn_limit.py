@@ -60,13 +60,13 @@ class TestUnlimitedSpellings:
 
 class TestAbsentAndDefault:
     def test_none_returns_default(self):
-        # Absent/null resolves to the standard turn budget (256), not unlimited —
+        # Absent/null resolves to the standard turn budget (512), not unlimited —
         # unlimited is opt-in via an explicit spelling (see TestUnlimitedSpellings).
-        assert resolve_turn_limit(None) == DEFAULT_MAX_TURNS
+        assert resolve_turn_limit(None) == DEFAULT_MAX_TURNS == 512
 
-    def test_default_is_256(self):
-        # Pin the product decision: a user with no explicit override gets 256 turns.
-        assert DEFAULT_MAX_TURNS == 256
+    def test_default_is_512(self):
+        # Pin the product decision: a user with no explicit override gets 512 turns.
+        assert DEFAULT_MAX_TURNS == 512
 
     def test_none_custom_default(self):
         assert resolve_turn_limit(None, default=500) == 500

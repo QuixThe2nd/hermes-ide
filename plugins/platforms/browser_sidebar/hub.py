@@ -202,6 +202,8 @@ class BrowserSidebarHub:
         return Subprotocol(str(self._token))
 
     async def _handle_connection(self, websocket) -> None:
+        from websockets.exceptions import ConnectionClosed
+
         if websocket.subprotocol != self._token:
             await websocket.close(code=1008, reason="unauthorized")
             return
@@ -215,6 +217,15 @@ class BrowserSidebarHub:
                 if self._socket is not websocket:
                     break
                 await self._handle_frame(websocket, raw)
+        except ConnectionClosed as exc:
+            if exc.code == 1012:
+                # Expected: the newer connection above displaced this socket
+                # with close(1012, "reconnected"); not a failure.
+                logger.debug(
+                    "Browser sidebar connection displaced (1012 reconnected); closing quietly"
+                )
+            else:
+                logger.exception("Browser sidebar connection handler failed")
         except Exception:
             logger.exception("Browser sidebar connection handler failed")
         finally:

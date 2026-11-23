@@ -3921,6 +3921,7 @@ from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_goal_intent import GatewayGoalIntentMixin
 from gateway.run_goal_auto import GatewayGoalAutoMixin
+from gateway.run_goal_retrospective import GatewayGoalRetrospectiveMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
@@ -5684,7 +5685,7 @@ def _format_context_injection_progress(
 
     from gateway.context_injection_labels import (
         context_injection_heading_lines,
-        triggering_message_id_kind,
+        triggering_message_id_kind, CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL,
     )
 
     # Kind-tagged heading lines: one per classified segment, in payload
@@ -5730,7 +5731,7 @@ def _format_context_injection_progress(
     visible = visible.replace("@", "@\u200b")
 
     header = heading
-    continuation = heading
+    continuation = CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL if _heading_kinds == ["spillover"] else heading
     measure = message_len_fn if callable(message_len_fn) else len
 
     try:
@@ -5867,7 +5868,7 @@ class GatewayRunner(
     GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
+    GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayGoalRetrospectiveMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
     GatewayHygieneCompressionMixin, GatewayIncognitoMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 

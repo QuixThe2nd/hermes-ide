@@ -14,21 +14,28 @@ import (
 
 // sharedTable mirrors testdata/labels.json.
 type sharedTable struct {
-	GenericLabel string            `json:"generic_label"`
-	KindLabels   map[string]string `json:"kind_labels"`
-	Memory       struct {
+	GenericLabel               string            `json:"generic_label"`
+	KindLabels                 map[string]string `json:"kind_labels"`
+	SpilloverContinuationLabel string            `json:"spillover_continuation_label"`
+	Memory                     struct {
 		Plain string `json:"plain"`
 		One   string `json:"one"`
 		Many  string `json:"many"`
 	} `json:"memory"`
-	Cases            []sharedCase      `json:"cases"`
-	ClassifierCases  []classifierCase  `json:"classifier_cases"`
-	SessionCardCases []sessionCardCase `json:"session_card_cases"`
-	EventCardCases   []eventCardCase   `json:"event_card_cases"`
-	CompactionCases  []compactionCase  `json:"compaction_cases"`
-	SpilloverCases   []spilloverCase   `json:"spillover_cases"`
-	SummaryPrefixes  []string          `json:"summary_prefixes"`
-	PersistedTag     string            `json:"persisted_output_tag"`
+	SectionRowLabels struct {
+		Rows           map[string]string `json:"rows"`
+		EphemeralRow   string            `json:"ephemeral_row"`
+		ToolSchemasRow string            `json:"tool_schemas_row"`
+	} `json:"section_row_labels"`
+	Cases             []sharedCase       `json:"cases"`
+	ClassifierCases   []classifierCase   `json:"classifier_cases"`
+	SessionCardCases  []sessionCardCase  `json:"session_card_cases"`
+	EventCardCases    []eventCardCase    `json:"event_card_cases"`
+	CompactionCases   []compactionCase   `json:"compaction_cases"`
+	SpilloverCases    []spilloverCase    `json:"spillover_cases"`
+	SummaryPrefixes   []string           `json:"summary_prefixes"`
+	ContinuationCases []continuationCase `json:"continuation_cases"`
+	PersistedTag      string             `json:"persisted_output_tag"`
 }
 
 // sessionCardCase is one manifest→(content, sha) expectation for
@@ -93,6 +100,16 @@ type sharedCase struct {
 	ExpectLines   []string          `json:"expect_lines"`
 }
 
+// continuationCase pins when a later chunk gets its own continuation label
+// and when the card's existing heading must be retained.
+type continuationCase struct {
+	Name    string            `json:"name"`
+	Kinds   []string          `json:"kinds"`
+	Meta    map[string]string `json:"meta"`
+	Default string            `json:"default"`
+	Expect  string            `json:"expect"`
+}
+
 // classifierCase is one clean-user-message→(kind, detail) expectation for
 // ClassifyUserMessage: goal continuations, skill invocations, and the
 // negative shapes that must stay unclassified.
@@ -127,6 +144,9 @@ func TestLabelsMatchSharedTable(t *testing.T) {
 	if !reflect.DeepEqual(KindLabels, table.KindLabels) {
 		t.Errorf("KindLabels = %q, want %q", KindLabels, table.KindLabels)
 	}
+	if SpilloverContinuationLabel != table.SpilloverContinuationLabel {
+		t.Errorf("SpilloverContinuationLabel = %q, want %q", SpilloverContinuationLabel, table.SpilloverContinuationLabel)
+	}
 	if got := MemoryHeading(0); got != table.Memory.Plain {
 		t.Errorf("MemoryHeading(0) = %q, want %q", got, table.Memory.Plain)
 	}
@@ -135,6 +155,23 @@ func TestLabelsMatchSharedTable(t *testing.T) {
 	}
 	if got := MemoryHeading(3); got != table.Memory.Many {
 		t.Errorf("MemoryHeading(3) = %q, want %q", got, table.Memory.Many)
+	}
+}
+
+// TestSectionRowLabelsMatchSharedTable pins the session-inventory row
+// labels: the per-kind row table and the ephemeral/tool-schema row strings
+// must equal the shared table the Python contract test also reads, so the
+// twins' session cards cannot drift.
+func TestSectionRowLabelsMatchSharedTable(t *testing.T) {
+	table := loadTable(t)
+	if !reflect.DeepEqual(SectionRowLabels, table.SectionRowLabels.Rows) {
+		t.Errorf("SectionRowLabels = %q, want %q", SectionRowLabels, table.SectionRowLabels.Rows)
+	}
+	if EphemeralRow != table.SectionRowLabels.EphemeralRow {
+		t.Errorf("EphemeralRow = %q, want %q", EphemeralRow, table.SectionRowLabels.EphemeralRow)
+	}
+	if ToolSchemasRow != table.SectionRowLabels.ToolSchemasRow {
+		t.Errorf("ToolSchemasRow = %q, want %q", ToolSchemasRow, table.SectionRowLabels.ToolSchemasRow)
 	}
 }
 
@@ -148,6 +185,16 @@ func TestHeadingLinesMatchSharedTable(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.ExpectLines) {
 			t.Errorf("%s: HeadingLines(%q, memorySourced=%v, recalledCount=%d, meta=%q) = %q, want %q",
 				tc.Name, tc.Kinds, tc.MemorySourced, tc.RecalledCount, tc.Meta, got, tc.ExpectLines)
+		}
+	}
+}
+
+func TestContinuationHeadingMatchSharedTable(t *testing.T) {
+	for _, tc := range loadTable(t).ContinuationCases {
+		got := ContinuationHeading(tc.Kinds, tc.Meta, tc.Default)
+		if got != tc.Expect {
+			t.Errorf("%s: ContinuationHeading(%q, %q, %q) = %q, want %q",
+				tc.Name, tc.Kinds, tc.Meta, tc.Default, got, tc.Expect)
 		}
 	}
 }

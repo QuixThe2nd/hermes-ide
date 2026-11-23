@@ -19,6 +19,10 @@
 //	 "recalled_count": 0, "meta": {"skill": "research"}}
 //	 → prints the heading lines as a JSON array.
 //
+//	{"op": "continuation", "kinds": ["spillover"], "meta": {},
+//	 "default": "📦 Large tool result saved to disk"}
+//	 → prints the continuation heading as a JSON string.
+//
 //	{"op": "classify", "text": "[Continuing toward your standing goal]…"}
 //	 → prints {"kind": "goal", "detail": ""}.
 //
@@ -76,6 +80,11 @@ func run(request map[string]any, stdout io.Writer) error {
 			boolValue(request["memory_sourced"]),
 			intValue(request["recalled_count"]),
 			stringMap(request["meta"]),
+		))
+	case "continuation":
+		return encode(injectionlabels.ContinuationHeading(
+			stringValues(request["kinds"]), stringMap(request["meta"]),
+			stringValue(request["default"]),
 		))
 	case "classify":
 		kind, detail := injectionlabels.ClassifyUserMessage(stringValue(request["text"]))

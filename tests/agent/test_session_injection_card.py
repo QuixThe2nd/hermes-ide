@@ -84,12 +84,12 @@ def _gain_ephemeral(agent):
     [
         pytest.param(_same_shape, [], id="steady_state_silent"),
         pytest.param(
-            _gain_section, ["identity (soul)\nskills_index\n2 tool schemas"],
+            _gain_section, ["🪪 SOUL.md\n📚 Skills index\n🔧 2 tool schemas"],
             id="section_change",
         ),
         pytest.param(
             _gain_ephemeral,
-            ["identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas"],
+            ["🪪 SOUL.md\n🧵 Session context (ephemeral)\n🔧 2 tool schemas"],
             id="ephemeral_change",
         ),
     ],
@@ -98,11 +98,22 @@ def test_session_card_fires_once_per_prompt_shape(mutate, second_turn_cards):
     agent = _agent(list(_SOUL), tools=[{}, {}])
     _turn(agent)
     first = _session_cards(agent)
-    assert [c["content"] for c in first] == ["identity (soul)\n2 tool schemas"]
+    assert [c["content"] for c in first] == ["🪪 SOUL.md\n🔧 2 tool schemas"]
     assert first[0]["sources"] == ["session"]
     mutate(agent)
     _turn(agent)
     assert [c["content"] for c in _session_cards(agent)[1:]] == second_turn_cards
+
+
+def test_unknown_manifest_kind_keeps_raw_rendering():
+    """A manifest kind the label table does not know renders as the raw
+    ``kind`` / ``kind (detail)`` text, so future manifest rows stay
+    additive-safe instead of blanking the row."""
+    agent = _agent([("future_section", None), ("mystery", "3")])
+    _turn(agent)
+    assert [c["content"] for c in _session_cards(agent)] == [
+        "future_section\nmystery (3)"
+    ]
 
 
 def test_fresh_agent_same_session_does_not_reemit():
