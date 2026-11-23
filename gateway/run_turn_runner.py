@@ -979,6 +979,18 @@ class TurnRunner(_TurnRunnerCore):
         # Buffer slicing only serves the editable lane; non-editable rows are chunked at send time.
         return st.can_edit
 
+    def _record_receipt_row(self, raw) -> None:
+        """Keep each row's full text for the turn receipt; the bubble only holds a rolling window."""
+        rows = self._ctx._receipt_rows
+        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+            _, base_msg, count = raw
+            if rows:
+                rows[-1] = f"{base_msg} (×{count + 1})"  # a repeat rewrites the row above it
+                return
+            rows.append(f"{base_msg} (×{count + 1})")
+        elif isinstance(raw, str):
+            rows.append(raw)
+
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick.
 
@@ -989,6 +1001,8 @@ class TurnRunner(_TurnRunnerCore):
         """
         from gateway.display_config import chunk_oversized_progress_row, repeat_row_text
 
+        if self._ctx._cleanup_progress:
+            self._record_receipt_row(raw)
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if st.plain_repeats:

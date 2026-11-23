@@ -6709,10 +6709,14 @@ class GatewayTurnMixin:
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.
 
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
+        Before deleting, the turn's transcript page is written and a single receipt line is posted.
+        Failed runs keep the bubbles and produce no page. Only on adapters with ``delete_message``;
+        failures swallowed."""
         from gateway.run import logger
 
         from gateway.run import safe_schedule_threadsafe
+        from gateway.turn_receipt import deliver_turn_receipt, write_turn_receipt
+        from hermes_constants import get_hermes_home
         _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
         if not (
             turn_ctx._cleanup_progress
@@ -6727,9 +6731,24 @@ class GatewayTurnMixin:
         _ids_snapshot = list(_cleanup_msg_ids)
         _chat_id_snapshot = turn_ctx.source.chat_id
         _loop_snapshot = asyncio.get_running_loop()
+        # Resolved on the turn's thread: the cleanup thread must not read profile state.
+        _home_snapshot = get_hermes_home()
+        _receipt_args = (
+            turn_ctx.message or "",
+            list(turn_ctx._receipt_rows),
+            str(response.get("final_response") or ""),
+        )
 
         def _cleanup_temp_bubbles() -> None:
+            receipt = None
+            try:
+                receipt = write_turn_receipt(_home_snapshot, *_receipt_args)
+            except Exception:
+                logger.warning("Turn receipt write failed; bubbles are still cleaned up", exc_info=True)
+
             async def _delete_all() -> None:
+                if receipt is not None:
+                    await deliver_turn_receipt(_cleanup_adapter, _chat_id_snapshot, receipt)
                 for _mid in _ids_snapshot:
                     with suppress(Exception):
                         await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
@@ -8567,51 +8586,6 @@ class GatewayTurnMixin:
                     len(_final),
                 )
 
-        # Schedule deletion of tracked temporary progress bubbles after the
-        # final response lands. Failed runs skip this so bubbles remain as
-        # breadcrumbs for the user to see what work happened. Only fires on
-        # adapters that support ``delete_message`` (see init above); failures
-        # are swallowed — deletion is best-effort.
-        if (
-            _cleanup_progress
-            and _cleanup_adapter is not None
-            and _cleanup_msg_ids
-            and session_key
-            and isinstance(response, dict)
-            and not response.get("failed")
-            and hasattr(_cleanup_adapter, "register_post_delivery_callback")
-        ):
-            _ids_snapshot = list(_cleanup_msg_ids)
-            _chat_id_snapshot = source.chat_id
-            _adapter_snapshot = _cleanup_adapter
-            _loop_snapshot = asyncio.get_running_loop()
-
-            def _cleanup_temp_bubbles() -> None:
-                from gateway.run import safe_schedule_threadsafe
-                async def _delete_all() -> None:
-                    for _mid in _ids_snapshot:
-                        try:
-                            await _adapter_snapshot.delete_message(
-                                _chat_id_snapshot, _mid
-                            )
-                        except Exception:
-                            pass
-                try:
-                    safe_schedule_threadsafe(
-                        _delete_all(), _loop_snapshot,
-                        logger=logger,
-                        log_message="Temp bubble cleanup scheduling error",
-                    )
-                except Exception:
-                    pass
-
-            try:
-                _cleanup_adapter.register_post_delivery_callback(
-                    session_key,
-                    _cleanup_temp_bubbles,
-                    generation=run_generation,
-                )
-            except Exception as _rpe:
-                logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+        self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
 
         return response
