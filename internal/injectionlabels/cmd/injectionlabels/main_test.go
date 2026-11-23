@@ -34,6 +34,12 @@ func TestRunDecodesEveryOpShape(t *testing.T) {
 			`["📚 Injecting skill (research)"]`,
 		},
 		{
+			"heading_subdirectory_detail_template",
+			`{"op":"heading","kinds":["subdirectory"],"memory_sourced":false,` +
+				`"meta":{"subdirectory":"pkg/AGENTS.md"}}`,
+			`["🗂️ Injecting pkg/AGENTS.md"]`,
+		},
+		{
 			"continuation",
 			`{"op":"continuation","kinds":["spillover"],"meta":{"spillover":"result.txt"},` +
 				`"default":"📦 Large tool result saved to disk (result.txt)"}`,
@@ -60,6 +66,15 @@ func TestRunDecodesEveryOpShape(t *testing.T) {
 			`{"op":"subdirectory_card","hints":"[Subdirectory context discovered: pkg/AGENTS.md]"}`,
 			cardJSON("subdirectory",
 				"[Subdirectory context discovered: pkg/AGENTS.md]", "tool_result"),
+		},
+		{
+			"subdirectory_card_with_detail",
+			`{"op":"subdirectory_card","hints":"[Subdirectory context discovered: pkg/AGENTS.md]",` +
+				`"detail":"pkg/AGENTS.md"}`,
+			`{"kinds":["subdirectory"],` +
+				`"content":"[Subdirectory context discovered: pkg/AGENTS.md]",` +
+				`"injected_chars":48,"sources":["tool_result"],` +
+				`"meta":{"subdirectory":"pkg/AGENTS.md"}}`,
 		},
 		{
 			"compaction_card",

@@ -74,8 +74,14 @@ func SpilloverCard(stub string) Card {
 // SubdirectoryCard cards a directory AGENTS.md hint appended to a tool
 // result on the agent's first file touch in a new subdirectory: context
 // beyond the tool's own output, delivered inside the tool result bytes.
-func SubdirectoryCard(hints string) Card {
-	return newCard(KindSubdir, hints, SourceToolResult, nil)
+// detail names the loaded file(s) (comma-joined display paths) and lands in
+// meta; a blank detail keeps the bare card.
+func SubdirectoryCard(hints, detail string) Card {
+	var meta map[string]string
+	if detail != "" {
+		meta = map[string]string{KindSubdir: detail}
+	}
+	return newCard(KindSubdir, hints, SourceToolResult, meta)
 }
 
 // CompactionCard cards the conversation summary a committed context

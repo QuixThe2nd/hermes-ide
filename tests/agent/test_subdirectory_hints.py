@@ -76,6 +76,34 @@ class TestSubdirectoryHintTracker:
         )
         assert result2 is None  # already loaded
 
+    def test_last_loaded_paths_record_each_loaded_file(self, project):
+        """The progress card's detail comes from this structured state, never
+        from parsing the rendered hint text."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker.last_loaded_paths == []
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(project / "frontend" / "index.ts")}
+        )
+        assert result is not None
+        assert tracker.last_loaded_paths == ["frontend/CLAUDE.md"]
+
+    def test_last_loaded_paths_cover_every_directory_one_call_discovers(self, project):
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "terminal", {"command": "cat backend/src/main.py frontend/index.ts"}
+        )
+        assert result is not None
+        assert sorted(tracker.last_loaded_paths) == ["backend/AGENTS.md", "frontend/CLAUDE.md"]
+
+    def test_last_loaded_paths_reset_when_nothing_loads(self, project):
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        tracker.check_tool_call("read_file", {"path": str(project / "frontend" / "index.ts")})
+        assert tracker.last_loaded_paths == ["frontend/CLAUDE.md"]
+        assert tracker.check_tool_call(
+            "read_file", {"path": str(project / "docs" / "README.md")}
+        ) is None
+        assert tracker.last_loaded_paths == []
+
 
 
 

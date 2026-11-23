@@ -17,6 +17,9 @@
     "subdirectory": "🗂️ Injecting directory context",
     "spillover": "📦 Large tool result saved to disk"
   },
+  "kind_detail_templates": {
+    "subdirectory": "🗂️ Injecting {detail}"
+  },
   "spillover_continuation_label": "📄 Large tool result saved to disk (continued)",
   "memory": {
     "plain": "🧠 Injecting memory",
@@ -295,6 +298,42 @@
       "kinds": [
         "subdirectory"
       ],
+      "expect_lines": [
+        "🗂️ Injecting directory context"
+      ]
+    },
+    {
+      "name": "subdirectory_with_single_path_meta",
+      "kinds": [
+        "subdirectory"
+      ],
+      "meta": {
+        "subdirectory": "hermes-agent/AGENTS.md"
+      },
+      "expect_lines": [
+        "🗂️ Injecting hermes-agent/AGENTS.md"
+      ]
+    },
+    {
+      "name": "subdirectory_with_multiple_paths_meta",
+      "kinds": [
+        "subdirectory"
+      ],
+      "meta": {
+        "subdirectory": "hermes-agent/AGENTS.md, hermes-agent/gateway/AGENTS.md"
+      },
+      "expect_lines": [
+        "🗂️ Injecting hermes-agent/AGENTS.md, hermes-agent/gateway/AGENTS.md"
+      ]
+    },
+    {
+      "name": "subdirectory_with_blank_meta_renders_bare_label",
+      "kinds": [
+        "subdirectory"
+      ],
+      "meta": {
+        "subdirectory": ""
+      },
       "expect_lines": [
         "🗂️ Injecting directory context"
       ]
@@ -718,6 +757,25 @@
         "sources": [
           "tool_result"
         ]
+      }
+    },
+    {
+      "name": "subdirectory_hints_with_detail_name_the_loaded_file",
+      "op": "subdirectory",
+      "hints": "[Subdirectory context discovered: pkg/AGENTS.md]",
+      "detail": "pkg/AGENTS.md",
+      "expect": {
+        "kinds": [
+          "subdirectory"
+        ],
+        "content": "[Subdirectory context discovered: pkg/AGENTS.md]",
+        "injected_chars": 48,
+        "sources": [
+          "tool_result"
+        ],
+        "meta": {
+          "subdirectory": "pkg/AGENTS.md"
+        }
       }
     },
     {

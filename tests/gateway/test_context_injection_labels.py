@@ -64,6 +64,26 @@ def test_known_kind_renders_its_own_heading(kind, label):
     assert _header(messages).startswith(label)
 
 
+def test_subdirectory_meta_names_the_loaded_file_in_place_of_generic_tail():
+    # The directory hint's detail IS the heading payload: naming the loaded
+    # file replaces the generic tail instead of suffixing it in parentheses.
+    assert _header(_fmt(kinds=["subdirectory"], meta={"subdirectory": "pkg/AGENTS.md"})) == (
+        "🗂️ Injecting pkg/AGENTS.md"
+    )
+
+
+def test_subdirectory_meta_joins_multiple_loaded_files():
+    meta = {"subdirectory": "pkg/AGENTS.md, gateway/AGENTS.md"}
+    assert _header(_fmt(kinds=["subdirectory"], meta=meta)) == (
+        "🗂️ Injecting pkg/AGENTS.md, gateway/AGENTS.md"
+    )
+
+
+def test_subdirectory_without_meta_keeps_directory_context_label():
+    # Legacy payloads (no meta) render exactly the pre-detail heading.
+    assert _header(_fmt(kinds=["subdirectory"])) == "🗂️ Injecting directory context"
+
+
 def test_process_kind_payload_renders_process_info_heading():
     # The per-turn serving-process runtime note ("[System note: This turn is
     # served by …]") gets its own heading, not the generic context one.
@@ -391,6 +411,7 @@ def test_headings_match_the_shared_contract_table():
     and the table's generic/kind labels must be the module's own."""
     from gateway.context_injection_labels import (
         CONTEXT_INJECTION_GENERIC_LABEL,
+        CONTEXT_INJECTION_KIND_DETAIL_TEMPLATES,
         CONTEXT_INJECTION_KIND_LABELS,
         context_injection_heading_lines,
     )
@@ -398,6 +419,7 @@ def test_headings_match_the_shared_contract_table():
     table = json.loads(_LABELS_TABLE.read_text(encoding="utf-8"))
     assert CONTEXT_INJECTION_GENERIC_LABEL == table["generic_label"]
     assert CONTEXT_INJECTION_KIND_LABELS == table["kind_labels"]
+    assert CONTEXT_INJECTION_KIND_DETAIL_TEMPLATES == table["kind_detail_templates"]
     memory = table["memory"]
     assert context_injection_heading_lines(None, memory_sourced=True) == [memory["plain"]]
     assert context_injection_heading_lines(
@@ -474,7 +496,7 @@ def _python_twin(section, case):
     if section == "event_card_cases":
         if case["op"] == "assembled":
             return event_card(case["kind"], case["content"], case["detail"])
-        return event_card(case["op"], case[_EVENT_FIELDS[case["op"]]])
+        return event_card(case["op"], case[_EVENT_FIELDS[case["op"]]], case.get("detail", ""))
     if section == "compaction_cases":
         return _optional("summary", new_compaction_summary(case["before"], case["after"]))
     result = {"content": case["parts"]} if case["op"] == "parts" else case["text"]

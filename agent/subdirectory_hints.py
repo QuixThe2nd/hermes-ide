@@ -9,7 +9,7 @@ import logging
 import os
 import shlex
 from pathlib import Path
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, List, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
@@ -81,7 +81,9 @@ class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
     Usage: after each tool call, ``hints = tracker.check_tool_call(name, args)``
-    and append the returned text to the tool result.
+    and append the returned text to the tool result. ``last_loaded_paths``
+    holds the display paths of the files that call loaded (structured detail
+    for the progress card — never parsed back out of the hint text).
     """
 
     def __init__(self, working_dir: Optional[str] = None, *, enabled: bool = True):
@@ -96,12 +98,15 @@ class SubdirectoryHintTracker:
         # symlinks/hardlinks/copies is never re-sent. Seeded with the CWD hint
         # file prompt_builder already loaded.
         self._loaded_digests: Set[str] = set()
+        self.last_loaded_paths: List[str] = []
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
     def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
-        """Return formatted hint text for newly visited directories, or None."""
+        """Return formatted hint text for newly visited directories, or None;
+        record the loaded files' display paths on ``last_loaded_paths``."""
+        self.last_loaded_paths = []
         if not self.enabled:
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
@@ -217,6 +222,7 @@ class SubdirectoryHintTracker:
                 content = _truncate_content(
                     content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path, queue_warning=False,
                 )
+                self.last_loaded_paths.append(rel_path)
                 logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
                 return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
             except Exception as exc:
