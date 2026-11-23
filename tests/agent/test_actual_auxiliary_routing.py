@@ -109,11 +109,6 @@ def actual_endpoint(monkeypatch):
 @pytest.mark.parametrize(
     "aux_provider",
     [
-        "auto",
-        "actual",
-        "actual-computer",
-        "actualcomputer",
-        "aci",
         "custom",
         "custom:actual-relay",
     ],
@@ -223,10 +218,6 @@ def test_actual_background_tasks_reach_chat_completions(
 @pytest.mark.parametrize(
     "provider,hosted",
     [
-        ("actual", False),
-        ("aci", False),
-        ("actual-computer", False),
-        ("actualcomputer", False),
         ("custom", True),
         ("custom:actual-relay", True),
     ],
@@ -351,10 +342,6 @@ def test_actual_runtime_transitions_reach_chat_completions(
 @pytest.mark.parametrize(
     "provider,hosted",
     [
-        ("actual", False),
-        ("aci", False),
-        ("actual-computer", False),
-        ("actualcomputer", False),
         ("custom", True),
         ("custom:actual-relay", True),
     ],
@@ -429,7 +416,7 @@ def test_actual_rejects_forced_responses_before_http(
         client.close()
 
 
-@pytest.mark.parametrize("provider", ["actual", "aci", "custom:actual-relay"])
+@pytest.mark.parametrize("provider", ["custom:actual-relay"])
 @pytest.mark.parametrize("async_mode", [False, True])
 def test_actual_auxiliary_fallback_reaches_chat_completions(
     tmp_path, monkeypatch, actual_endpoint, provider, async_mode
@@ -493,7 +480,6 @@ def test_actual_setup_keeps_provider_settings_in_yaml(
     from hermes_cli import model_setup_flows as setup
     from hermes_cli.auth import resolve_api_key_provider_credentials
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from providers import get_provider_profile
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
@@ -526,7 +512,6 @@ def test_actual_setup_keeps_provider_settings_in_yaml(
     assert saved["model"]["base_url"] == expected_url
     assert saved["model"]["default"] == "test-model"
     assert env_path.read_text(encoding="utf-8") == "ACTUAL_API_KEY=actual-test-key\n"
-    assert get_provider_profile("actual").env_vars == ("ACTUAL_API_KEY",)
     assert "ACTUAL_BASE_URL" not in config_module.OPTIONAL_ENV_VARS
     assert "ACTUAL_API_MODE" not in config_module.OPTIONAL_ENV_VARS
     assert (

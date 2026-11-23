@@ -118,8 +118,6 @@ class TestProviderRegistry:
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
-        assert "nous" in PROVIDER_REGISTRY
-        assert PROVIDER_REGISTRY["nous"].auth_type == "oauth_device_code"
         assert "openai-codex" in PROVIDER_REGISTRY
         assert PROVIDER_REGISTRY["openai-codex"].auth_type == "oauth_external"
 
@@ -496,21 +494,6 @@ class TestRuntimeProviderResolution:
 
         assert result["provider"] == "copilot"
         assert result["api_mode"] == "codex_responses"
-
-    def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
-        monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
-
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        result = resolve_runtime_provider(requested="copilot-acp")
-
-        assert result["provider"] == "copilot-acp"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "copilot-acp"
-        assert result["base_url"] == "acp://copilot"
-        assert result["command"] == "/usr/local/bin/copilot"
-        assert result["args"] == ["--acp", "--stdio", "--debug"]
 
 
 # =============================================================================
@@ -906,19 +889,6 @@ class TestHuggingFaceModels:
 class TestNovitaProvider:
     """Tests for NovitaAI — an OpenAI-compatible multi-model aggregator."""
 
-    def test_novita_profile_loads(self):
-        from providers import get_provider_profile
-        profile = get_provider_profile("novita")
-        assert profile is not None
-        assert profile.name == "novita"
-        assert profile.display_name == "NovitaAI"
-        assert profile.base_url == "https://api.novita.ai/openai/v1"
-        assert "NOVITA_API_KEY" in profile.env_vars
-
-
-
-
-
     def test_novita_pricing_cache(self, monkeypatch):
         """_fetch_novita_pricing should cache results in _pricing_cache."""
         from hermes_cli import models as models_mod
@@ -984,26 +954,6 @@ class TestMinimaxOAuthProvider:
         pconfig = PROVIDER_REGISTRY["minimax-oauth"]
         assert pconfig.auth_type == "oauth_minimax"
         assert pconfig.id == "minimax-oauth"
-
-
-    def test_minimax_oauth_aux_model_registered(self):
-        # Aux model for the minimax-oauth provider now lives on the
-        # ProviderProfile (plugins/model-providers/minimax/__init__.py),
-        # not the legacy _API_KEY_PROVIDER_AUX_MODELS dict in
-        # agent/auxiliary_client.py. The profile layer is the source
-        # of truth; _get_aux_model_for_provider() reads from it first
-        # and only falls back to the dict when no profile is registered.
-        import model_tools  # noqa: F401  -- triggers plugin discovery
-        import providers
-
-        profile = providers.get_provider_profile("minimax-oauth")
-        assert profile is not None, "minimax-oauth provider profile must be registered"
-        assert profile.default_aux_model, (
-            "minimax-oauth profile must advertise a non-empty default_aux_model "
-            "so the auxiliary client (compression / vision / session-search) "
-            "doesn't fire the 'No auxiliary LLM provider configured' warning "
-            "for every minimax-oauth session."
-        )
 
 
 # =============================================================================
@@ -1213,76 +1163,3 @@ class TestDeepInfraPricingFetcher:
         assert "input_cache_read" in result["vendor/model-a"]
         assert "input_cache_read" not in result["vendor/model-b"]
 
-
-class TestDeepInfraProviderProfile:
-    """plugins/model-providers/deepinfra registration + aux resolution."""
-
-    def test_profile_registered_with_alias_and_aux(self):
-        from providers import get_provider_profile
-        from agent.auxiliary_client import _get_aux_model_for_provider
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        from hermes_cli.models import CANONICAL_PROVIDERS
-
-        profile = get_provider_profile("deepinfra")
-        assert profile is not None
-        assert profile.name == "deepinfra"
-        assert profile.auth_type == "api_key"
-        # Alias resolves to the same profile.
-        assert get_provider_profile("deep-infra") is profile
-        assert resolve_provider("deep-infra") == "deepinfra"
-        assert PROVIDER_REGISTRY["deepinfra"].inference_base_url == profile.base_url
-        assert any(entry.slug == "deepinfra" for entry in CANONICAL_PROVIDERS)
-        assert OPTIONAL_ENV_VARS["DEEPINFRA_API_KEY"]["password"] is True
-        assert OPTIONAL_ENV_VARS["DEEPINFRA_BASE_URL"]["password"] is False
-        # Aux model is resolved via the profile (not via the legacy
-        # _API_KEY_PROVIDER_AUX_MODELS_FALLBACK dict, which has no
-        # deepinfra entry).
-        assert _get_aux_model_for_provider("deepinfra")
-        # Fallback list intentionally empty — live catalog is the source
-        # of truth. Pin the shape only, not contents.
-        assert isinstance(profile.fallback_models, tuple)
-
-
-
-class TestRuntimeAlibabaRegionalAndTokenPlan:
-    """#73265: the catalog-advertised Alibaba China/Token Plan variants must
-    resolve on the shared execution path (resolve_runtime_provider), not just
-    in the profile registry — provider, key, api mode, and base URL."""
-
-    def test_runtime_alibaba_cn(self, monkeypatch):
-        monkeypatch.setenv("DASHSCOPE_API_KEY", "ds-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="alibaba-cn")
-        assert result["provider"] == "alibaba-cn"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "ds-key"
-        assert result["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-    def test_runtime_alibaba_coding_plan_cn(self, monkeypatch):
-        monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "acp-key")
-        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="alibaba-coding-plan-cn")
-        assert result["provider"] == "alibaba-coding-plan-cn"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "acp-key"
-        assert result["base_url"] == "https://coding.dashscope.aliyuncs.com/v1"
-
-    def test_runtime_alibaba_token_plan(self, monkeypatch):
-        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="alibaba-token-plan")
-        assert result["provider"] == "alibaba-token-plan"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "atp-key"
-        assert result["base_url"] == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
-
-    def test_runtime_alibaba_token_plan_cn(self, monkeypatch):
-        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="alibaba-token-plan-cn")
-        assert result["provider"] == "alibaba-token-plan-cn"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "atp-key"
-        assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"

@@ -54,7 +54,7 @@ def test_auxiliary_owned_refresh_does_not_spend_borrowed_rotation(tmp_path, monk
     route = SimpleNamespace(client=SimpleNamespace(api_key="owned-token"), task="compression", tag="",
         resolved_provider="anthropic", base_info="https://api.anthropic.com", resolved_model="fixture",
         final_model="fixture", main_runtime=None)
-    retry = aux._ladder_credential_rungs(error, route, {}, False)
+    retry = aux._ladder_credential_rungs(error, route, {})
     assert next(retry).kind == "retry_same_provider"
     retry.close()
     assert borrowed.read_bytes() == before
