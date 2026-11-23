@@ -11,7 +11,7 @@ docs of config.yaml.
 # Explicit "unlimited" spellings ("none"/"unlimited"/"inf"/"null"/0/-1) still
 # resolve to the sys.maxsize sentinel — see resolve_turn_limit. (A YAML null
 # value is "unset", not "unlimited": it falls back to this default.)
-DEFAULT_MAX_TURNS = 256
+DEFAULT_MAX_TURNS = 512
 
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
-        # Default turn budget per conversation run. 256 headroom for
+        # Default turn budget per conversation run. 512 headroom for
         # tool-heavy work while still bounding a runaway loop; raise it or
         # use "none"/"unlimited"/"inf"/"null"/0/-1 for no limit — all
         # normalized by hermes_cli.config.resolve_turn_limit.

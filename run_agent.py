@@ -4951,7 +4951,7 @@ def main(
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
         max_turns (int): Maximum number of API call iterations. Defaults to
-                         DEFAULT_MAX_TURNS (256); explicit values are used exactly.
+                         DEFAULT_MAX_TURNS (512); explicit values are used exactly.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"

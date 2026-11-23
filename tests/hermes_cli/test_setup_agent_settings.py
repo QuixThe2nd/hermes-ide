@@ -102,7 +102,7 @@ class TestSetupDefaultMaxTurns:
         _apply_default_agent_settings(config)
 
         assert config["agent"]["max_turns"] == DEFAULT_MAX_TURNS
-        assert DEFAULT_MAX_TURNS == 256
+        assert DEFAULT_MAX_TURNS == 512
 
     def test_apply_default_agent_settings_prints_written_value(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -228,7 +228,7 @@ class TestMaxIterationsTurnLimitParser:
         _run_agent_settings_wizard(config, str(DEFAULT_MAX_TURNS), monkeypatch, tmp_path)
 
         assert config["agent"]["max_turns"] == DEFAULT_MAX_TURNS
-        assert DEFAULT_MAX_TURNS == 256
+        assert DEFAULT_MAX_TURNS == 512
         assert f"Press Enter to keep {DEFAULT_MAX_TURNS}." in capsys.readouterr().out
 
     def test_garbage_input_keeps_current_value(self, tmp_path, monkeypatch, capsys):
