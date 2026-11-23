@@ -1795,7 +1795,7 @@ class TurnRunner(_TurnRunnerCore):
         from gateway.context_injection_labels import join_turn_notes, tag_turn_note
 
         turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
-        runtime_note, transition_note, pending_served_note = session_turn_notes(
+        runtime_note, transition_note, delta_note, pending_served_note = session_turn_notes(
             getattr(runner, "session_store", None),
             getattr(ctx, "session_id", None), runner)
         if runtime_note:
@@ -1806,6 +1806,11 @@ class TurnRunner(_TurnRunnerCore):
         if transition_note:
             # "Conversation moved processes" (#829) is the restart notice.
             turn_notes.append(tag_turn_note("restart", transition_note))
+        if delta_note:
+            # The build change between the predecessor and this process is
+            # its own card (kind "code_delta"): commits + diff stat for the
+            # builds that differ, or the honest could-not-compute note.
+            turn_notes.append(tag_turn_note("code_delta", delta_note))
         # Joined text is byte-identical to the legacy "\n\n".join; kinds are
         # additive display metadata aligned 1:1 with the staged entries.
         agent._gateway_turn_context_notes, agent._gateway_turn_note_kinds = (
@@ -1820,9 +1825,10 @@ class TurnRunner(_TurnRunnerCore):
         # A transparent continuation defers the notes channel above, but a
         # restart just moved the conversation to a new process mid-turn —
         # stage the runtime notes on their own one-shot channel so the
-        # continuation turn still learns which process serves it AND that the
-        # process changed.
-        continuation_notes = [note for note in (runtime_note, transition_note) if note]
+        # continuation turn still learns which process serves it, that the
+        # process changed, and what changed between the two builds.
+        continuation_notes = [
+            note for note in (runtime_note, transition_note, delta_note) if note]
         agent._gateway_continuation_note = "\n\n".join(continuation_notes)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the

@@ -8,7 +8,8 @@ import (
 
 // MetaKeyPrefix is the session-meta key namespace for the durable
 // served-by record (gateway/serving_transition.py): one
-// "served_by:<session_id>" key per session holding {"pid","start_time","note"}.
+// "served_by:<session_id>" key per session holding
+// {"pid","start_time","note","code_sha"}.
 const MetaKeyPrefix = "served_by:"
 
 // MetaKey renders the session-meta key for a session's served-by record.
@@ -23,14 +24,18 @@ func ValidSessionID(sessionID string) bool {
 	return strings.TrimSpace(sessionID) != ""
 }
 
-// servedByRecord is the persisted wire shape {"pid","start_time","note"} —
-// the pid alone is not identity (PIDs get reused), so the start fingerprint
-// is part of the record; the note is the exact runtime note the session
-// last saw, the durable proof that suppresses an unchanged repeat.
+// servedByRecord is the persisted wire shape
+// {"pid","start_time","note","code_sha"} — the pid alone is not identity
+// (PIDs get reused), so the start fingerprint is part of the record; the
+// note is the exact runtime note the session last saw, the durable proof
+// that suppresses an unchanged repeat; the code_sha is the build that
+// served the previous turns, which lets the next process render the code
+// delta between the two builds (codedelta.go).
 type servedByRecord struct {
-	PID       int    `json:"pid"`
-	StartTime int64  `json:"start_time"`
-	Note      string `json:"note,omitempty"`
+	PID       int     `json:"pid"`
+	StartTime int64   `json:"start_time"`
+	Note      string  `json:"note,omitempty"`
+	CodeSHA   *string `json:"code_sha,omitempty"`
 }
 
 // parseStoredRecord decodes a stored served-by record in full. False for
@@ -71,11 +76,16 @@ func StoredNote(raw string) string {
 	return record.Note
 }
 
-// EncodeRecord renders the durable record for THIS process plus the note
-// the session just saw (never carries a build sha — records fingerprint
-// process identity, not code identity).
-func EncodeRecord(s Snapshot, note string) string {
-	encoded, err := json.Marshal(servedByRecord{PID: s.PID, StartTime: s.StartTime, Note: note})
+// EncodeRecord renders the durable record for THIS process, the note the
+// session just saw, and the build sha it settles on ("" omits the field —
+// no provable build).
+func EncodeRecord(s Snapshot, note, codeSHA string) string {
+	var sha *string
+	if codeSHA != "" {
+		sha = &codeSHA
+	}
+	encoded, err := json.Marshal(servedByRecord{
+		PID: s.PID, StartTime: s.StartTime, Note: note, CodeSHA: sha})
 	if err != nil {
 		return "{}"
 	}
@@ -311,26 +321,44 @@ func AckRewrite(ack map[string]any, servingPID int, id *Identify, rows []Registr
 	return rewritten
 }
 
+// keptCodeSHA is the build sha the STAGE write carries: the stored record's
+// own value when a parseable predecessor exists (the delta channel settles
+// only at the stamp ack — a crashed turn must re-emit), or — with no
+// parseable predecessor — this build's sha (the first turn establishes it).
+func keptCodeSHA(stored string, s Snapshot) *string {
+	if record, ok := parseStoredRecord(stored); ok {
+		return record.CodeSHA
+	}
+	if s.BuildSHA == "" {
+		return nil
+	}
+	sha := s.BuildSHA
+	return &sha
+}
+
 // StageServedBy is the decision twin of
 // gateway.serving_transition.session_turn_notes: read the session's
 // served-by record, render the turn notes against THIS process (the note
-// gate above applies), then record this process on change only — with the
-// STORED note proof, NOT the new one. The proof is acknowledgement-gated:
-// it advances only via ConfirmServedNote once the note's api_content
-// sidecar stamp lands (agent.turn_context._persist_turn_user_api_content),
-// so a turn that crashes before the stamp re-emits the note instead of
-// suppressing it forever. Read-before-write ordering matters: the notes
+// gate above applies) plus the code-delta note the record's sha proof
+// decides (codedelta.go), then record this process on change only — with
+// the STORED note proof AND the stored build sha, NOT the new ones. Both
+// proofs are acknowledgement-gated: they advance only via ConfirmServedNote
+// once the notes' api_content sidecar stamp lands
+// (agent.turn_context._persist_turn_user_api_content), so a turn that
+// crashes before the stamp re-emits the note and the delta instead of
+// suppressing them forever. Read-before-write ordering matters: the notes
 // must describe the state BEFORE this turn's record lands. Persistence is
 // injected (get/set), so the orchestration is testable without a database;
 // a nil set or a failing store degrades to "notes still render, nothing
-// claimed". Returns the notes and the pending note the stamp ack must
-// confirm ("" when nothing is pending).
+// claimed". Returns the notes, the code-delta note, and the pending note
+// the stamp ack must confirm ("" when nothing is pending).
 func StageServedBy(
 	sessionID string,
 	s Snapshot,
 	get func(string) string,
 	set func(string, string) error,
-) ([]string, string) {
+	render DeltaRender,
+) ([]string, string, string) {
 	if get == nil {
 		get = func(string) string { return "" }
 	}
@@ -339,6 +367,7 @@ func StageServedBy(
 		stored = get(MetaKey(sessionID))
 	}
 	notes := TurnNotes(s, stored)
+	delta := CodeDeltaNote(stored, s.BuildSHA, render)
 	// The note the stamp ack must confirm: the one just emitted, or — on a
 	// suppressed repeat — the stored proof it matched (a no-op confirm).
 	pending := StoredNote(stored)
@@ -349,19 +378,40 @@ func StageServedBy(
 		// Write failures never break the turn: the identity note already
 		// rendered and no transition is claimed from a record we could not
 		// re-establish.
-		_ = set(MetaKey(sessionID), EncodeRecord(s, StoredNote(stored)))
+		_ = set(MetaKey(sessionID), EncodeRecord(s, StoredNote(stored),
+			derefCodeSHA(keptCodeSHA(stored, s))))
 	}
-	return notes, pending
+	return notes, delta, pending
+}
+
+// derefCodeSHA renders a sha pointer as the EncodeRecord string form.
+func derefCodeSHA(sha *string) string {
+	if sha == nil {
+		return ""
+	}
+	return *sha
+}
+
+// sameCodeSHA compares two sha pointers by value (nil vs "" is a change:
+// the wire form normalizes an empty sha away).
+func sameCodeSHA(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // ConfirmServedNote is the ack half of the note gate, the decision twin of
 // gateway.serving_transition.confirm_served_note: advance the durable note
-// proof once the note's api_content sidecar stamp landed. Write-on-change,
-// keyed on the session's own record: an absent/corrupt record (the stage
-// write could not be established) or an already-current proof is a silent
-// no-op, and a nil/failing store degrades to false — never an error.
+// and build-sha proofs once the notes' api_content sidecar stamp landed.
+// Write-on-change, keyed on the session's own record: an absent/corrupt
+// record (the stage write could not be established) or an already-current
+// proof is a silent no-op, and a nil/failing store degrades to false —
+// never an error. An UNUSABLE codeSHA keeps the stored sha: the delta
+// channel settles on a usable sha or keeps what it had (a pip install
+// whose git broke mid-session must not forget the previous build).
 func ConfirmServedNote(
-	sessionID, note string,
+	sessionID, note, codeSHA string,
 	get func(string) string,
 	set func(string, string) error,
 ) bool {
@@ -372,12 +422,17 @@ func ConfirmServedNote(
 	if err := json.Unmarshal([]byte(strings.TrimSpace(get(MetaKey(sessionID)))), &record); err != nil {
 		return false
 	}
-	if record.Note == note {
+	next := record.CodeSHA
+	if usableSHA(codeSHA) {
+		sha := codeSHA
+		next = &sha
+	}
+	if record.Note == note && sameCodeSHA(record.CodeSHA, next) {
 		return false
 	}
 	if err := set(MetaKey(sessionID), EncodeRecord(Snapshot{
 		PID: record.PID, StartTime: record.StartTime,
-	}, note)); err != nil {
+	}, note, derefCodeSHA(next))); err != nil {
 		return false
 	}
 	return true
