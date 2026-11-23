@@ -21,6 +21,11 @@ type sharedTable struct {
 		One   string `json:"one"`
 		Many  string `json:"many"`
 	} `json:"memory"`
+	SectionRowLabels struct {
+		Rows           map[string]string `json:"rows"`
+		EphemeralRow   string            `json:"ephemeral_row"`
+		ToolSchemasRow string            `json:"tool_schemas_row"`
+	} `json:"section_row_labels"`
 	Cases            []sharedCase      `json:"cases"`
 	ClassifierCases  []classifierCase  `json:"classifier_cases"`
 	SessionCardCases []sessionCardCase `json:"session_card_cases"`
@@ -135,6 +140,23 @@ func TestLabelsMatchSharedTable(t *testing.T) {
 	}
 	if got := MemoryHeading(3); got != table.Memory.Many {
 		t.Errorf("MemoryHeading(3) = %q, want %q", got, table.Memory.Many)
+	}
+}
+
+// TestSectionRowLabelsMatchSharedTable pins the session-inventory row
+// labels: the per-kind row table and the ephemeral/tool-schema row strings
+// must equal the shared table the Python contract test also reads, so the
+// twins' session cards cannot drift.
+func TestSectionRowLabelsMatchSharedTable(t *testing.T) {
+	table := loadTable(t)
+	if !reflect.DeepEqual(SectionRowLabels, table.SectionRowLabels.Rows) {
+		t.Errorf("SectionRowLabels = %q, want %q", SectionRowLabels, table.SectionRowLabels.Rows)
+	}
+	if EphemeralRow != table.SectionRowLabels.EphemeralRow {
+		t.Errorf("EphemeralRow = %q, want %q", EphemeralRow, table.SectionRowLabels.EphemeralRow)
+	}
+	if ToolSchemasRow != table.SectionRowLabels.ToolSchemasRow {
+		t.Errorf("ToolSchemasRow = %q, want %q", ToolSchemasRow, table.SectionRowLabels.ToolSchemasRow)
 	}
 }
 
