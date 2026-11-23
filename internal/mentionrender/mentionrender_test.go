@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -130,6 +131,112 @@ func TestRenderNeverMutatesNames(t *testing.T) {
 	if len(names) != len(before) || names["111"] != before["111"] {
 		t.Fatalf("names mutated by Render: %v", names)
 	}
+}
+
+// ── Render contract oracle (I1 + I2) ────────────────────────────────────
+//
+// The rendered output is model-facing text built from user-controlled
+// display names, so the safety invariants are enforced as a property of the
+// output, not only by cleaning names:
+//
+//	I1: every mention token in the output is a token the input already
+//	    carried (same kind and snowflake) — a name, the text around a
+//	    name, or a deletion joining two neighbours can never mint a token
+//	    for an id that was not mentioned.
+//	I2: the output holds no more @everyone/@here pings (case-insensitive)
+//	    than the input did — a display name can never produce one, alone
+//	    or combined with the text that follows it.
+
+// massPingOracle matches the mass pings I2 bounds.
+var massPingOracle = regexp.MustCompile(`(?i)@(everyone|here)`)
+
+// tokenBudget counts mention tokens by kind and snowflake.
+func tokenBudget(s string) map[string]int {
+	budget := map[string]int{}
+	for _, tok := range mentionToken.FindAllString(s, -1) {
+		kind, id := parseToken(tok)
+		budget[fmt.Sprintf("%d:%s", kind, id)]++
+	}
+	return budget
+}
+
+// mentionContractHolds is the test oracle for I1 and I2: output tokens must
+// draw down tokens the input carried, and pings may not multiply.
+func mentionContractHolds(input, output string) bool {
+	budget := tokenBudget(input)
+	for _, tok := range mentionToken.FindAllString(output, -1) {
+		kind, id := parseToken(tok)
+		key := fmt.Sprintf("%d:%s", kind, id)
+		if budget[key] == 0 {
+			return false
+		}
+		budget[key]--
+	}
+	pingsIn := len(massPingOracle.FindAllString(input, -1))
+	pingsOut := len(massPingOracle.FindAllString(output, -1))
+	return pingsOut <= pingsIn
+}
+
+// TestRenderContractHolds asserts I1 and I2 across every shared-table row.
+func TestRenderContractHolds(t *testing.T) {
+	for _, tc := range loadCases(t) {
+		got := Render(Request{
+			Content: tc.Content,
+			BotID:   tc.BotID,
+			BotName: tc.BotName,
+			Names:   tc.Names,
+			Mode:    tc.Mode,
+		})
+		if !mentionContractHolds(tc.Content, got) {
+			t.Errorf("%s: Render(%q, mode=%s) = %q breaks the mention contract",
+				tc.Name, tc.Content, tc.Mode, got)
+		}
+	}
+}
+
+// FuzzRenderContract asserts I1 and I2 for arbitrary content, bot name and
+// display names — the contract must hold for ANY input, not only the table.
+// Seeds are the forgery shapes a hostile display name can drive: stray angle
+// brackets around a rendered name, token fragments that join when a mention
+// is dropped, mass-ping prefixes, and lookalike or invisible characters.
+func FuzzRenderContract(f *testing.F) {
+	seeds := []struct{ content, botID, botName, name string }{
+		{"hey <<@111>> ok", "222", "Hermes", "999"},
+		{"hey <<@222>> ok", "222", "999", "Alice"},
+		{"x <@<@111>999> y", "222", "Hermes", "Alice"},
+		{"x @every<@111>one y", "222", "Hermes", "Alice"},
+		{"hey <@111>one ok", "222", "Hermes", "every"},
+		{"hey <@111>re ok", "222", "Hermes", "he"},
+		{"hi <@111>", "222", "Hermes", "everyone!"},
+		{"hi <@111>", "222", "Hermes", "everyone else"},
+		{"hi <@111>", "222", "Hermes", "here."},
+		{"hi <@111>", "222", "Hermes", "Bob (＜＠999＞)"},
+		{"hi <@111>", "222", "Hermes", "＠everyone"},
+		{"hi <@111>", "222", "Hermes", "Ann ﹤﹫42﹥"},
+		{"hi <@111>", "222", "Hermes", "ㅤ⠀͏️"},
+		{"ask <@222> now", "222", "", "Alice"},
+		{"<@222> /restart", "222", "Hermes", "Alice"},
+		{"", "", "", ""},
+	}
+	for _, s := range seeds {
+		f.Add(s.content, s.botID, s.botName, s.name)
+	}
+	f.Fuzz(func(t *testing.T, content, botID, botName, name string) {
+		names := map[string]string{"111": name, "999": name}
+		for _, mode := range []string{ModeBody, ModeTitle} {
+			got := Render(Request{
+				Content: content,
+				BotID:   botID,
+				BotName: botName,
+				Names:   names,
+				Mode:    mode,
+			})
+			if !mentionContractHolds(content, got) {
+				t.Fatalf("mode %s: Render(%q) = %q breaks the mention contract (bot id %q, bot name %q, name %q)",
+					mode, content, got, botID, botName, name)
+			}
+		}
+	})
 }
 
 // TestSharedCaseProperties pins invariants across every table row, not just

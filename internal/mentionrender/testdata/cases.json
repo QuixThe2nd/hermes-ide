@@ -295,6 +295,192 @@
         "111": "Ev\n<@123>il"
       },
       "want": "hi @Ev 123il bye"
+    },
+    {
+      "name": "title: stray angle brackets cannot forge a token around a rendered name",
+      "mode": "title",
+      "content": "hey <<@111>> ok",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "999"
+      },
+      "want": "hey <> ok"
+    },
+    {
+      "name": "body: stray angle brackets cannot forge a token around the bot name",
+      "mode": "body",
+      "content": "hey <<@222>> ok",
+      "bot_id": "222",
+      "bot_name": "999",
+      "names": {},
+      "want": "hey <<@222>> ok"
+    },
+    {
+      "name": "title: stray angle brackets cannot forge a token around the bot name",
+      "mode": "title",
+      "content": "hey <<@222>> ok",
+      "bot_id": "222",
+      "bot_name": "999",
+      "names": {},
+      "want": "hey <> ok"
+    },
+    {
+      "name": "title: dropping an unresolvable mention cannot join text into a token",
+      "mode": "title",
+      "content": "x <@<@111>999> y",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {},
+      "want": "Hermes"
+    },
+    {
+      "name": "body: raw tokens are never deleted, so text cannot join into a forged token",
+      "mode": "body",
+      "content": "x <@<@111>999> y",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {},
+      "want": "x <@<@111>999> y"
+    },
+    {
+      "name": "body: a name holding a mass ping is unresolvable",
+      "mode": "body",
+      "content": "hi <@111> there",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "everyone!"
+      },
+      "want": "hi <@111> there"
+    },
+    {
+      "name": "body: a name starting with a mass ping word is unresolvable",
+      "mode": "body",
+      "content": "hi <@111> there",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "everyone else"
+      },
+      "want": "hi <@111> there"
+    },
+    {
+      "name": "body: a name starting with the here ping is unresolvable",
+      "mode": "body",
+      "content": "hi <@111> there",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "here."
+      },
+      "want": "hi <@111> there"
+    },
+    {
+      "name": "title: a name holding a mass ping is unresolvable",
+      "mode": "title",
+      "content": "hi <@111> there",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "everyone!"
+      },
+      "want": "hi there"
+    },
+    {
+      "name": "title: a name and the following text cannot combine into a mass ping",
+      "mode": "title",
+      "content": "hey <@111>one ok",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "every"
+      },
+      "want": "hey one ok"
+    },
+    {
+      "name": "title: a name and the following text cannot combine into the here ping",
+      "mode": "title",
+      "content": "hey <@111>re ok",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "he"
+      },
+      "want": "hey re ok"
+    },
+    {
+      "name": "title: dropping a mention cannot join text into a mass ping",
+      "mode": "title",
+      "content": "x @every<@111>one y",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {},
+      "want": "Hermes"
+    },
+    {
+      "name": "body: the id suffix separates a name from the text that follows",
+      "mode": "body",
+      "content": "hey <@111>one ok",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "every"
+      },
+      "want": "hey @every (<@111>)one ok"
+    },
+    {
+      "name": "body: fullwidth mention lookalikes are dropped from names",
+      "mode": "body",
+      "content": "hi <@111>",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "Bob (＜＠999＞)"
+      },
+      "want": "hi @Bob (999) (<@111>)"
+    },
+    {
+      "name": "body: a fullwidth at-sign cannot smuggle a mass ping",
+      "mode": "body",
+      "content": "hi <@111>",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "＠everyone"
+      },
+      "want": "hi <@111>"
+    },
+    {
+      "name": "body: small-form mention lookalikes are dropped from names",
+      "mode": "body",
+      "content": "hi <@111>",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "Ann ﹤﹫42﹥"
+      },
+      "want": "hi @Ann 42 (<@111>)"
+    },
+    {
+      "name": "body: an invisible-only name is unresolvable",
+      "mode": "body",
+      "content": "hi <@111>",
+      "bot_id": "222",
+      "bot_name": "Hermes",
+      "names": {
+        "111": "ㅤ⠀͏️"
+      },
+      "want": "hi <@111>"
+    },
+    {
+      "name": "body: mid-sentence self mention keeps the raw token when the bot name is unresolvable",
+      "mode": "body",
+      "content": "ask <@222> now",
+      "bot_id": "222",
+      "bot_name": "",
+      "names": {},
+      "want": "ask <@222> now"
     }
   ]
 }
