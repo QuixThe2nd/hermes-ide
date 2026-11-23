@@ -125,3 +125,36 @@ class HelperBinary:
             else:
                 self._failed_at = time.monotonic()
             return binary
+
+    def peek(self) -> Optional[str]:
+        """The already-resolved binary only: pinned in-process or cached on
+        disk. Never builds, never blocks on the build lock — a caller on a
+        latency budget (message rendering) uses this and treats None as
+        "use the fallback for now; :meth:`warm` builds in the background"."""
+        if self._binary is not None:
+            return self._binary
+        try:
+            binary = self.cached_binary_path()
+            if binary.is_file() and os.access(binary, os.X_OK):
+                resolved = str(binary)
+                with self._lock:
+                    if self._binary is None:
+                        self._binary = resolved
+                    return self._binary
+        except Exception:
+            return None
+        return None
+
+    def warm(self) -> None:
+        """Resolve on a daemon thread: a first-use ``go build`` happens off
+        the caller's critical path, and the next :meth:`peek` finds the
+        binary. Concurrent warms converge on the pinned resolution."""
+        def _run() -> None:
+            try:
+                self.get()
+            except Exception:  # get() never raises; belt for the thread
+                logger.debug("%s background warm failed", self._label)
+
+        threading.Thread(
+            target=_run, daemon=True, name=f"gobuild-warm-{self._module}",
+        ).start()
