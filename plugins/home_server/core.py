@@ -65,7 +65,7 @@ MAX_RETRY_AFTER_SECONDS = 10.0
 # reconcile numbers the enabled categories 0..N in this order (Notifications
 # lands at the top of the guild) and the template fingerprint covers it, so
 # reordering here re-syncs provisioned guilds automatically.
-MODULE_KEYS = ("notifications", "chat", "quotas", "speeds")
+MODULE_KEYS = ("notifications", "chat", "memory", "quotas", "speeds")
 
 # Env var holding the bot token in HERMES_HOME/secrets/discord.env. Exposed as
 # a constant so tests (and any future caller) reference the same key instead of
@@ -156,6 +156,24 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             "something to tell you. The outbox is for messages you hand off "
             "to Hermes. Cron deliveries, cross-platform messages, and gateway "
             "lifecycle pings land in the Notifications category instead."
+        ),
+    ),
+    "memory": ModuleSpec(
+        key="memory",
+        category="Memories",
+        channels=(
+            ChannelSpec("explicit-facts", CHANNEL_TYPE_TEXT, "explicit-facts"),
+            ChannelSpec("deductions", CHANNEL_TYPE_TEXT, "deductions"),
+            ChannelSpec("patterns", CHANNEL_TYPE_TEXT, "patterns"),
+            ChannelSpec("contradictions", CHANNEL_TYPE_TEXT, "contradictions"),
+        ),
+        legacy_categories=("Honcho Memory", "Honcho Memories"),
+        embed_title="🧠 Memories",
+        embed_description=(
+            "What Hermes remembers about you, out in the open: facts you "
+            "stated outright, deductions it inferred, patterns it noticed "
+            "across sessions, and contradictions it flagged. The memory "
+            "system appends here as it learns — nothing needs a reply."
         ),
     ),
     "quotas": ModuleSpec(
@@ -903,7 +921,8 @@ def _reconcile_module(
     elsewhere in the guild under the right name/type are ADOPTED (moved under
     the module's category) instead of duplicated. The one rename reconcile
     performs is the declared legacy-category migration (Quotas -> Models,
-    Chat -> Lounges), which patches the category name in place. Nothing is
+    Chat -> Lounges, Honcho Memory/Memories -> Memories), which patches the
+    category name in place. Nothing is
     ever deleted.
     """
     category_id = _find_channel(
