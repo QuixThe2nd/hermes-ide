@@ -218,15 +218,19 @@ async def test_other_mention_name_from_guild_member_cache(adapter, monkeypatch):
     """A token whose user is not in message.mentions resolves via the guild
     member cache — no REST call."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-    channel = FakeTextChannel(channel_id=321)
-    channel.guild.get_member = lambda uid: (
-        SimpleNamespace(display_name="Cached Carol", name="carol") if uid == 333 else None
+    guild = SimpleNamespace(
+        id=777,
+        name="Test Server",
+        get_member=lambda uid: (
+            SimpleNamespace(display_name="Cached Carol", name="carol") if uid == 333 else None
+        ),
     )
     message = make_message(
-        channel=channel,
+        channel=FakeTextChannel(channel_id=321),
         content=f"<@{BOT_ID}> ask <@333> about it",
         mentions=[adapter._client.user],
     )
+    message.guild = guild
 
     assert await adapter._handle_message(message) is True
 
