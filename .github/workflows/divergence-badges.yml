@@ -31,19 +31,36 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Compute and update badges
-        run: python scripts/divergence_badges.py --repo . --readme README.md
-
-      - name: Commit if the badge region changed
+      - name: Refresh badges on latest main, commit, push
         # GITHUB_TOKEN (not a GitHub App token) on purpose: App-token pushes
         # retrigger workflows, GITHUB_TOKEN pushes do not (see js-autofix.yml).
+        #
+        # main moves between checkout and push on this repo; committing on the
+        # checkout-time SHA lost every push race since Nov 15 ("! [rejected]
+        # main -> main (fetch first)"). The README edit is the ONLY local
+        # change this workflow ever makes, so instead of rebasing: fetch the
+        # current tip, discard any stale edit, hard-reset onto it, and
+        # recompute the badge region there. If the push STILL races, refetch
+        # and recompute — bounded at 3 attempts, then fail loudly.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          if git diff --cached --quiet; then
-            echo "Badge region unchanged; nothing to commit."
-          else
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git checkout -- README.md 2>/dev/null || true # drop any stale edit from a prior attempt
+            git reset --hard origin/main # safe: README.md is the only local change, recomputed below
+            python scripts/divergence_badges.py --repo . --readme README.md
+            git add README.md
+            if git diff --cached --quiet; then
+              echo "Badge region unchanged; nothing to commit."
+              exit 0
+            fi
             git commit -m "chore(readme): refresh divergence badges"
-            git push
-          fi
+            if git push; then
+              echo "Badge commit pushed (attempt $attempt)."
+              exit 0
+            fi
+            echo "::warning::push raced origin/main (attempt $attempt/3); refetching and recomputing"
+          done
+          echo "::error::divergence badges: lost the push race to origin/main 3 times in a row; re-run this workflow once main settles."
+          exit 1
