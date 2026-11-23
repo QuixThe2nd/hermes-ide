@@ -93,7 +93,8 @@ class SessionTranscriptMixin:
         if not session_key or not expected_session_id or not target_session_id:
             return None
         with self._lock:
-            entry = self._entry_locked(session_key)
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
             if entry is None:
                 return None
             if entry.session_id == target_session_id:
@@ -102,6 +103,18 @@ class SessionTranscriptMixin:
                 return None  # route moved (session_id != expected) or nothing to heal
             self._save()  # bookkeeping, not user activity: leave ``updated_at`` alone
             return entry
+
+    def _lazy(self, name: str, factory):
+        """Return ``self.<name>``, initializing it from ``factory()`` on first use.
+
+        ``SessionStore.__init__`` pre-initializes these attributes; the lazy fallback keeps
+        transcript helpers safe on test doubles built via ``object.__new__``.
+        """
+        value = getattr(self, name, None)
+        if value is None:
+            value = factory()
+            setattr(self, name, value)
+        return value
 
     def _get_transcript_drain_lock(self):
         """Return the lock that serializes pending-queue drain boundaries."""
@@ -379,15 +392,23 @@ class SessionTranscriptMixin:
             tool_calls=message.get("tool_calls"),
             tool_call_id=message.get("tool_call_id"),
             **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
-            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
+            platform_message_id=(
+                message.get("platform_message_id")
+                or message.get("message_id")
+                or message.get("ledger_message_id")
+            ),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
+            # Effect disposition (e.g. "deployed"/"interrupted") is part of the canonical
+            # identity of a replayed tool row; without it the checked append cannot distinguish
+            # a stale interrupted marker from its fresh replacement on read-back.
+            effect_disposition=message.get("effect_disposition"),
             # Exact bytes sent to the API (prompt-cache-stable replay); must survive every
             # persistence path or the next replay diverges.
             api_content=extract_api_content_sidecar(message),
-            # Presentation typing (e.g. "internal_notification"); DB-only.
-            # "internal_notification" for self-injected async-delegation/background notification turns,
-            # #82888). DB-only; stripped from provider-bound payloads.
+            # Presentation typing (e.g. "internal_notification" for self-injected
+            # async-delegation/background notification turns, #82888). DB-only; stripped from
+            # provider-bound payloads.
             display_kind=message.get("display_kind"),
             display_metadata=message.get("display_metadata"),
         )
