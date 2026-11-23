@@ -39,3 +39,15 @@ def _block_real_systemd_subprocess(monkeypatch):
         return real_run(args, *run_args, **run_kwargs)
 
     monkeypatch.setattr(subprocess, "run", guarded_run)
+
+
+@pytest.fixture(autouse=True)
+def _reset_scan_walk_cache():
+    """No scan-walk cache state leaks between tests."""
+    from plugins.omp_viewer.viewer import server
+
+    with server._scan_walk_states_lock:
+        server._scan_walk_states.clear()
+    yield
+    with server._scan_walk_states_lock:
+        server._scan_walk_states.clear()
