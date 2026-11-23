@@ -13,19 +13,19 @@ It started as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-ag
 <!-- divergence-badges:start -->
 **hermes-ide**
 
-![gone](https://img.shields.io/badge/gone-61%25-blue) ![new](https://img.shields.io/badge/new-25%25-blue) ![delta](https://img.shields.io/badge/delta-4.7_deleted_per_1_added,_48%25_smaller-blue)
+![gone](https://img.shields.io/badge/gone-63%25-blue) ![new](https://img.shields.io/badge/new-29%25-blue) ![delta](https://img.shields.io/badge/delta-4.1_deleted_per_1_added,_48%25_smaller-blue)
 
-- 61% of the original code is gone
-- 25% of the code it has now is new
-- 4.7 deleted per 1 added, 48% smaller
+- 63% of the original code is gone
+- 29% of the code it has now is new
+- 4.1 deleted per 1 added, 48% smaller
 
 **upstream hermes**
 
-![gone](https://img.shields.io/badge/gone-16%25-orange) ![new](https://img.shields.io/badge/new-41%25-orange) ![delta](https://img.shields.io/badge/delta-3.6_added_per_1_deleted,_42%25_larger-orange)
+![gone](https://img.shields.io/badge/gone-18%25-orange) ![new](https://img.shields.io/badge/new-44%25-orange) ![delta](https://img.shields.io/badge/delta-3.5_added_per_1_deleted,_46%25_larger-orange)
 
-- 16% of the original code is gone
-- 41% of the code it has now is new
-- 3.6 added per 1 deleted, 42% larger
+- 18% of the original code is gone
+- 44% of the code it has now is new
+- 3.5 added per 1 deleted, 46% larger
 
 Code means py/ts/tsx/js/jsx/mjs/cjs/css/scss/vue/rs/go/sh, not tests, compared with the last commit both trees still share.
 <!-- divergence-badges:end -->

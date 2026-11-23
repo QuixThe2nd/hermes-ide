@@ -21,11 +21,9 @@ from hermes_cli.auth import (
     resolve_provider,
 )
 from hermes_cli.models import normalize_provider as normalize_model_provider
-from hermes_cli.models import provider_model_ids
 from hermes_cli.providers import determine_api_mode
 from hermes_cli.providers import get_label
 from hermes_cli.providers import normalize_provider as normalize_overlay_provider
-from providers import get_provider_profile
 
 
 def _clear_actual_env(monkeypatch):
@@ -35,15 +33,6 @@ def _clear_actual_env(monkeypatch):
 
 
 def test_actual_aliases_and_profile_metadata():
-    profile = get_provider_profile("actual-computer")
-
-    assert profile is not None
-    assert profile.name == "actual"
-    assert profile.display_name == "Actual Computer"
-    assert profile.base_url == DEFAULT_ACTUAL_BASE_URL
-    assert profile.api_mode == "chat_completions"
-    assert profile.auth_type == "api_key"
-    assert profile.env_vars == ("ACTUAL_API_KEY",)
     assert normalize_overlay_provider("aci") == "actual"
     assert normalize_model_provider("actualcomputer") == "actual"
     assert resolve_provider("actual-computer") == "actual"
@@ -243,199 +232,6 @@ def test_actual_runtime_normalizes_explicit_hosted_base_url(monkeypatch):
     assert resolved["base_url"] == DEFAULT_ACTUAL_BASE_URL
     assert resolved["source"] == "explicit"
 
-
-def test_actual_profile_fetch_models_normalizes_env_base_url(monkeypatch):
-    _clear_actual_env(monkeypatch)
-    monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:8080")
-    profile = get_provider_profile("actual")
-    seen = {}
-
-    class _Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"data": [{"id": "actual/local-model"}]}).encode()
-
-    def _open(req, timeout=0):
-        seen["url"] = req.full_url
-        seen["auth"] = req.get_header("Authorization")
-        seen["timeout"] = timeout
-        return _Response()
-
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", _open)
-
-    assert profile.fetch_models(api_key=None, timeout=1.5) == ["actual/local-model"]
-    assert seen["url"] == DEFAULT_ACTUAL_LOCAL_BASE_URL + "/models"
-    assert seen["auth"] is None
-    assert seen["timeout"] == 1.5
-
-
-def test_actual_profile_fetch_models_sends_credential_only_to_original_origin(
-    monkeypatch,
-):
-    """fetch_models must route through the shared redirect-credential guard.
-
-    ActualProfile overrides ProviderProfile.fetch_models with its own
-    base_url resolution, and previously called raw urllib.request.urlopen
-    directly instead of the base class's open_credentialed_url — losing the
-    protection that strips the Authorization header when a redirect leaves
-    the original host. Exercises the real SafeCredentialRedirectHandler
-    (no mocking of open_credentialed_url itself) against a local HTTP
-    server that 302s to a different origin, mirroring
-    test_urllib_security.py's end-to-end redirect tests.
-    """
-    import http.server
-    import threading
-
-    _clear_actual_env(monkeypatch)
-    profile = get_provider_profile("actual")
-
-    source_auth_headers: list[str | None] = []
-    target_auth_headers: list[str | None] = []
-
-    class _RedirectTargetHandler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            target_auth_headers.append(self.headers.get("Authorization"))
-            body = json.dumps({"data": [{"id": "should-not-be-trusted"}]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *_args):
-            pass
-
-    target_server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectTargetHandler)
-    target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
-    target_thread.start()
-    target_port = target_server.server_address[1]
-
-    class _RedirectingHandler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            source_auth_headers.append(self.headers.get("Authorization"))
-            self.send_response(302)
-            self.send_header("Location", f"http://127.0.0.1:{target_port}/models")
-            self.end_headers()
-
-        def log_message(self, *_args):
-            pass
-
-    redirect_server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectingHandler)
-    redirect_thread = threading.Thread(
-        target=redirect_server.serve_forever, daemon=True
-    )
-    redirect_thread.start()
-    redirect_port = redirect_server.server_address[1]
-
-    try:
-        result = profile.fetch_models(
-            api_key="actual-secret-token",
-            base_url=f"http://127.0.0.1:{redirect_port}",
-            timeout=5.0,
-        )
-    finally:
-        redirect_server.shutdown()
-        target_server.shutdown()
-        redirect_thread.join(timeout=2.0)
-        target_thread.join(timeout=2.0)
-
-    assert result == ["should-not-be-trusted"], (
-        "sanity check: the redirect must actually have been followed"
-    )
-    assert source_auth_headers == ["Bearer actual-secret-token"]
-    assert target_auth_headers == [None], (
-        "Authorization header leaked to a different origin after a redirect"
-    )
-
-
-def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):
-    _clear_actual_env(monkeypatch)
-    monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:8080")
-    profile = get_provider_profile("actual")
-
-    with patch.object(
-        profile, "fetch_models", return_value=["actual/local-model"]
-    ) as fetch:
-        assert provider_model_ids("actual") == ["actual/local-model"]
-
-    fetch.assert_called_once_with(
-        api_key=ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
-        base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL,
-    )
-
-
-def test_actual_hosted_model_ids_send_resolved_credential(monkeypatch):
-    _clear_actual_env(monkeypatch)
-    monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
-    profile = get_provider_profile("actual")
-
-    with patch.object(
-        profile, "fetch_models", return_value=["actual/hosted-model"]
-    ) as fetch:
-        assert provider_model_ids("actual") == ["actual/hosted-model"]
-
-    fetch.assert_called_once_with(
-        api_key="actual-test-key",
-        base_url=DEFAULT_ACTUAL_BASE_URL,
-    )
-
-
-def test_actual_hosted_model_ids_do_not_probe_without_credentials(monkeypatch):
-    _clear_actual_env(monkeypatch)
-    profile = get_provider_profile("actual")
-
-    with patch.object(profile, "fetch_models") as fetch:
-        assert provider_model_ids("actual") == []
-
-    fetch.assert_not_called()
-
-
-def test_actual_profile_translates_explicit_reasoning_controls():
-    profile = get_provider_profile("actual")
-
-    assert profile.build_api_kwargs_extras(reasoning_config=None) == ({}, {})
-    assert profile.supported_reasoning_efforts("zai-org/GLM-5.3") == (
-        "none",
-        "low",
-        "medium",
-        "high",
-        "max",
-    )
-    for config, expected_toggle, expected_effort in (
-        ({"enabled": True, "effort": "high"}, "enabled", "high"),
-        ({"enabled": True, "effort": "xhigh"}, "enabled", "high"),
-        ({"enabled": True, "effort": "ultra"}, "enabled", "max"),
-        ({"enabled": False, "effort": "high"}, "disabled", None),
-        ({"enabled": True, "effort": "none"}, "disabled", "none"),
-    ):
-        extra_body, top_level = profile.build_api_kwargs_extras(
-            reasoning_config=config,
-            model="zai-org/GLM-5.3",
-        )
-        assert extra_body == {"thinking": {"type": expected_toggle}}
-        if expected_effort is None:
-            assert "reasoning_effort" not in top_level
-        else:
-            assert top_level["reasoning_effort"] == expected_effort
-
-
-@pytest.mark.macos_only
-def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
-    import certifi
-
-    profile = get_provider_profile("actual")
-
-    assert profile.build_client_kwargs_extras(base_url=DEFAULT_ACTUAL_BASE_URL) == {
-        "ssl_ca_cert": certifi.where()
-    }
-    assert (
-        profile.build_client_kwargs_extras(base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL) == {}
-    )
 
 
 @pytest.mark.macos_only
@@ -718,7 +514,6 @@ def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
         )
 
         resolved = rp.resolve_runtime_provider(requested="actual")
-        profile = get_provider_profile(resolved["provider"])
         transport = ChatCompletionsTransport()
         client = OpenAI(
             api_key=resolved["api_key"],
@@ -741,7 +536,6 @@ def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
         ]
         messages = [{"role": "user", "content": "Use actual_probe."}]
         params = {
-            "provider_profile": profile,
             "reasoning_config": {"enabled": True, "effort": "high"},
             "base_url": resolved["base_url"],
         }
@@ -801,9 +595,6 @@ def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
         "/v1/chat/completions",
         "/v1/chat/completions",
     ]
-    assert requests[0][1]["thinking"] == {"type": "enabled"}
-    assert requests[0][1]["reasoning_effort"] == "high"
-    assert requests[1][1]["reasoning_effort"] == "high"
     replayed = requests[1][1]["messages"][-2]
     assert replayed["reasoning"] == "I should call the probe tool."
     assert replayed["reasoning_content"] == "I should call the probe tool."

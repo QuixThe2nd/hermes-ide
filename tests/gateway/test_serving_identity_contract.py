@@ -76,10 +76,20 @@ def _table_runner(snap: dict):
 # line list. The Go binary prints them differently: the scalar ops print a
 # bare value, the ack-rewrite op prints JSON.
 _VALUE_OPS = ("note", "transition", "record", "owner_guard", "owner_refusal",
-              "ack_rewrite")
+              "ack_rewrite", "code_delta_decision", "code_delta_note")
 
 # The ack-rewrite op prints JSON (its value is a dict), not a bare scalar.
 _BARE_OUTPUT_OPS = tuple(o for o in _VALUE_OPS if o != "ack_rewrite")
+
+
+def _parse_stored_record(stored):
+    """The table's stored record, or None when absent/corrupt — the same
+    degrade the runtime's try/except json.loads performs."""
+    try:
+        parsed = json.loads(stored) if isinstance(stored, str) else None
+    except ValueError:
+        return None
+    return parsed
 
 
 def _python_render(case: dict):
@@ -101,7 +111,23 @@ def _python_render(case: dict):
             return "skip"
         return ("write" if _record_write_needed(
             request["stored"], request["record"]["pid"],
-            request["record"]["start_time"]) else "skip")
+            request["record"]["start_time"], request.get("note")) else "skip")
+    if case["op"] == "code_delta_decision":
+        from gateway.serving_codedelta import code_delta_decision
+        request = case["input"]
+        previous = _parse_stored_record(request.get("stored"))
+        return code_delta_decision(previous, request.get("code_sha"))
+    if case["op"] == "code_delta_note":
+        from gateway.serving_codedelta import code_delta_note
+        request = case["input"]
+        previous = _parse_stored_record(request.get("stored"))
+
+        def _render(old, new):
+            if request.get("git") == "failed":
+                return None
+            return (request["commits"], request["stat"])
+
+        return code_delta_note(previous, request.get("code_sha"), render=_render) or ""
     if case["op"] == "owner_guard":
         from plugins.gateway_restart.tool import socket_owner_action
         request = case["input"]
@@ -124,10 +150,8 @@ def _python_render(case: dict):
         fields = {"pid": identity.get("pid"), "start_time": identity.get("start_time"),
                   "code_sha": identity.get("code_sha")}
         with patch.object(si, "_static_identity_fields", lambda: fields):
-            runtime = si.serving_runtime_note(None)
-            transition = si.serving_transition_note(
-                json.loads(request["stored"]) if request["stored"] else None,
-                identity) or ""
+            runtime, transition = si.serving_turn_notes(
+                None, json.loads(request["stored"]) if request["stored"] else None)
         return [note for note in (runtime, transition) if note]
     request = case["input"]
     identify = request.get("identify")
@@ -212,6 +236,12 @@ def test_shared_table_covers_the_honesty_contract():
         "record_same_process_skip",
         "record_process_change_write",
         "record_invalid_session_skip",
+        # CONTRACT CHANGE: the record durably remembers the exact note the
+        # session saw; an unchanged note is a skip, a wording change writes,
+        # and the turn composition suppresses the proven-seen note
+        "record_unchanged_note_skip",
+        "record_note_change_write",
+        "turn_notes_unchanged_note_suppressed",
         "owner_guard_legacy_predecessor_refuse",
         "owner_guard_unready_successor_refuse",
         "owner_guard_attested_chain",
@@ -232,5 +262,23 @@ def test_shared_table_covers_the_honesty_contract():
         "ack_rewrite_chained_names_serving_process",
         "turn_notes_first_turn_after_handoff",
         "turn_notes_same_process",
+        # the code delta: the record's build sha decides, and the note is
+        # never fabricated — differing builds render commits+stat+pointer,
+        # unknown/unreadable builds and git failures say so, and an
+        # unreadable CURRENT build stays quiet (pip installs can never
+        # settle a could-not-compute card)
+        "code_delta_no_previous_record_none",
+        "code_delta_corrupt_record_none",
+        "code_delta_non_dict_record_none",
+        "code_delta_same_build_none",
+        "code_delta_changed_build_delta",
+        "code_delta_legacy_record_unprovable",
+        "code_delta_unreadable_old_sha_unprovable",
+        "code_delta_current_sha_unreadable_none",
+        "code_delta_note_renders_commits_stat_and_pointer",
+        "code_delta_note_git_failure_could_not_compute",
+        "code_delta_note_previous_not_recorded",
+        "code_delta_note_previous_unreadable",
+        "code_delta_note_capped_head_tail_with_marker",
     ):
         assert required in names, f"shared table lost the {required} case"

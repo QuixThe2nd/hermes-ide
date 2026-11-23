@@ -14,7 +14,7 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
-            str(root / "evals/gateway_failure_ownership/probe.py"),
+            str(root / "tests/probes/gateway_failure_ownership/probe.py"),
             str(root),
             str(receipt),
         ],

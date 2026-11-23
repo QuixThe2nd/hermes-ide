@@ -1248,9 +1248,31 @@ class GatewayNotificationsMixin:
                 "watch:" + ":".join(str(part) for part in identity)
                 if identity is not None else None
             )
+            # Synthetic injections carry no platform message_id, which left
+            # their turn-final replies without a reply anchor (and therefore
+            # without a user ping on Discord — #48 follow-up). Fall back to
+            # the last REAL user message id remembered for this session so
+            # the completion's answer replies to something the user actually
+            # sent. Best-effort: a missing store or entry just keeps the
+            # historical no-anchor behaviour.
+            _anchor = str(evt.get("message_id") or "").strip() or None
+            if not _anchor:
+                try:
+                    _sk = session_key
+                    if _sk and getattr(self, "async_session_store", None) is not None:
+                        _stored = await self.async_session_store.get_session_metadata(
+                            _sk, "_last_user_message_id", None
+                        )
+                        if _stored:
+                            _anchor = str(_stored)
+                except Exception:
+                    logger.debug(
+                        "last-user-message-id lookup failed for %s",
+                        evt.get("session_key"), exc_info=True,
+                    )
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                message_id=_anchor, metadata=metadata,
                 ledger_message_id=ledger_message_id,
             )
             logger.info(

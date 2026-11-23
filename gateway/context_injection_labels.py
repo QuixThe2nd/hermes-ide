@@ -27,6 +27,7 @@ CONTEXT_INJECTION_KIND_LABELS = {
     "surface_switch": "🔀 Injecting surface switch",
     "plugin": "🧩 Injecting plugin context",
     "process": "🖥️ Injecting process info",
+    "code_delta": "📝 Injecting code delta",
     "session": "🗺️ Injecting session context",
     "goal": "🎯 Injecting standing goal",
     "skill": "📚 Injecting skill",

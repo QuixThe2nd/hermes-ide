@@ -64,6 +64,7 @@ func TestStressSteersVersusTimeoutTailsSingleVerdict(t *testing.T) {
 		registered[i] = reg.Register(&Run{Parent: agent, AdoptID: fmt.Sprintf("tx-%02d", i)})
 	}
 	steerOuts := make([]SteerOutcome, steers)
+	tailIDs := make([]string, waits)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for s := range steers {
@@ -80,7 +81,7 @@ func TestStressSteersVersusTimeoutTailsSingleVerdict(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			registered[i].Adopt()
+			tailIDs[i] = registered[i].Adopt()
 		}(i)
 	}
 	close(start)
@@ -110,25 +111,27 @@ func TestStressSteersVersusTimeoutTailsSingleVerdict(t *testing.T) {
 			adoptingSteers++
 		}
 	}
-	// At least the first steer (or a timeout tail) adopted everything: with
-	// all waits live at the start, one full-adoption steer must exist unless
-	// tails beat every steer to every wait — either way the union covers all.
+	// Every wait is adopted exactly once, by a steer or by its timeout tail
+	// (asserted released above). Tails beating every steer to every wait is
+	// a legal interleaving, so a steer may report zero ids — the coverage
+	// invariant is the UNION of steer ids and tail ids: it must be exactly
+	// the registered delegations, no more, no fewer.
 	seen := map[string]bool{}
 	for _, out := range steerOuts {
 		for _, id := range out.IDs {
 			seen[id] = true
 		}
 	}
+	for _, id := range tailIDs {
+		if !truth[id] {
+			t.Fatalf("timeout tail observed fabricated delegation id %q", id)
+		}
+		seen[id] = true
+	}
 	for id := range truth {
 		if !seen[id] {
-			// A timeout tail adopted it; that path also releases the wait
-			// (asserted above), so this is a legal interleaving — but only
-			// if the wait is released, which we already checked.
-			_ = id
+			t.Fatalf("delegation id %q adopted by nobody — wait lost", id)
 		}
-	}
-	if adoptingSteers == 0 && len(seen) == 0 {
-		t.Fatal("no adoption happened at all in the race")
 	}
 }
 

@@ -1,0 +1,7 @@
+name: omp_viewer
+default_enabled: true
+disabled_management: disabled_management
+version: 1.0.0
+description: "Bundled omp-viewer web UI for OMP delegate-lane sessions (.hermes-lane transcripts), auto-installed and started on Linux/systemd when the gateway comes up (hermes omp_viewer reconcile)."
+author: Hermes Agent
+kind: backend

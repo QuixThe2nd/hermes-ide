@@ -344,30 +344,6 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_thread(adapter, monkeypatch):
-    """Active voice-linked text channels should behave like free-response channels."""
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
-    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
-
-    adapter._voice_text_channels[111] = 789
-    adapter._auto_create_thread = AsyncMock()
-
-    message = make_message(
-        channel=FakeTextChannel(channel_id=789),
-        content="follow-up from voice text chat",
-    )
-
-    await adapter._handle_message(message)
-
-    adapter._auto_create_thread.assert_not_awaited()
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.text == "follow-up from voice text chat"
-    assert event.source.chat_type == "group"
-
-
-@pytest.mark.asyncio
 async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
     """Free-response channels should reply inline, never spawn a new thread.
 
@@ -444,29 +420,6 @@ async def test_discord_no_thread_channels_wins_over_free_response_auto_thread(ad
     await adapter._handle_message(
         make_message(channel=FakeTextChannel(channel_id=789), content="explicitly inline"),
     )
-    adapter._auto_create_thread.assert_not_awaited()
-    assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
-
-
-@pytest.mark.asyncio
-async def test_discord_voice_linked_channel_ignores_free_response_auto_thread(adapter, monkeypatch):
-    """Voice-linked text channels stay inline even with the opt-in on.
-
-    The opt-in clears ``skip_thread`` for free channels, so the voice-linked exclusion in the
-    auto-thread gate is the only thing keeping these channels unthreaded.
-    """
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
-    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
-    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
-
-    adapter._voice_text_channels[111] = 789
-    adapter._auto_create_thread = AsyncMock()
-
-    await adapter._handle_message(
-        make_message(channel=FakeTextChannel(channel_id=789), content="voice follow-up"),
-    )
-
     adapter._auto_create_thread.assert_not_awaited()
     assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
 

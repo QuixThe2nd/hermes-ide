@@ -1074,6 +1074,178 @@
         "via_service": false,
         "note": "Restart chained for the serving process: 'process' names pid 1531038, the process serving this conversation. The control socket is still owned by the draining predecessor (pid 709505); the chained restart runs on pid 1531038 once that handoff completes."
       }
+    },
+    {
+      "name": "record_unchanged_note_skip",
+      "op": "record",
+      "input": {
+        "session_id": "discord:42",
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678, \"note\": \"[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \\u2014 not any pid reported by systemctl, the pid file, or gateway status files \\u2014 is the process running this conversation.]\"}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        },
+        "note": "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \u2014 not any pid reported by systemctl, the pid file, or gateway status files \u2014 is the process running this conversation.]"
+      },
+      "expect": "skip"
+    },
+    {
+      "name": "record_note_change_write",
+      "op": "record",
+      "input": {
+        "session_id": "discord:42",
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678, \"note\": \"[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \\u2014 not any pid reported by systemctl, the pid file, or gateway status files \\u2014 is the process running this conversation.]\"}",
+        "record": {
+          "pid": 1531038,
+          "start_time": 3005678
+        },
+        "note": "[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. This process is draining for a queued restart.]"
+      },
+      "expect": "write"
+    },
+    {
+      "name": "turn_notes_unchanged_note_suppressed",
+      "op": "turn_notes",
+      "input": {
+        "stored": "{\"pid\": 1531038, \"start_time\": 3005678, \"note\": \"[System note: This turn is served by Hermes gateway pid 1531038, start 3005678. That pid \\u2014 not any pid reported by systemctl, the pid file, or gateway status files \\u2014 is the process running this conversation.]\"}",
+        "identity": {
+          "pid": 1531038,
+          "start_time": 3005678
+        }
+      },
+      "expect_lines": []
+    },
+    {
+      "name": "code_delta_no_previous_record_none",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": null,
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "none"
+    },
+    {
+      "name": "code_delta_corrupt_record_none",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "not-json{",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "none"
+    },
+    {
+      "name": "code_delta_non_dict_record_none",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "42",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "none"
+    },
+    {
+      "name": "code_delta_same_build_none",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}",
+        "code_sha": "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+      },
+      "expect": "none"
+    },
+    {
+      "name": "code_delta_changed_build_delta",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "delta"
+    },
+    {
+      "name": "code_delta_legacy_record_unprovable",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "unprovable"
+    },
+    {
+      "name": "code_delta_unreadable_old_sha_unprovable",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"not a sha at all !\"}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "unprovable"
+    },
+    {
+      "name": "code_delta_current_sha_unreadable_none",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}",
+        "code_sha": null
+      },
+      "expect": "none"
+    },
+    {
+      "name": "code_delta_note_renders_commits_stat_and_pointer",
+      "op": "code_delta_note",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718",
+        "git": "ok",
+        "commits": "abc123 fix gateway\ndef456 fix tests",
+        "stat": " 2 files changed, 3 insertions(+)"
+      },
+      "expect": "[System note: The Hermes gateway build changed since the previous turns of this conversation: they ran build a1b2c3d4, this process runs build e5f60718. Commits between the two builds:\nabc123 fix gateway\ndef456 fix tests\nChanged files:\n 2 files changed, 3 insertions(+)\nThe full diff is available via terminal (git diff a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4..e5f60718e5f60718e5f60718e5f60718e5f60718).]"
+    },
+    {
+      "name": "code_delta_note_git_failure_could_not_compute",
+      "op": "code_delta_note",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718",
+        "git": "failed",
+        "commits": "abc123 fix gateway",
+        "stat": " 1 file changed"
+      },
+      "expect": "[System note: The Hermes gateway build changed since the previous turns of this conversation: they ran build a1b2c3d4, this process runs build e5f60718. The code delta between the two builds could not be computed: git could not read this repository. The full diff is available via terminal (git diff a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4..e5f60718e5f60718e5f60718e5f60718e5f60718).]"
+    },
+    {
+      "name": "code_delta_note_previous_not_recorded",
+      "op": "code_delta_note",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718",
+        "git": "ok",
+        "commits": "abc123 fix gateway",
+        "stat": " 1 file changed"
+      },
+      "expect": "[System note: The code delta between the build that served the previous turns and this process's build (e5f60718) could not be computed: the previous build was not recorded.]"
+    },
+    {
+      "name": "code_delta_note_previous_unreadable",
+      "op": "code_delta_note",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"not a sha at all !\"}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718",
+        "git": "ok",
+        "commits": "abc123 fix gateway",
+        "stat": " 1 file changed"
+      },
+      "expect": "[System note: The code delta between the build that served the previous turns and this process's build (e5f60718) could not be computed: the previous build's recorded identity could not be read.]"
+    },
+    {
+      "name": "code_delta_note_capped_head_tail_with_marker",
+      "op": "code_delta_note",
+      "input": {
+        "stored": "{\"pid\":709505,\"start_time\":3001234,\"code_sha\":\"a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\"}",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718",
+        "git": "ok",
+        "commits": "commit0 subject line\ncommit1 subject line\ncommit2 subject line\ncommit3 subject line\ncommit4 subject line\ncommit5 subject line\ncommit6 subject line\ncommit7 subject line\ncommit8 subject line\ncommit9 subject line\ncommit10 subject line\ncommit11 subject line\ncommit12 subject line\ncommit13 subject line\ncommit14 subject line\ncommit15 subject line\ncommit16 subject line\ncommit17 subject line\ncommit18 subject line\ncommit19 subject line\ncommit20 subject line\ncommit21 subject line\ncommit22 subject line\ncommit23 subject line\ncommit24 subject line\ncommit25 subject line\ncommit26 subject line\ncommit27 subject line\ncommit28 subject line\ncommit29 subject line\ncommit30 subject line\ncommit31 subject line\ncommit32 subject line\ncommit33 subject line\ncommit34 subject line\ncommit35 subject line\ncommit36 subject line\ncommit37 subject line\ncommit38 subject line\ncommit39 subject line\ncommit40 subject line\ncommit41 subject line\ncommit42 subject line\ncommit43 subject line\ncommit44 subject line\ncommit45 subject line\ncommit46 subject line\ncommit47 subject line\ncommit48 subject line\ncommit49 subject line\ncommit50 subject line\ncommit51 subject line\ncommit52 subject line\ncommit53 subject line\ncommit54 subject line\ncommit55 subject line\ncommit56 subject line\ncommit57 subject line\ncommit58 subject line\ncommit59 subject line\ncommit60 subject line\ncommit61 subject line\ncommit62 subject line\ncommit63 subject line\ncommit64 subject line\ncommit65 subject line\ncommit66 subject line\ncommit67 subject line\ncommit68 subject line\ncommit69 subject line\ncommit70 subject line\ncommit71 subject line\ncommit72 subject line\ncommit73 subject line\ncommit74 subject line\ncommit75 subject line\ncommit76 subject line\ncommit77 subject line\ncommit78 subject line\ncommit79 subject line\ncommit80 subject line\ncommit81 subject line\ncommit82 subject line\ncommit83 subject line\ncommit84 subject line\ncommit85 subject line\ncommit86 subject line\ncommit87 subject line\ncommit88 subject line\ncommit89 subject line\ncommit90 subject line\ncommit91 subject line\ncommit92 subject line\ncommit93 subject line\ncommit94 subject line\ncommit95 subject line\ncommit96 subject line\ncommit97 subject line\ncommit98 subject line\ncommit99 subject line\ncommit100 subject line\ncommit101 subject line\ncommit102 subject line\ncommit103 subject line\ncommit104 subject line\ncommit105 subject line\ncommit106 subject line\ncommit107 subject line\ncommit108 subject line\ncommit109 subject line\ncommit110 subject line\ncommit111 subject line\ncommit112 subject line\ncommit113 subject line\ncommit114 subject line\ncommit115 subject line\ncommit116 subject line\ncommit117 subject line\ncommit118 subject line\ncommit119 subject line\ncommit120 subject line\ncommit121 subject line\ncommit122 subject line\ncommit123 subject line\ncommit124 subject line\ncommit125 subject line\ncommit126 subject line\ncommit127 subject line\ncommit128 subject line\ncommit129 subject line\ncommit130 subject line\ncommit131 subject line\ncommit132 subject line\ncommit133 subject line\ncommit134 subject line\ncommit135 subject line\ncommit136 subject line\ncommit137 subject line\ncommit138 subject line\ncommit139 subject line\ncommit140 subject line\ncommit141 subject line\ncommit142 subject line\ncommit143 subject line\ncommit144 subject line\ncommit145 subject line\ncommit146 subject line\ncommit147 subject line\ncommit148 subject line\ncommit149 subject line\ncommit150 subject line\ncommit151 subject line\ncommit152 subject line\ncommit153 subject line\ncommit154 subject line\ncommit155 subject line\ncommit156 subject line\ncommit157 subject line\ncommit158 subject line\ncommit159 subject line\ncommit160 subject line\ncommit161 subject line\ncommit162 subject line\ncommit163 subject line\ncommit164 subject line\ncommit165 subject line\ncommit166 subject line\ncommit167 subject line\ncommit168 subject line\ncommit169 subject line\ncommit170 subject line\ncommit171 subject line\ncommit172 subject line\ncommit173 subject line\ncommit174 subject line\ncommit175 subject line\ncommit176 subject line\ncommit177 subject line\ncommit178 subject line\ncommit179 subject line\ncommit180 subject line\ncommit181 subject line\ncommit182 subject line\ncommit183 subject line\ncommit184 subject line\ncommit185 subject line\ncommit186 subject line\ncommit187 subject line\ncommit188 subject line\ncommit189 subject line\ncommit190 subject line\ncommit191 subject line\ncommit192 subject line\ncommit193 subject line\ncommit194 subject line\ncommit195 subject line\ncommit196 subject line\ncommit197 subject line\ncommit198 subject line\ncommit199 subject line\ncommit200 subject line\ncommit201 subject line\ncommit202 subject line\ncommit203 subject line\ncommit204 subject line\ncommit205 subject line\ncommit206 subject line\ncommit207 subject line\ncommit208 subject line\ncommit209 subject line\ncommit210 subject line\ncommit211 subject line\ncommit212 subject line\ncommit213 subject line\ncommit214 subject line\ncommit215 subject line\ncommit216 subject line\ncommit217 subject line\ncommit218 subject line\ncommit219 subject line\ncommit220 subject line\ncommit221 subject line\ncommit222 subject line\ncommit223 subject line\ncommit224 subject line\ncommit225 subject line\ncommit226 subject line\ncommit227 subject line\ncommit228 subject line\ncommit229 subject line\ncommit230 subject line\ncommit231 subject line\ncommit232 subject line\ncommit233 subject line\ncommit234 subject line\ncommit235 subject line\ncommit236 subject line\ncommit237 subject line\ncommit238 subject line\ncommit239 subject line\ncommit240 subject line\ncommit241 subject line\ncommit242 subject line\ncommit243 subject line\ncommit244 subject line\ncommit245 subject line\ncommit246 subject line\ncommit247 subject line\ncommit248 subject line\ncommit249 subject line\ncommit250 subject line\ncommit251 subject line\ncommit252 subject line\ncommit253 subject line\ncommit254 subject line\ncommit255 subject line\ncommit256 subject line\ncommit257 subject line\ncommit258 subject line\ncommit259 subject line\ncommit260 subject line\ncommit261 subject line\ncommit262 subject line\ncommit263 subject line\ncommit264 subject line\ncommit265 subject line\ncommit266 subject line\ncommit267 subject line\ncommit268 subject line\ncommit269 subject line\ncommit270 subject line\ncommit271 subject line\ncommit272 subject line\ncommit273 subject line\ncommit274 subject line\ncommit275 subject line\ncommit276 subject line\ncommit277 subject line\ncommit278 subject line\ncommit279 subject line\ncommit280 subject line\ncommit281 subject line\ncommit282 subject line\ncommit283 subject line\ncommit284 subject line\ncommit285 subject line\ncommit286 subject line\ncommit287 subject line\ncommit288 subject line\ncommit289 subject line\ncommit290 subject line\ncommit291 subject line\ncommit292 subject line\ncommit293 subject line\ncommit294 subject line\ncommit295 subject line\ncommit296 subject line\ncommit297 subject line\ncommit298 subject line\ncommit299 subject line\ncommit300 subject line\ncommit301 subject line\ncommit302 subject line\ncommit303 subject line\ncommit304 subject line\ncommit305 subject line\ncommit306 subject line\ncommit307 subject line\ncommit308 subject line\ncommit309 subject line\ncommit310 subject line\ncommit311 subject line\ncommit312 subject line\ncommit313 subject line\ncommit314 subject line\ncommit315 subject line\ncommit316 subject line\ncommit317 subject line\ncommit318 subject line\ncommit319 subject line\ncommit320 subject line\ncommit321 subject line\ncommit322 subject line\ncommit323 subject line\ncommit324 subject line\ncommit325 subject line\ncommit326 subject line\ncommit327 subject line\ncommit328 subject line\ncommit329 subject line\ncommit330 subject line\ncommit331 subject line\ncommit332 subject line\ncommit333 subject line\ncommit334 subject line\ncommit335 subject line\ncommit336 subject line\ncommit337 subject line\ncommit338 subject line\ncommit339 subject line\ncommit340 subject line\ncommit341 subject line\ncommit342 subject line\ncommit343 subject line\ncommit344 subject line\ncommit345 subject line\ncommit346 subject line\ncommit347 subject line\ncommit348 subject line\ncommit349 subject line\ncommit350 subject line\ncommit351 subject line\ncommit352 subject line\ncommit353 subject line\ncommit354 subject line\ncommit355 subject line\ncommit356 subject line\ncommit357 subject line\ncommit358 subject line\ncommit359 subject line\ncommit360 subject line\ncommit361 subject line\ncommit362 subject line\ncommit363 subject line\ncommit364 subject line\ncommit365 subject line\ncommit366 subject line\ncommit367 subject line\ncommit368 subject line\ncommit369 subject line\ncommit370 subject line\ncommit371 subject line\ncommit372 subject line\ncommit373 subject line\ncommit374 subject line\ncommit375 subject line\ncommit376 subject line\ncommit377 subject line\ncommit378 subject line\ncommit379 subject line\ncommit380 subject line\ncommit381 subject line\ncommit382 subject line\ncommit383 subject line\ncommit384 subject line\ncommit385 subject line\ncommit386 subject line\ncommit387 subject line\ncommit388 subject line\ncommit389 subject line\ncommit390 subject line\ncommit391 subject line\ncommit392 subject line\ncommit393 subject line\ncommit394 subject line\ncommit395 subject line\ncommit396 subject line\ncommit397 subject line\ncommit398 subject line\ncommit399 subject line",
+        "stat": " src/file0.py | 10 ++++++ \n src/file1.py | 10 ++++++ \n src/file2.py | 10 ++++++ \n src/file3.py | 10 ++++++ \n src/file4.py | 10 ++++++ \n src/file5.py | 10 ++++++ \n src/file6.py | 10 ++++++ \n src/file7.py | 10 ++++++ \n src/file8.py | 10 ++++++ \n src/file9.py | 10 ++++++ \n src/file10.py | 10 ++++++ \n src/file11.py | 10 ++++++ \n src/file12.py | 10 ++++++ \n src/file13.py | 10 ++++++ \n src/file14.py | 10 ++++++ \n src/file15.py | 10 ++++++ \n src/file16.py | 10 ++++++ \n src/file17.py | 10 ++++++ \n src/file18.py | 10 ++++++ \n src/file19.py | 10 ++++++ \n src/file20.py | 10 ++++++ \n src/file21.py | 10 ++++++ \n src/file22.py | 10 ++++++ \n src/file23.py | 10 ++++++ \n src/file24.py | 10 ++++++ \n src/file25.py | 10 ++++++ \n src/file26.py | 10 ++++++ \n src/file27.py | 10 ++++++ \n src/file28.py | 10 ++++++ \n src/file29.py | 10 ++++++ \n src/file30.py | 10 ++++++ \n src/file31.py | 10 ++++++ \n src/file32.py | 10 ++++++ \n src/file33.py | 10 ++++++ \n src/file34.py | 10 ++++++ \n src/file35.py | 10 ++++++ \n src/file36.py | 10 ++++++ \n src/file37.py | 10 ++++++ \n src/file38.py | 10 ++++++ \n src/file39.py | 10 ++++++ \n src/file40.py | 10 ++++++ \n src/file41.py | 10 ++++++ \n src/file42.py | 10 ++++++ \n src/file43.py | 10 ++++++ \n src/file44.py | 10 ++++++ \n src/file45.py | 10 ++++++ \n src/file46.py | 10 ++++++ \n src/file47.py | 10 ++++++ \n src/file48.py | 10 ++++++ \n src/file49.py | 10 ++++++ \n src/file50.py | 10 ++++++ \n src/file51.py | 10 ++++++ \n src/file52.py | 10 ++++++ \n src/file53.py | 10 ++++++ \n src/file54.py | 10 ++++++ \n src/file55.py | 10 ++++++ \n src/file56.py | 10 ++++++ \n src/file57.py | 10 ++++++ \n src/file58.py | 10 ++++++ \n src/file59.py | 10 ++++++ \n src/file60.py | 10 ++++++ \n src/file61.py | 10 ++++++ \n src/file62.py | 10 ++++++ \n src/file63.py | 10 ++++++ \n src/file64.py | 10 ++++++ \n src/file65.py | 10 ++++++ \n src/file66.py | 10 ++++++ \n src/file67.py | 10 ++++++ \n src/file68.py | 10 ++++++ \n src/file69.py | 10 ++++++ \n src/file70.py | 10 ++++++ \n src/file71.py | 10 ++++++ \n src/file72.py | 10 ++++++ \n src/file73.py | 10 ++++++ \n src/file74.py | 10 ++++++ \n src/file75.py | 10 ++++++ \n src/file76.py | 10 ++++++ \n src/file77.py | 10 ++++++ \n src/file78.py | 10 ++++++ \n src/file79.py | 10 ++++++ \n src/file80.py | 10 ++++++ \n src/file81.py | 10 ++++++ \n src/file82.py | 10 ++++++ \n src/file83.py | 10 ++++++ \n src/file84.py | 10 ++++++ \n src/file85.py | 10 ++++++ \n src/file86.py | 10 ++++++ \n src/file87.py | 10 ++++++ \n src/file88.py | 10 ++++++ \n src/file89.py | 10 ++++++ \n src/file90.py | 10 ++++++ \n src/file91.py | 10 ++++++ \n src/file92.py | 10 ++++++ \n src/file93.py | 10 ++++++ \n src/file94.py | 10 ++++++ \n src/file95.py | 10 ++++++ \n src/file96.py | 10 ++++++ \n src/file97.py | 10 ++++++ \n src/file98.py | 10 ++++++ \n src/file99.py | 10 ++++++ \n src/file100.py | 10 ++++++ \n src/file101.py | 10 ++++++ \n src/file102.py | 10 ++++++ \n src/file103.py | 10 ++++++ \n src/file104.py | 10 ++++++ \n src/file105.py | 10 ++++++ \n src/file106.py | 10 ++++++ \n src/file107.py | 10 ++++++ \n src/file108.py | 10 ++++++ \n src/file109.py | 10 ++++++ \n src/file110.py | 10 ++++++ \n src/file111.py | 10 ++++++ \n src/file112.py | 10 ++++++ \n src/file113.py | 10 ++++++ \n src/file114.py | 10 ++++++ \n src/file115.py | 10 ++++++ \n src/file116.py | 10 ++++++ \n src/file117.py | 10 ++++++ \n src/file118.py | 10 ++++++ \n src/file119.py | 10 ++++++ \n src/file120.py | 10 ++++++ \n src/file121.py | 10 ++++++ \n src/file122.py | 10 ++++++ \n src/file123.py | 10 ++++++ \n src/file124.py | 10 ++++++ \n src/file125.py | 10 ++++++ \n src/file126.py | 10 ++++++ \n src/file127.py | 10 ++++++ \n src/file128.py | 10 ++++++ \n src/file129.py | 10 ++++++ \n src/file130.py | 10 ++++++ \n src/file131.py | 10 ++++++ \n src/file132.py | 10 ++++++ \n src/file133.py | 10 ++++++ \n src/file134.py | 10 ++++++ \n src/file135.py | 10 ++++++ \n src/file136.py | 10 ++++++ \n src/file137.py | 10 ++++++ \n src/file138.py | 10 ++++++ \n src/file139.py | 10 ++++++ \n src/file140.py | 10 ++++++ \n src/file141.py | 10 ++++++ \n src/file142.py | 10 ++++++ \n src/file143.py | 10 ++++++ \n src/file144.py | 10 ++++++ \n src/file145.py | 10 ++++++ \n src/file146.py | 10 ++++++ \n src/file147.py | 10 ++++++ \n src/file148.py | 10 ++++++ \n src/file149.py | 10 ++++++ \n src/file150.py | 10 ++++++ \n src/file151.py | 10 ++++++ \n src/file152.py | 10 ++++++ \n src/file153.py | 10 ++++++ \n src/file154.py | 10 ++++++ \n src/file155.py | 10 ++++++ \n src/file156.py | 10 ++++++ \n src/file157.py | 10 ++++++ \n src/file158.py | 10 ++++++ \n src/file159.py | 10 ++++++ \n src/file160.py | 10 ++++++ \n src/file161.py | 10 ++++++ \n src/file162.py | 10 ++++++ \n src/file163.py | 10 ++++++ \n src/file164.py | 10 ++++++ \n src/file165.py | 10 ++++++ \n src/file166.py | 10 ++++++ \n src/file167.py | 10 ++++++ \n src/file168.py | 10 ++++++ \n src/file169.py | 10 ++++++ \n src/file170.py | 10 ++++++ \n src/file171.py | 10 ++++++ \n src/file172.py | 10 ++++++ \n src/file173.py | 10 ++++++ \n src/file174.py | 10 ++++++ \n src/file175.py | 10 ++++++ \n src/file176.py | 10 ++++++ \n src/file177.py | 10 ++++++ \n src/file178.py | 10 ++++++ \n src/file179.py | 10 ++++++ \n src/file180.py | 10 ++++++ \n src/file181.py | 10 ++++++ \n src/file182.py | 10 ++++++ \n src/file183.py | 10 ++++++ \n src/file184.py | 10 ++++++ \n src/file185.py | 10 ++++++ \n src/file186.py | 10 ++++++ \n src/file187.py | 10 ++++++ \n src/file188.py | 10 ++++++ \n src/file189.py | 10 ++++++ \n src/file190.py | 10 ++++++ \n src/file191.py | 10 ++++++ \n src/file192.py | 10 ++++++ \n src/file193.py | 10 ++++++ \n src/file194.py | 10 ++++++ \n src/file195.py | 10 ++++++ \n src/file196.py | 10 ++++++ \n src/file197.py | 10 ++++++ \n src/file198.py | 10 ++++++ \n src/file199.py | 10 ++++++ \n src/file200.py | 10 ++++++ \n src/file201.py | 10 ++++++ \n src/file202.py | 10 ++++++ \n src/file203.py | 10 ++++++ \n src/file204.py | 10 ++++++ \n src/file205.py | 10 ++++++ \n src/file206.py | 10 ++++++ \n src/file207.py | 10 ++++++ \n src/file208.py | 10 ++++++ \n src/file209.py | 10 ++++++ \n src/file210.py | 10 ++++++ \n src/file211.py | 10 ++++++ \n src/file212.py | 10 ++++++ \n src/file213.py | 10 ++++++ \n src/file214.py | 10 ++++++ \n src/file215.py | 10 ++++++ \n src/file216.py | 10 ++++++ \n src/file217.py | 10 ++++++ \n src/file218.py | 10 ++++++ \n src/file219.py | 10 ++++++ \n src/file220.py | 10 ++++++ \n src/file221.py | 10 ++++++ \n src/file222.py | 10 ++++++ \n src/file223.py | 10 ++++++ \n src/file224.py | 10 ++++++ \n src/file225.py | 10 ++++++ \n src/file226.py | 10 ++++++ \n src/file227.py | 10 ++++++ \n src/file228.py | 10 ++++++ \n src/file229.py | 10 ++++++ \n src/file230.py | 10 ++++++ \n src/file231.py | 10 ++++++ \n src/file232.py | 10 ++++++ \n src/file233.py | 10 ++++++ \n src/file234.py | 10 ++++++ \n src/file235.py | 10 ++++++ \n src/file236.py | 10 ++++++ \n src/file237.py | 10 ++++++ \n src/file238.py | 10 ++++++ \n src/file239.py | 10 ++++++ \n src/file240.py | 10 ++++++ \n src/file241.py | 10 ++++++ \n src/file242.py | 10 ++++++ \n src/file243.py | 10 ++++++ \n src/file244.py | 10 ++++++ \n src/file245.py | 10 ++++++ \n src/file246.py | 10 ++++++ \n src/file247.py | 10 ++++++ \n src/file248.py | 10 ++++++ \n src/file249.py | 10 ++++++ \n src/file250.py | 10 ++++++ \n src/file251.py | 10 ++++++ \n src/file252.py | 10 ++++++ \n src/file253.py | 10 ++++++ \n src/file254.py | 10 ++++++ \n src/file255.py | 10 ++++++ \n src/file256.py | 10 ++++++ \n src/file257.py | 10 ++++++ \n src/file258.py | 10 ++++++ \n src/file259.py | 10 ++++++ \n src/file260.py | 10 ++++++ \n src/file261.py | 10 ++++++ \n src/file262.py | 10 ++++++ \n src/file263.py | 10 ++++++ \n src/file264.py | 10 ++++++ \n src/file265.py | 10 ++++++ \n src/file266.py | 10 ++++++ \n src/file267.py | 10 ++++++ \n src/file268.py | 10 ++++++ \n src/file269.py | 10 ++++++ \n src/file270.py | 10 ++++++ \n src/file271.py | 10 ++++++ \n src/file272.py | 10 ++++++ \n src/file273.py | 10 ++++++ \n src/file274.py | 10 ++++++ \n src/file275.py | 10 ++++++ \n src/file276.py | 10 ++++++ \n src/file277.py | 10 ++++++ \n src/file278.py | 10 ++++++ \n src/file279.py | 10 ++++++ \n src/file280.py | 10 ++++++ \n src/file281.py | 10 ++++++ \n src/file282.py | 10 ++++++ \n src/file283.py | 10 ++++++ \n src/file284.py | 10 ++++++ \n src/file285.py | 10 ++++++ \n src/file286.py | 10 ++++++ \n src/file287.py | 10 ++++++ \n src/file288.py | 10 ++++++ \n src/file289.py | 10 ++++++ \n src/file290.py | 10 ++++++ \n src/file291.py | 10 ++++++ \n src/file292.py | 10 ++++++ \n src/file293.py | 10 ++++++ \n src/file294.py | 10 ++++++ \n src/file295.py | 10 ++++++ \n src/file296.py | 10 ++++++ \n src/file297.py | 10 ++++++ \n src/file298.py | 10 ++++++ \n src/file299.py | 10 ++++++ \n src/file300.py | 10 ++++++ \n src/file301.py | 10 ++++++ \n src/file302.py | 10 ++++++ \n src/file303.py | 10 ++++++ \n src/file304.py | 10 ++++++ \n src/file305.py | 10 ++++++ \n src/file306.py | 10 ++++++ \n src/file307.py | 10 ++++++ \n src/file308.py | 10 ++++++ \n src/file309.py | 10 ++++++ \n src/file310.py | 10 ++++++ \n src/file311.py | 10 ++++++ \n src/file312.py | 10 ++++++ \n src/file313.py | 10 ++++++ \n src/file314.py | 10 ++++++ \n src/file315.py | 10 ++++++ \n src/file316.py | 10 ++++++ \n src/file317.py | 10 ++++++ \n src/file318.py | 10 ++++++ \n src/file319.py | 10 ++++++ \n src/file320.py | 10 ++++++ \n src/file321.py | 10 ++++++ \n src/file322.py | 10 ++++++ \n src/file323.py | 10 ++++++ \n src/file324.py | 10 ++++++ \n src/file325.py | 10 ++++++ \n src/file326.py | 10 ++++++ \n src/file327.py | 10 ++++++ \n src/file328.py | 10 ++++++ \n src/file329.py | 10 ++++++ \n src/file330.py | 10 ++++++ \n src/file331.py | 10 ++++++ \n src/file332.py | 10 ++++++ \n src/file333.py | 10 ++++++ \n src/file334.py | 10 ++++++ \n src/file335.py | 10 ++++++ \n src/file336.py | 10 ++++++ \n src/file337.py | 10 ++++++ \n src/file338.py | 10 ++++++ \n src/file339.py | 10 ++++++ \n src/file340.py | 10 ++++++ \n src/file341.py | 10 ++++++ \n src/file342.py | 10 ++++++ \n src/file343.py | 10 ++++++ \n src/file344.py | 10 ++++++ \n src/file345.py | 10 ++++++ \n src/file346.py | 10 ++++++ \n src/file347.py | 10 ++++++ \n src/file348.py | 10 ++++++ \n src/file349.py | 10 ++++++ \n src/file350.py | 10 ++++++ \n src/file351.py | 10 ++++++ \n src/file352.py | 10 ++++++ \n src/file353.py | 10 ++++++ \n src/file354.py | 10 ++++++ \n src/file355.py | 10 ++++++ \n src/file356.py | 10 ++++++ \n src/file357.py | 10 ++++++ \n src/file358.py | 10 ++++++ \n src/file359.py | 10 ++++++ \n src/file360.py | 10 ++++++ \n src/file361.py | 10 ++++++ \n src/file362.py | 10 ++++++ \n src/file363.py | 10 ++++++ \n src/file364.py | 10 ++++++ \n src/file365.py | 10 ++++++ \n src/file366.py | 10 ++++++ \n src/file367.py | 10 ++++++ \n src/file368.py | 10 ++++++ \n src/file369.py | 10 ++++++ \n src/file370.py | 10 ++++++ \n src/file371.py | 10 ++++++ \n src/file372.py | 10 ++++++ \n src/file373.py | 10 ++++++ \n src/file374.py | 10 ++++++ \n src/file375.py | 10 ++++++ \n src/file376.py | 10 ++++++ \n src/file377.py | 10 ++++++ \n src/file378.py | 10 ++++++ \n src/file379.py | 10 ++++++ \n src/file380.py | 10 ++++++ \n src/file381.py | 10 ++++++ \n src/file382.py | 10 ++++++ \n src/file383.py | 10 ++++++ \n src/file384.py | 10 ++++++ \n src/file385.py | 10 ++++++ \n src/file386.py | 10 ++++++ \n src/file387.py | 10 ++++++ \n src/file388.py | 10 ++++++ \n src/file389.py | 10 ++++++ \n src/file390.py | 10 ++++++ \n src/file391.py | 10 ++++++ \n src/file392.py | 10 ++++++ \n src/file393.py | 10 ++++++ \n src/file394.py | 10 ++++++ \n src/file395.py | 10 ++++++ \n src/file396.py | 10 ++++++ \n src/file397.py | 10 ++++++ \n src/file398.py | 10 ++++++ \n src/file399.py | 10 ++++++ "
+      },
+      "expect": "[System note: The Hermes gateway build changed since the previous turns of this conversation: they ran build a1b2c3d4, this process runs build e5f60718. Commits between the two builds:\ncommit0 subject line\ncommit1 subject line\ncommit2 subject line\ncommit3 subject line\ncommit4 subject line\ncommit5 subject line\ncommit6 subject line\ncommit7 subject line\ncommit8 subject line\ncommit9 subject line\ncommit10 subject line\ncommit11 subject line\ncommit12 subject line\ncommit13 subject line\ncommit14 subject line\ncommit15 subject line\ncommit16 subject line\ncommit17 subject line\ncommit18 subject line\ncommit19 subject line\ncommit20 subject line\ncommit21 subject line\ncommit22 subject line\ncommit23 subject line\ncommit24 subject line\ncommit25 subject line\ncommit26 subject line\ncommit27 subject line\ncommit28 subject line\ncommit29 subject line\ncommit30 subject line\ncommit31 subject line\ncommit32 subject line\ncommit33 subject line\ncommit34 subject line\ncommit35 subject line\ncommit36 subject line\ncommit37 subject line\ncommit38 subject line\ncommit39 subject line\ncommit40 subject line\ncommit41 subject line\ncommit42 subject line\ncommit43 subject line\ncommit44 subject line\ncommit45 subject line\ncommit46 subject line\ncommit47 subject line\ncommit48 subject line\ncommit49 subject line\ncommit50 subject line\ncommit51 subject line\ncommit52 subject line\ncommit53 subject line\ncommit54 subject line\ncommit55 subject line\ncommit56 subject line\ncommit57 subject line\ncommit58 subject line\ncommit59 subject line\ncommit60 subject line\ncommit61 subject line\ncommit62 subject line\ncommit63 subject line\ncommit64 subject line\ncommit65 subject line\ncommit66 subject line\ncommit67 subject line\ncommit68 subject line\ncommit69 subject line\ncommit70 subject line\ncommit71 subject line\ncommit72 subject line\ncommit73 subject line\ncommit74 subject line\ncommit75 subject line\ncommit76 subject line\ncommit77 subject line\ncommit78 subject line\ncommit79 subject line\ncommit80 subject line\ncommit81 subject line\ncommit82 subject line\ncommit83 subject line\ncommit84 subject line\ncommit85 subject line\ncommit86 subject line\ncommit87 subject line\ncommit88 subject line\ncommit89 subject line\ncommit90 subject line\ncommit91 subject line\ncommit92 subject line\ncommit93 subject line\ncommit94 subject line\ncommit95 subject line\ncommit96 subject line\ncommit97 subject line\ncommit98 subject line\ncommit99 subject line\ncommit100 subject line\ncommit101 subject line\ncommit102 subject line\ncommit103 subject line\ncommit104 subject line\ncommit105 subject line\ncommit106 subject line\ncommit107 subject line\ncommit108 subject line\ncommit109 subject line\ncommit110 subject line\n[\u2026 truncated \u2014 the full diff is available via terminal \u2026]359.py | 10 ++++++ \n src/file360.py | 10 ++++++ \n src/file361.py | 10 ++++++ \n src/file362.py | 10 ++++++ \n src/file363.py | 10 ++++++ \n src/file364.py | 10 ++++++ \n src/file365.py | 10 ++++++ \n src/file366.py | 10 ++++++ \n src/file367.py | 10 ++++++ \n src/file368.py | 10 ++++++ \n src/file369.py | 10 ++++++ \n src/file370.py | 10 ++++++ \n src/file371.py | 10 ++++++ \n src/file372.py | 10 ++++++ \n src/file373.py | 10 ++++++ \n src/file374.py | 10 ++++++ \n src/file375.py | 10 ++++++ \n src/file376.py | 10 ++++++ \n src/file377.py | 10 ++++++ \n src/file378.py | 10 ++++++ \n src/file379.py | 10 ++++++ \n src/file380.py | 10 ++++++ \n src/file381.py | 10 ++++++ \n src/file382.py | 10 ++++++ \n src/file383.py | 10 ++++++ \n src/file384.py | 10 ++++++ \n src/file385.py | 10 ++++++ \n src/file386.py | 10 ++++++ \n src/file387.py | 10 ++++++ \n src/file388.py | 10 ++++++ \n src/file389.py | 10 ++++++ \n src/file390.py | 10 ++++++ \n src/file391.py | 10 ++++++ \n src/file392.py | 10 ++++++ \n src/file393.py | 10 ++++++ \n src/file394.py | 10 ++++++ \n src/file395.py | 10 ++++++ \n src/file396.py | 10 ++++++ \n src/file397.py | 10 ++++++ \n src/file398.py | 10 ++++++ \n src/file399.py | 10 ++++++ \nThe full diff is available via terminal (git diff a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4..e5f60718e5f60718e5f60718e5f60718e5f60718).]"
     }
   ]
 }

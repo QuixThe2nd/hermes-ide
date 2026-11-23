@@ -18,5 +18,6 @@ discord_home_server:
   modules:
     notifications: true # Category "Notifications": text channels model-fallback, gateway-restarts, other
     chat: true          # Category "Lounges": text channels inbox, outbox
+    memory: true        # Category "Memories": text channels explicit-facts, deductions, patterns, contradictions (renames legacy "Honcho Memory"/"Honcho Memories" in place)
     quotas: true        # Category "Models": voice channels Codex, Kimi, z.ai, Grok
     speeds: true        # Category "Speeds": voice channels qBittorrent, SABnzbd, slskd

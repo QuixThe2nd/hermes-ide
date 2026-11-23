@@ -38,6 +38,15 @@
 //	 "identify": {…} | null, "registry_rows": […]}
 //	  → prints the rewritten ack as JSON, with pid naming the process that
 //	    will actually restart.
+//
+//	{"op": "code_delta_decision", "stored": …, "code_sha": …}
+//	  → prints the delta verdict ("none" | "unprovable" | "delta") the
+//	    record's build-sha proof decides.
+//
+//	{"op": "code_delta_note", "stored": …, "code_sha": …, "git": "ok" |
+//	 "failed", "commits": …, "stat": …}
+//	  → prints the code-delta note ("" when nothing rides; a failed git
+//	    renders the could-not-compute form).
 package main
 
 import (
@@ -63,6 +72,13 @@ func main() {
 			snapshotFromIdentityRecord(request)))
 	case "record":
 		fmt.Println(recordVerdictFromRequest(request))
+	case "code_delta_decision":
+		fmt.Println(servingidentity.CodeDeltaDecision(
+			stringValue(request["stored"]), stringValue(request["code_sha"])))
+	case "code_delta_note":
+		fmt.Println(servingidentity.CodeDeltaNote(
+			stringValue(request["stored"]), stringValue(request["code_sha"]),
+			deltaRenderFromRequest(request)))
 	case "owner_guard":
 		fmt.Println(servingidentity.OwnerAction(
 			intValue(request["serving_pid"]),
@@ -135,7 +151,7 @@ func snapshotFromIdentityRecord(request map[string]any) servingidentity.Snapshot
 
 // recordVerdictFromRequest renders the write-on-change verdict ("write" |
 // "skip") for a session's served-by record: an invalid session id or a
-// stored record already matching this process means no write.
+// stored record already matching this process and note means no write.
 func recordVerdictFromRequest(request map[string]any) string {
 	sessionID := stringValue(request["session_id"])
 	if !servingidentity.ValidSessionID(sessionID) {
@@ -143,10 +159,24 @@ func recordVerdictFromRequest(request map[string]any) string {
 	}
 	current := snapshotFromRecord(request["record"])
 	stored := stringValue(request["stored"])
-	if servingidentity.RecordWriteNeeded(stored, current) {
+	if servingidentity.RecordWriteNeeded(stored, current, stringValue(request["note"])) {
 		return "write"
 	}
 	return "skip"
+}
+
+// deltaRenderFromRequest builds the fixed DeltaRender a code_delta_note
+// request describes: "git": "failed" yields nil (the honest git-failure
+// form); otherwise the request's commits/stat render as a successful git
+// read — exactly what the Python contract test's renderer hands the twin.
+func deltaRenderFromRequest(request map[string]any) servingidentity.DeltaRender {
+	if stringValue(request["git"]) == "failed" {
+		return nil
+	}
+	commits, stat := stringValue(request["commits"]), stringValue(request["stat"])
+	return func(string, string) (string, string, bool) {
+		return commits, stat, true
+	}
 }
 
 // identifyFromRecord maps a table identify answer {pid, overlap{...}}

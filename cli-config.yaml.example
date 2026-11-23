@@ -1092,10 +1092,10 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum tool-calling iterations per conversation (default: 256)
+  # Maximum tool-calling iterations per conversation (default: 512)
   # Higher = more room for complex tasks, but costs more tokens
   # Use "none"/"unlimited"/0/-1 for no limit
-  max_turns: 256
+  max_turns: 512
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving

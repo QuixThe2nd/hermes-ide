@@ -272,16 +272,20 @@ def serving_transition_note(
 def serving_turn_notes(
     runner: Any,
     previous: Optional[Mapping[str, Any]] = None,
-) -> tuple[str, Optional[str]]:
-    """``(identity note, transition note | None)`` for this turn.
+) -> tuple[Optional[str], Optional[str]]:
+    """``(identity note | None, transition note | None)`` for this turn.
 
     The transition note renders only when the caller's persisted
     last-served identity (``gateway.serving_transition``) provably names a
-    different process; both notes ride the existing one-shot channels
-    (turn notes + continuation sidecar).
+    different process; the identity note is suppressed when that record
+    proves the session already saw this exact note (first turns, records
+    without note proof, and any wording change still ride).
     """
+    runtime = serving_runtime_note(runner)
+    if isinstance(previous, Mapping) and previous.get("note") == runtime:
+        runtime = None  # this conversation already saw this exact note
     return (
-        serving_runtime_note(runner),
+        runtime,
         serving_transition_note(previous, serving_identity_snapshot(runner)),
     )
 

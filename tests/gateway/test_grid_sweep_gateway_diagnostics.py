@@ -37,7 +37,7 @@ def _bg_runner():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", MODES)
-async def test_background_task_failure_notice_honors_policy(tmp_path, monkeypatch, setting):
+async def test_background_task_failure_notice_bypasses_policy(tmp_path, monkeypatch, setting):
     _configure(tmp_path, monkeypatch, setting)
     runner = _bg_runner()
     from gateway.platforms.base import BasePlatformAdapter
@@ -53,13 +53,12 @@ async def test_background_task_failure_notice_honors_policy(tmp_path, monkeypatc
          patch.object(runner, "_resolve_session_agent_runtime", side_effect=RuntimeError("BG_REAL_CRASH")):
         await runner._run_background_task("do the thing", source, "bg_test")
 
-    if setting is True:
-        adapter.send.assert_not_called()
-    else:
-        adapter.send.assert_called_once()
-        args, kwargs = adapter.send.call_args
-        content = kwargs.get("content") or (args[1] if len(args) > 1 else "")
-        assert "failed before finishing" in content
+    # #569 resolved the diverged _run_background_task_inner pair facade-wins: the failure
+    # notice is a plain adapter.send, deliberately NOT gated by suppress_warning_notifications.
+    adapter.send.assert_called_once()
+    args, kwargs = adapter.send.call_args
+    content = kwargs.get("content") or (args[1] if len(args) > 1 else "")
+    assert "❌ Background task bg_test failed: BG_REAL_CRASH" in content
 
 
 @pytest.mark.asyncio

@@ -14,8 +14,8 @@ from plugins.home_server.core import (
     template_fingerprint,
 )
 
-# 4 categories + 2 chat + 3 notifications + 4 model voices + 3 speeds.
-FIRST_RUN_CREATES = 4 + 2 + 3 + 4 + 3
+# 5 categories + 2 chat + 4 memory + 3 notifications + 4 model voices + 3 speeds.
+FIRST_RUN_CREATES = 5 + 2 + 4 + 3 + 4 + 3
 
 
 def test_first_run_creates_the_whole_template(hermes, guild, make_discord):
@@ -97,8 +97,9 @@ def test_fresh_provision_seats_notifications_at_the_top(hermes, make_discord, st
     }
     assert positions["notifications"] == 0
     assert positions["chat"] == 1
-    assert positions["quotas"] == 2
-    assert positions["speeds"] == 3
+    assert positions["memory"] == 2
+    assert positions["quotas"] == 3
+    assert positions["speeds"] == 4
 
     # Channels inside a category follow ChannelSpec order.
     notifications = state()["channels"]["notifications"]
@@ -869,3 +870,137 @@ def test_legacy_chat_is_left_alone_when_lounges_already_exists(
     assert report["renamed"] == []
     assert state()["categories"]["chat"] == "6301"
     assert discord.channels["6399"]["name"] == "Chat"
+
+
+def test_memory_module_template_and_fingerprint(monkeypatch):
+    """The memory module is seated between chat and quotas, carries both
+    Honcho legacy names, and the fingerprint covers them."""
+    import plugins.home_server.core as core
+
+    assert MODULE_KEYS == ("notifications", "chat", "memory", "quotas", "speeds")
+    assert list(TEMPLATE) == list(MODULE_KEYS)
+
+    spec = TEMPLATE["memory"]
+    assert spec.category == "Memories"
+    assert [c.name for c in spec.channels] == [
+        "explicit-facts",
+        "deductions",
+        "patterns",
+        "contradictions",
+    ]
+    assert all(c.kind == 0 for c in spec.channels)
+    assert set(spec.legacy_categories) == {"Honcho Memory", "Honcho Memories"}
+
+    full = template_fingerprint()
+    # Dropping the module changes the fingerprint...
+    monkeypatch.setattr(
+        core, "TEMPLATE", {k: v for k, v in TEMPLATE.items() if k != "memory"}
+    )
+    assert template_fingerprint() != full
+    # ...and so does dropping ONLY the legacy names, proving they are hashed.
+    monkeypatch.setattr(
+        core,
+        "TEMPLATE",
+        {
+            **TEMPLATE,
+            "memory": core.ModuleSpec(
+                **{**spec.__dict__, "legacy_categories": ()}
+            ),
+        },
+    )
+    assert template_fingerprint() != full
+
+
+def _seed_honcho_guild(discord, legacy_name, category_id):
+    """A pre-migration guild: one legacy Honcho category holding all four
+    memory channels."""
+    discord.add_channel(id=category_id, name=legacy_name, type=4)
+    legacy = {}
+    for i, name in enumerate(("explicit-facts", "deductions", "patterns", "contradictions")):
+        cid = str(category_id + 100 + i)
+        legacy[name] = cid
+        discord.add_channel(id=cid, name=name, type=0, parent_id=category_id)
+    return legacy
+
+
+def test_legacy_honcho_memories_category_is_renamed_in_place(
+    hermes, make_discord, state
+):
+    """A pre-migration guild: the Honcho Memories category is PATCHed to
+    Memories, the four child IDs survive, and nothing is created or deleted
+    for the memory module."""
+    discord = make_discord()
+    legacy = _seed_honcho_guild(discord, "Honcho Memories", 5501)
+
+    report = reconcile(http_fn=discord)
+
+    assert "category:Honcho Memories->Memories" in report["renamed"]
+    assert "category:Memories" not in report["created"]
+    # Same Discord ID, new name — one in-place PATCH, no second category.
+    assert discord.channels["5501"]["name"] == "Memories"
+    assert discord.count("PATCH", "/channels/5501") == 1
+    assert state()["categories"]["memory"] == "5501"
+    memories_categories = [
+        c["name"]
+        for c in discord.channels.values()
+        if c["type"] == 4 and "Honcho" in c["name"]
+    ]
+    assert memories_categories == []
+    # The four legacy children are reused: IDs and parent intact, zero creates.
+    for name, cid in legacy.items():
+        assert state()["channels"]["memory"][name] == cid
+        assert str(discord.channels[cid]["parent_id"]) == "5501"
+        assert f"channel:{name}" not in report["created"]
+    # Reconcile never deletes: the only verbs the transport saw are POST/PATCH.
+    assert {verb for verb, _ in discord.mutations} <= {"POST", "PATCH"}
+
+    # Idempotent: a second reconcile renames nothing and creates nothing.
+    mutations = len(discord.mutations)
+    second = reconcile(http_fn=discord)
+    assert second["created"] == []
+    assert second["renamed"] == []
+    assert second["adopted"] == []
+    assert len(discord.mutations) == mutations
+    assert state()["categories"]["memory"] == "5501"
+    for name, cid in legacy.items():
+        assert state()["channels"]["memory"][name] == cid
+
+
+def test_legacy_honcho_memory_singular_category_is_renamed_in_place(
+    hermes, make_discord, state
+):
+    """The singular legacy spelling migrates the same way."""
+    discord = make_discord()
+    _seed_honcho_guild(discord, "Honcho Memory", 5601)
+
+    report = reconcile(http_fn=discord)
+
+    assert "category:Honcho Memory->Memories" in report["renamed"]
+    assert discord.channels["5601"]["name"] == "Memories"
+    assert discord.count("PATCH", "/channels/5601") == 1
+    assert state()["categories"]["memory"] == "5601"
+
+
+def test_memory_module_is_created_fresh_without_a_legacy_category(
+    hermes, make_discord, state
+):
+    """No legacy category: reconcile mints Memories plus its four channels
+    and deletes nothing."""
+    discord = make_discord()
+
+    report = reconcile(http_fn=discord)
+
+    assert "category:Memories" in report["created"]
+    for name in ("explicit-facts", "deductions", "patterns", "contradictions"):
+        assert f"channel:{name}" in report["created"]
+    memory_cat = state()["categories"]["memory"]
+    assert discord.channels[memory_cat]["name"] == "Memories"
+    children = [
+        c["name"]
+        for c in discord.channels.values()
+        if str(c["parent_id"]) == memory_cat
+    ]
+    assert sorted(children) == sorted(
+        ["explicit-facts", "deductions", "patterns", "contradictions"]
+    )
+    assert {verb for verb, _ in discord.mutations} <= {"POST", "PATCH"}
