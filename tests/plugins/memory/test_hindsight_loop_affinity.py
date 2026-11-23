@@ -402,16 +402,24 @@ def test_first_use_on_writer_thread_stays_on_owning_loop(tmp_path, monkeypatch, 
 
 
 class _LoopBoundEmbeddedClient:
-    """HindsightEmbedded stand-in: a sync wrapper around an inner async client.
+    """hindsight_client.Hindsight stand-in: a sync wrapper around an inner
+    async API client, built and released on the owning loop.
 
-    The real wrapper delegates the async data plane to ``self._client`` and
-    ships only a sync ``close()`` of its own, which is why the provider has to
-    release the inner client on the owning loop before calling ``close()``.
+    The real SDK client delegates the async data plane to ``self._client``
+    and exposes BOTH ``aclose()`` (async twin the provider must use — it
+    releases the inner session on the owning loop) and a sync ``close()``
+    that would run the inner close on a fresh caller-thread loop (the
+    "attached to a different loop" failure mode). The provider's release
+    contract is therefore: ``aclose()`` on the owning loop, never the sync
+    ``close()``.
     """
 
     def __init__(self, inner):
         self._client = inner
         self.close_calls = []
+
+    async def aclose(self):
+        await self._client.aclose()
 
     def __getattr__(self, name):
         # arecall / aretain_batch / directives / ... live on the inner client.
@@ -463,11 +471,14 @@ def _stale_embedded_provider(tmp_path, monkeypatch):
 def test_stale_daemon_retry_closes_displaced_client_on_owning_loop(
     tmp_path, monkeypatch, caplog
 ):
-    """The client a retry displaces is closed on the shared loop, not leaked.
+    """The client a retry displaces is released on the shared loop, not leaked.
 
     Production symptom: the retry blanked ``self._client`` and dropped the
     stale SDK client without closing it, so its aiohttp session survived until
     interpreter teardown — and shutdown() then closed only the replacement.
+    Release goes through ``aclose()`` on the owning loop; the sync ``close()``
+    must never be used (the real client's sync close would re-run the inner
+    close on a fresh caller-thread loop).
     """
     caplog.set_level(logging.DEBUG, logger="plugins.memory.hindsight")
     provider, stale, stale_inner = _stale_embedded_provider(tmp_path, monkeypatch)
@@ -483,10 +494,11 @@ def test_stale_daemon_retry_closes_displaced_client_on_owning_loop(
     assert result == {"result": "1. memory one\n2. memory two"}
     assert provider._client is replacement
     # The displaced inner client was released ON the owning loop — the same
-    # loop its session was created on.
+    # loop its session was created on — via aclose(); the sync close() is
+    # never part of the release path.
     assert stale_inner._session.closed is True
     assert stale_inner._session.closed_thread == "hindsight-loop"
-    assert len(stale.close_calls) == 1
+    assert stale.close_calls == []
     # The retry was served by the replacement, on that same loop.
     assert replacement_inner._session.loop is hindsight_mod._loop
     assert {t for t, _m, _p in replacement_inner._session.requests} == {"hindsight-loop"}
@@ -496,7 +508,7 @@ def test_stale_daemon_retry_closes_displaced_client_on_owning_loop(
     assert provider._client is None
     assert replacement_inner._session.closed is True
     assert replacement_inner._session.closed_thread == "hindsight-loop"
-    assert len(replacement.close_calls) == 1
+    assert replacement.close_calls == []
     assert "Unclosed client session" not in caplog.text
 
 
