@@ -1786,18 +1786,16 @@ class TurnRunner(_TurnRunnerCore):
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        # The serving-identity runtime note rides the same channel: during an overlap restart every
-        # externally visible pid (systemd MainPID, pid file, gateway_state.json) names the draining
-        # predecessor, so each turn must be able to trust which process is actually serving it.
-        # When the session's DURABLE last-served record names a different process, a transition
-        # note rides beside it: persisted conversation/task context carried over (not a new task),
-        # process-local state (terminals, background processes, kernels, caches, pids) did not and
-        # must be revalidated.
+        # The serving-identity runtime note rides the same channel — suppressed when the session's
+        # durable served-by record proves it was already seen, riding whenever the serving process
+        # or its wording changes. When that record names a different process, a transition note
+        # rides beside it: persisted context carried over (not a new task); process-local state
+        # (terminals, background processes, kernels, caches, pids) did not and must be revalidated.
         from gateway.serving_transition import session_turn_notes
         from gateway.context_injection_labels import join_turn_notes, tag_turn_note
 
         turn_notes = list(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
-        runtime_note, transition_note = session_turn_notes(
+        runtime_note, transition_note, pending_served_note = session_turn_notes(
             getattr(runner, "session_store", None),
             getattr(ctx, "session_id", None), runner)
         if runtime_note:
@@ -1813,6 +1811,12 @@ class TurnRunner(_TurnRunnerCore):
         agent._gateway_turn_context_notes, agent._gateway_turn_note_kinds = (
             join_turn_notes(turn_notes)
         )
+        # The staged note is not proof of delivery: the durable note proof
+        # advances only when the note's api_content sidecar stamp lands
+        # (agent.turn_context._persist_turn_user_api_content acks it), so a
+        # turn that crashes before the stamp re-emits the note next turn.
+        # Assigned unconditionally so a reused agent never confirms a stale note.
+        agent._gateway_serving_note_pending = pending_served_note
         # A transparent continuation defers the notes channel above, but a
         # restart just moved the conversation to a new process mid-turn —
         # stage the runtime notes on their own one-shot channel so the

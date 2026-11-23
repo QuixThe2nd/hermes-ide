@@ -8,7 +8,7 @@ import (
 
 // MetaKeyPrefix is the session-meta key namespace for the durable
 // served-by record (gateway/serving_transition.py): one
-// "served_by:<session_id>" key per session holding {"pid","start_time"}.
+// "served_by:<session_id>" key per session holding {"pid","start_time","note"}.
 const MetaKeyPrefix = "served_by:"
 
 // MetaKey renders the session-meta key for a session's served-by record.
@@ -23,36 +23,59 @@ func ValidSessionID(sessionID string) bool {
 	return strings.TrimSpace(sessionID) != ""
 }
 
-// servedByRecord is the persisted wire shape {"pid","start_time"} — the pid
-// alone is not identity (PIDs get reused), so the start fingerprint is part
-// of the record.
+// servedByRecord is the persisted wire shape {"pid","start_time","note"} —
+// the pid alone is not identity (PIDs get reused), so the start fingerprint
+// is part of the record; the note is the exact runtime note the session
+// last saw, the durable proof that suppresses an unchanged repeat.
 type servedByRecord struct {
-	PID       int   `json:"pid"`
-	StartTime int64 `json:"start_time"`
+	PID       int    `json:"pid"`
+	StartTime int64  `json:"start_time"`
+	Note      string `json:"note,omitempty"`
 }
 
-// ParseRecord decodes a stored served-by record. False for absent, corrupt,
-// or non-dict records: the absence of a provable predecessor is "no
-// transition", never an error.
-func ParseRecord(raw string) (Snapshot, bool) {
+// parseStoredRecord decodes a stored served-by record in full. False for
+// absent, corrupt, or non-positive-pid records: the absence of a provable
+// predecessor is "no transition", never an error.
+func parseStoredRecord(raw string) (servedByRecord, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return Snapshot{}, false
+		return servedByRecord{}, false
 	}
 	var record servedByRecord
 	if err := json.Unmarshal([]byte(raw), &record); err != nil {
-		return Snapshot{}, false
+		return servedByRecord{}, false
 	}
 	if record.PID <= 0 {
+		return servedByRecord{}, false
+	}
+	return record, true
+}
+
+// ParseRecord decodes a stored served-by record's process identity.
+func ParseRecord(raw string) (Snapshot, bool) {
+	record, ok := parseStoredRecord(raw)
+	if !ok {
 		return Snapshot{}, false
 	}
 	return Snapshot{PID: record.PID, StartTime: record.StartTime}, true
 }
 
-// EncodeRecord renders the durable record for THIS process (never carries a
-// build sha — records fingerprint process identity, not code identity).
-func EncodeRecord(s Snapshot) string {
-	encoded, err := json.Marshal(servedByRecord{PID: s.PID, StartTime: s.StartTime})
+// StoredNote extracts the note-proof field of a stored served-by record
+// ("" when absent or corrupt): the exact runtime note the session already
+// saw, which suppresses an unchanged repeat.
+func StoredNote(raw string) string {
+	record, ok := parseStoredRecord(raw)
+	if !ok {
+		return ""
+	}
+	return record.Note
+}
+
+// EncodeRecord renders the durable record for THIS process plus the note
+// the session just saw (never carries a build sha — records fingerprint
+// process identity, not code identity).
+func EncodeRecord(s Snapshot, note string) string {
+	encoded, err := json.Marshal(servedByRecord{PID: s.PID, StartTime: s.StartTime, Note: note})
 	if err != nil {
 		return "{}"
 	}
@@ -61,16 +84,18 @@ func EncodeRecord(s Snapshot) string {
 
 // RecordWriteNeeded is the pure write-on-change predicate for the served-by
 // record: false only when the stored record parses and already carries
-// exactly this pid + start fingerprint (an ordinary same-process turn is one
-// cheap point read, not a write). Corrupt or absent records are writes — the
-// durable predecessor must be learnable. Byte-parity with
+// exactly this pid + start fingerprint + note (an ordinary same-process turn
+// whose note wording did not change is one cheap point read, not a write).
+// Corrupt or absent records are writes — the durable predecessor must be
+// learnable. Byte-parity with
 // gateway.serving_transition._record_write_needed via the shared table.
-func RecordWriteNeeded(storedRaw string, current Snapshot) bool {
-	stored, ok := ParseRecord(storedRaw)
+func RecordWriteNeeded(storedRaw string, current Snapshot, note string) bool {
+	stored, ok := parseStoredRecord(storedRaw)
 	if !ok {
 		return true
 	}
-	return stored.PID != current.PID || stored.StartTime != current.StartTime
+	return stored.PID != current.PID || stored.StartTime != current.StartTime ||
+		stored.Note != note
 }
 
 // RegistryRow is one live row of the hub's generation registry (the
@@ -286,20 +311,26 @@ func AckRewrite(ack map[string]any, servingPID int, id *Identify, rows []Registr
 	return rewritten
 }
 
-// ApplyServedBy is the decision twin of
+// StageServedBy is the decision twin of
 // gateway.serving_transition.session_turn_notes: read the session's
-// served-by record, render the turn notes against THIS process, then
-// record this process on change only. Persistence is injected (get/set),
-// so the orchestration is testable without a database; a nil set or a
-// failing store degrades to "notes still render, nothing claimed".
-// Read-before-write ordering matters: the transition note must describe
-// the state BEFORE this turn's record lands.
-func ApplyServedBy(
+// served-by record, render the turn notes against THIS process (the note
+// gate above applies), then record this process on change only — with the
+// STORED note proof, NOT the new one. The proof is acknowledgement-gated:
+// it advances only via ConfirmServedNote once the note's api_content
+// sidecar stamp lands (agent.turn_context._persist_turn_user_api_content),
+// so a turn that crashes before the stamp re-emits the note instead of
+// suppressing it forever. Read-before-write ordering matters: the notes
+// must describe the state BEFORE this turn's record lands. Persistence is
+// injected (get/set), so the orchestration is testable without a database;
+// a nil set or a failing store degrades to "notes still render, nothing
+// claimed". Returns the notes and the pending note the stamp ack must
+// confirm ("" when nothing is pending).
+func StageServedBy(
 	sessionID string,
 	s Snapshot,
 	get func(string) string,
 	set func(string, string) error,
-) []string {
+) ([]string, string) {
 	if get == nil {
 		get = func(string) string { return "" }
 	}
@@ -308,11 +339,46 @@ func ApplyServedBy(
 		stored = get(MetaKey(sessionID))
 	}
 	notes := TurnNotes(s, stored)
-	if ValidSessionID(sessionID) && set != nil && RecordWriteNeeded(stored, s) {
+	// The note the stamp ack must confirm: the one just emitted, or — on a
+	// suppressed repeat — the stored proof it matched (a no-op confirm).
+	pending := StoredNote(stored)
+	if note := RuntimeNote(s); note != pending {
+		pending = note
+	}
+	if ValidSessionID(sessionID) && set != nil && RecordWriteNeeded(stored, s, StoredNote(stored)) {
 		// Write failures never break the turn: the identity note already
 		// rendered and no transition is claimed from a record we could not
 		// re-establish.
-		_ = set(MetaKey(sessionID), EncodeRecord(s))
+		_ = set(MetaKey(sessionID), EncodeRecord(s, StoredNote(stored)))
 	}
-	return notes
+	return notes, pending
+}
+
+// ConfirmServedNote is the ack half of the note gate, the decision twin of
+// gateway.serving_transition.confirm_served_note: advance the durable note
+// proof once the note's api_content sidecar stamp landed. Write-on-change,
+// keyed on the session's own record: an absent/corrupt record (the stage
+// write could not be established) or an already-current proof is a silent
+// no-op, and a nil/failing store degrades to false — never an error.
+func ConfirmServedNote(
+	sessionID, note string,
+	get func(string) string,
+	set func(string, string) error,
+) bool {
+	if !ValidSessionID(sessionID) || note == "" || get == nil || set == nil {
+		return false
+	}
+	var record servedByRecord
+	if err := json.Unmarshal([]byte(strings.TrimSpace(get(MetaKey(sessionID)))), &record); err != nil {
+		return false
+	}
+	if record.Note == note {
+		return false
+	}
+	if err := set(MetaKey(sessionID), EncodeRecord(Snapshot{
+		PID: record.PID, StartTime: record.StartTime,
+	}, note)); err != nil {
+		return false
+	}
+	return true
 }

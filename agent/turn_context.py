@@ -916,6 +916,27 @@ def _stamp_api_content_sidecar(
     )
 
 
+def _confirm_gateway_serving_note(agent: Any, db: Any) -> None:
+    """Ack the staged serving-identity note: its sidecar stamp just landed durably.
+
+    The gateway stages the per-turn serving note but deliberately does NOT
+    advance the session's durable note proof at stage time — only this stamp
+    proves the conversation received the note. Confirming here (never at
+    stage) means a turn that crashes before the stamp re-emits the note on
+    the next turn. One-shot: the pending identity is consumed by its ack.
+    """
+    pending = getattr(agent, "_gateway_serving_note_pending", None)
+    if not isinstance(pending, str) or not pending:
+        return
+    with suppress(Exception):
+        setattr(agent, "_gateway_serving_note_pending", None)
+    try:
+        from gateway.serving_transition import confirm_served_note
+        confirm_served_note(db, getattr(agent, "session_id", None), pending)
+    except Exception:
+        logger.debug("serving note confirm skipped", exc_info=True)
+
+
 def _persist_turn_user_api_content(
     agent: Any, row: Dict[str, Any], durable_content: Any, api_content: str,
     *, preflight_compressed: bool,
@@ -949,6 +970,9 @@ def _persist_turn_user_api_content(
                 # Compacted copies carry no row id; positional is safe only because
                 # archive_and_compact just made this message the newest active user row.
                 _db.set_latest_user_api_content(agent.session_id, durable_content, api_content)
+            # The stamp landed: the staged serving note is now provably
+            # delivered, so its durable proof may advance.
+            _confirm_gateway_serving_note(agent, _db)
         except Exception:
             logger.warning("api_content backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 

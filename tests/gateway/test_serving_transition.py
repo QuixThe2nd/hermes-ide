@@ -119,7 +119,7 @@ def test_first_turn_records_identity_and_claims_no_transition(tmp_path):
     from gateway.serving_transition import session_turn_notes
 
     db = _db(tmp_path)
-    identity, transition = session_turn_notes(db, "sess-1", _runner())
+    identity, transition, _pending = session_turn_notes(db, "sess-1", _runner())
     assert identity.startswith("[System note: This turn is served by")
     assert transition is None
     record = json.loads(db.get_meta("served_by:sess-1"))
@@ -132,7 +132,7 @@ def test_same_process_next_turn_claims_no_transition(tmp_path):
 
     db = _db(tmp_path)
     session_turn_notes(db, "sess-1", _runner())
-    _, transition = session_turn_notes(db, "sess-1", _runner())
+    _, transition, _ = session_turn_notes(db, "sess-1", _runner())
     assert transition is None
 
 
@@ -146,7 +146,7 @@ def test_new_process_names_transition_and_updates_record(tmp_path, monkeypatch):
     # The conversation was previously served by a different process.
     db.set_meta("served_by:sess-1",
                 json.dumps({"pid": _OLD_PID, "start_time": _OLD_START}))
-    identity, transition = session_turn_notes(db, "sess-1", _runner())
+    identity, transition, _pending = session_turn_notes(db, "sess-1", _runner())
     assert transition is not None
     assert f"pid {_OLD_PID}" in transition
     assert f"pid {_NEW_PID}" in transition
@@ -160,7 +160,7 @@ def test_uncomparable_previous_record_claims_nothing(tmp_path, monkeypatch):
     # Same pid as this process, but no start fingerprint: equality is
     # unprovable (the pid may have been recycled), so claim nothing.
     db.set_meta("served_by:sess-1", json.dumps({"pid": _NEW_PID}))
-    _, transition = session_turn_notes(db, "sess-1", _runner())
+    _, transition, _ = session_turn_notes(db, "sess-1", _runner())
     assert transition is None
 
 
@@ -169,7 +169,7 @@ def test_corrupt_record_is_ignored_and_rewritten(tmp_path):
 
     db = _db(tmp_path)
     db.set_meta("served_by:sess-1", "not-json{")
-    _, transition = session_turn_notes(db, "sess-1", _runner())
+    _, transition, _ = session_turn_notes(db, "sess-1", _runner())
     assert transition is None
     assert json.loads(db.get_meta("served_by:sess-1"))["pid"] > 0
 
@@ -181,7 +181,7 @@ def test_persistence_failure_never_breaks_the_turn(tmp_path):
         def _db_for_session_id(self, session_id):
             raise RuntimeError("db unavailable")
 
-    identity, transition = session_turn_notes(_ExplodingStore(), "sess-1", _runner())
+    identity, transition, _pending = session_turn_notes(_ExplodingStore(), "sess-1", _runner())
     assert identity.startswith("[System note:")
     assert transition is None
 
@@ -189,7 +189,7 @@ def test_persistence_failure_never_breaks_the_turn(tmp_path):
 def test_non_string_session_id_skips_persistence():
     from gateway.serving_transition import session_turn_notes
 
-    identity, transition = session_turn_notes(None, None, _runner())
+    identity, transition, _pending = session_turn_notes(None, None, _runner())
     assert identity.startswith("[System note:")
     assert transition is None
 
@@ -250,6 +250,138 @@ def test_wire_first_turn_has_identity_note_without_transition(tmp_path):
     assert "This turn is served by" in agent._gateway_turn_context_notes
     assert "moved to a new" not in agent._gateway_turn_context_notes
     assert "moved to a new" not in agent._gateway_continuation_note
+
+
+def test_wire_suppressed_note_absent_from_both_turn_note_channels(tmp_path):
+    from gateway.serving_transition import confirm_served_note
+
+    db = _db(tmp_path)
+    ctx = _seam_ctx("sess-w")
+    first = _wire(_runner(session_store=db), ctx)
+    assert "This turn is served by" in first._gateway_turn_context_notes
+    assert "This turn is served by" in first._gateway_continuation_note
+    # The note's sidecar stamp landed durably (modelled here by the ack the
+    # stamp performs): the proof advances, and only then does the redundant
+    # unchanged repeat drop off both the turn-note sidecar and the
+    # transparent-continuation channel.
+    confirm_served_note(db, "sess-w", first._gateway_serving_note_pending)
+    second = _wire(_runner(session_store=db), ctx)
+    assert "This turn is served by" not in (second._gateway_turn_context_notes or "")
+    assert "This turn is served by" not in (second._gateway_continuation_note or "")
+
+
+# ── the note proof is ack-gated at the sidecar stamp ───────────────────────
+
+
+def test_stage_leaves_note_proof_unwritten_until_stamp_ack(tmp_path):
+    """Regression: the stage step must NOT persist the note as seen.
+
+    A turn staged and then crashed before the api_content sidecar stamp used
+    to suppress the note forever — the conversation never learned which
+    process serves it. The durable proof now lands only with the stamp ack,
+    so an unacked turn re-emits the note on the next turn.
+    """
+    from gateway.serving_transition import confirm_served_note, session_turn_notes
+
+    db = _db(tmp_path)
+    identity, transition, pending = session_turn_notes(db, "sess-1", _runner())
+    assert identity is not None and transition is None
+    assert pending == identity
+    record = json.loads(db.get_meta("served_by:sess-1"))
+    # pid/start land at stage (the durable predecessor must be learnable)…
+    assert isinstance(record["pid"], int)
+    # …but the note proof does not: the note has not been delivered yet.
+    assert record.get("note") != identity
+    # A crashed turn (no stamp, no ack) re-emits the note next turn.
+    again, _, pending_again = session_turn_notes(db, "sess-1", _runner())
+    assert again == identity
+    # The stamp ack lands: the proof advances and the repeat suppresses.
+    assert confirm_served_note(db, "sess-1", pending_again) is True
+    assert json.loads(db.get_meta("served_by:sess-1"))["note"] == identity
+    settled, _, _ = session_turn_notes(db, "sess-1", _runner())
+    assert settled is None
+
+
+def test_wire_unacked_turn_re_emits_note(tmp_path):
+    """Two staged turns with no stamp ack between them both carry the note."""
+    db = _db(tmp_path)
+    ctx = _seam_ctx("sess-w")
+    first = _wire(_runner(session_store=db), ctx)
+    assert "This turn is served by" in first._gateway_turn_context_notes
+    second = _wire(_runner(session_store=db), ctx)
+    assert "This turn is served by" in second._gateway_turn_context_notes
+    assert "This turn is served by" in second._gateway_continuation_note
+
+
+def test_confirm_served_note_boundaries(tmp_path):
+    """The ack is write-on-change, keyed per session, and never raises."""
+    from gateway.serving_transition import confirm_served_note
+
+    db = _db(tmp_path)
+    # No record to advance: no write, no error.
+    assert confirm_served_note(db, "sess-1", "note-x") is False
+    assert db.get_meta("served_by:sess-1") is None
+    # Corrupt record: unprovable, left for the stage step to re-establish.
+    db.set_meta("served_by:sess-1", "not-json{")
+    assert confirm_served_note(db, "sess-1", "note-x") is False
+    # A parseable record advances its note proof exactly once.
+    db.set_meta("served_by:sess-1", json.dumps({"pid": 1, "start_time": 2}))
+    assert confirm_served_note(db, "sess-1", "note-x") is True
+    assert json.loads(db.get_meta("served_by:sess-1")) == {
+        "pid": 1, "start_time": 2, "note": "note-x"}
+    assert confirm_served_note(db, "sess-1", "note-x") is False
+    # Session A's proof never silences session B.
+    assert json.loads(db.get_meta("served_by:sess-1"))["note"] == "note-x"
+    assert db.get_meta("served_by:sess-b") is None
+    # Invalid inputs are silent no-ops.
+    assert confirm_served_note(db, None, "note-x") is False
+    assert confirm_served_note(db, "sess-1", None) is False
+    assert confirm_served_note(None, "sess-1", "note-x") is False
+
+
+def test_persist_sidecar_stamp_confirms_pending_note(tmp_path):
+    """The production seam: the api_content sidecar stamp acks the note.
+
+    ``_persist_turn_user_api_content`` stamps BOTH the ordinary turn-note
+    sidecar and the transparent-continuation note; the stamp landing is the
+    acknowledgement that advances the durable note proof.
+    """
+    from agent.turn_context import _persist_turn_user_api_content
+
+    db = _db(tmp_path)
+    db.create_session("sess-1", source="cli")
+    db.append_message("sess-1", "user", content="hi")
+    row_id = db.get_messages("sess-1")[0]["id"]
+    note = "[System note: This turn is served by Hermes gateway pid 1.]"
+    db.set_meta("served_by:sess-1", json.dumps({"pid": 1, "start_time": 2}))
+    agent = SimpleNamespace(
+        session_id="sess-1", _session_db=db, _last_compaction_in_place=False,
+        _gateway_serving_note_pending=note)
+    row = {"role": "user", "content": "hi", "_row_id": row_id}
+    _persist_turn_user_api_content(
+        agent, row, "hi", f"hi\n\n{note}", preflight_compressed=False)
+    assert db.get_messages("sess-1")[0]["api_content"] == f"hi\n\n{note}"
+    assert json.loads(db.get_meta("served_by:sess-1"))["note"] == note
+    # One-shot: the pending note is consumed by its ack.
+    assert agent._gateway_serving_note_pending is None
+
+
+def test_persist_sidecar_without_stamp_leaves_proof_unwritten(tmp_path):
+    """A stamp that never lands (no addressable row) must NOT ack the note —
+    the next turn re-emits it."""
+    from agent.turn_context import _persist_turn_user_api_content
+
+    db = _db(tmp_path)
+    db.set_meta("served_by:sess-1", json.dumps({"pid": 1, "start_time": 2}))
+    note = "[System note: This turn is served by Hermes gateway pid 1.]"
+    agent = SimpleNamespace(
+        session_id="sess-1", _session_db=db, _last_compaction_in_place=False,
+        _gateway_serving_note_pending=note)
+    row = {"role": "user", "content": "hi"}  # no _row_id: nothing to stamp
+    _persist_turn_user_api_content(
+        agent, row, "hi", f"hi\n\n{note}", preflight_compressed=False)
+    assert json.loads(db.get_meta("served_by:sess-1")).get("note") is None
+    assert agent._gateway_serving_note_pending == note
 
 
 def test_wire_transition_after_handoff_on_both_channels(tmp_path, monkeypatch):

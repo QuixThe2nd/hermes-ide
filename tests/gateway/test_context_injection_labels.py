@@ -321,7 +321,7 @@ def _wire(consumed_notes, runtime_note="", transition_note=None):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "gateway.serving_transition.session_turn_notes",
-            lambda store, session_id, runner: (runtime_note, transition_note),
+            lambda store, session_id, runner: (runtime_note, transition_note, None),
         )
         TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
     return agent

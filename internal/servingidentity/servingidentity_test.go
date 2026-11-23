@@ -101,7 +101,8 @@ func TestRecordAndOwnerOpsMatchSharedTable(t *testing.T) {
 			current := snapshotFromRecord(input["record"])
 			got := "skip"
 			if ValidSessionID(tableString(input["session_id"])) &&
-				RecordWriteNeeded(tableString(input["stored"]), current) {
+				RecordWriteNeeded(tableString(input["stored"]), current,
+					tableString(input["note"])) {
 				got = "write"
 			}
 			if got != c.expectString() {
@@ -480,7 +481,7 @@ func TestMetaKeyAndSessionID(t *testing.T) {
 // writes so the durable predecessor stays learnable.
 func TestRecordRoundtripAndWriteDiscipline(t *testing.T) {
 	current := Snapshot{PID: 1531038, StartTime: 3005678}
-	encoded := EncodeRecord(current)
+	encoded := EncodeRecord(current, RuntimeNote(current))
 	parsed, ok := ParseRecord(encoded)
 	if !ok || parsed.PID != current.PID || parsed.StartTime != current.StartTime {
 		t.Fatalf("roundtrip: got %v ok=%v from %q", parsed, ok, encoded)
@@ -488,8 +489,14 @@ func TestRecordRoundtripAndWriteDiscipline(t *testing.T) {
 	if !strings.Contains(encoded, `"pid":1531038`) {
 		t.Errorf("record shape: %q", encoded)
 	}
-	if RecordWriteNeeded(encoded, current) {
+	if StoredNote(encoded) != RuntimeNote(current) {
+		t.Errorf("record must carry the note proof: %q", encoded)
+	}
+	if RecordWriteNeeded(encoded, current, RuntimeNote(current)) {
 		t.Error("matching stored record must be a skip")
+	}
+	if !RecordWriteNeeded(encoded, current, "new wording") {
+		t.Error("same fingerprint with a changed note wording must be a write")
 	}
 	for name, stored := range map[string]string{
 		"absent":        "",
@@ -498,7 +505,7 @@ func TestRecordRoundtripAndWriteDiscipline(t *testing.T) {
 		"different pid": `{"pid":709505,"start_time":3001234}`,
 		"reused pid":    `{"pid":1531038,"start_time":3019999}`,
 	} {
-		if !RecordWriteNeeded(stored, current) {
+		if !RecordWriteNeeded(stored, current, RuntimeNote(current)) {
 			t.Errorf("%s: must be a write", name)
 		}
 	}

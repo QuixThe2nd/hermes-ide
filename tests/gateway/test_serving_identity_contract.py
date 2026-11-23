@@ -101,7 +101,7 @@ def _python_render(case: dict):
             return "skip"
         return ("write" if _record_write_needed(
             request["stored"], request["record"]["pid"],
-            request["record"]["start_time"]) else "skip")
+            request["record"]["start_time"], request.get("note")) else "skip")
     if case["op"] == "owner_guard":
         from plugins.gateway_restart.tool import socket_owner_action
         request = case["input"]
@@ -124,10 +124,8 @@ def _python_render(case: dict):
         fields = {"pid": identity.get("pid"), "start_time": identity.get("start_time"),
                   "code_sha": identity.get("code_sha")}
         with patch.object(si, "_static_identity_fields", lambda: fields):
-            runtime = si.serving_runtime_note(None)
-            transition = si.serving_transition_note(
-                json.loads(request["stored"]) if request["stored"] else None,
-                identity) or ""
+            runtime, transition = si.serving_turn_notes(
+                None, json.loads(request["stored"]) if request["stored"] else None)
         return [note for note in (runtime, transition) if note]
     request = case["input"]
     identify = request.get("identify")
@@ -212,6 +210,12 @@ def test_shared_table_covers_the_honesty_contract():
         "record_same_process_skip",
         "record_process_change_write",
         "record_invalid_session_skip",
+        # CONTRACT CHANGE: the record durably remembers the exact note the
+        # session saw; an unchanged note is a skip, a wording change writes,
+        # and the turn composition suppresses the proven-seen note
+        "record_unchanged_note_skip",
+        "record_note_change_write",
+        "turn_notes_unchanged_note_suppressed",
         "owner_guard_legacy_predecessor_refuse",
         "owner_guard_unready_successor_refuse",
         "owner_guard_attested_chain",

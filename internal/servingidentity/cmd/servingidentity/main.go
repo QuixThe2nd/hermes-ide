@@ -135,7 +135,7 @@ func snapshotFromIdentityRecord(request map[string]any) servingidentity.Snapshot
 
 // recordVerdictFromRequest renders the write-on-change verdict ("write" |
 // "skip") for a session's served-by record: an invalid session id or a
-// stored record already matching this process means no write.
+// stored record already matching this process and note means no write.
 func recordVerdictFromRequest(request map[string]any) string {
 	sessionID := stringValue(request["session_id"])
 	if !servingidentity.ValidSessionID(sessionID) {
@@ -143,7 +143,7 @@ func recordVerdictFromRequest(request map[string]any) string {
 	}
 	current := snapshotFromRecord(request["record"])
 	stored := stringValue(request["stored"])
-	if servingidentity.RecordWriteNeeded(stored, current) {
+	if servingidentity.RecordWriteNeeded(stored, current, stringValue(request["note"])) {
 		return "write"
 	}
 	return "skip"
