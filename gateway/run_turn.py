@@ -8085,7 +8085,13 @@ class GatewayTurnMixin:
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")
-                if not was_interrupted:
+                # A muted diagnostic wake suppresses this turn's reply on the outermost frame
+                # (base.py's ``diagnostic_wake_muted`` final gate); the queued lane below sends
+                # the same response before the follow-up runs and must honor the same policy, or
+                # the suppressed reply leaks whenever a second message is pending (#818-class).
+                _muted_diagnostic_wake = diagnostic_turn_muted(
+                    persist_user_display_metadata, source.platform, user_config)
+                if not was_interrupted and not _muted_diagnostic_wake:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
                     # Skip if streaming already delivered it.
@@ -8150,6 +8156,10 @@ class GatewayTurnMixin:
                                 text_already_delivered=_already_streamed,
                                 deliver_media=not _delivery_result.get("failed"),
                                 stream_consumer=_sc,
+                                # The text send records a delivery-ledger obligation like the
+                                # normal final send, keyed on the raw inbound id (the
+                                # event_message_id anchor is only the reply target).
+                                session_key=session_key, inbound_message_id=inbound_message_id,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -8221,6 +8231,23 @@ class GatewayTurnMixin:
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
+                    # The follow-up turn inherits the pending event's routing/persistence
+                    # context (same as the superseded ``_run_agent_queued_followup`` lane):
+                    # the authored text for the transcript, the display kind, the diagnostic
+                    # category that mutes a suppressed wake's reply, and the raw inbound id
+                    # that keys the follow-up's own final-send ledger obligation.
+                    from gateway.run_inbound import strip_discord_triggering_note
+                    next_persist_message = strip_discord_triggering_note(pending_event, next_message)
+                    next_display_kind = display_kind_for_event(pending_event)
+                    next_display_metadata = diagnostic_metadata(pending_event) or None
+                    next_inbound_id = (
+                        str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
+                    )
+                else:
+                    next_persist_message = None
+                    next_display_kind = None
+                    next_display_metadata = None
+                    next_inbound_id = None
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -8261,8 +8288,12 @@ class GatewayTurnMixin:
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    inbound_message_id=next_inbound_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                    persist_user_message=next_persist_message,
+                    persist_user_display_kind=next_display_kind,
+                    persist_user_display_metadata=next_display_metadata,
                     turn_started_at=time.perf_counter(),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
