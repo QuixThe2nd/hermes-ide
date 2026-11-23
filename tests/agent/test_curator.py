@@ -1116,8 +1116,9 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
 
     surface = set(resolve_toolset("skills", include_registry=False))
 
-    # The ledgered write surface is present in full.
-    assert "skills_list" in surface
+    # The ledgered write surface is present in full. skills_list is a
+    # separate atomic toolset (default-off, see toolsets.py) and is not part
+    # of the curator fork's "skills" surface.
     assert "skill_view" in surface
     assert "skill_manage" in surface
 
