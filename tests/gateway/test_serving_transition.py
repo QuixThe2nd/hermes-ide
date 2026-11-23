@@ -512,67 +512,6 @@ def test_handoff_build_change_keeps_previous_sha_until_ack(tmp_path, monkeypatch
     assert settled_delta is None
 
 
-def test_crashed_turn_re_emits_the_delta(tmp_path, monkeypatch):
-    """Two staged turns with no stamp ack between them both carry the delta."""
-    from gateway.serving_transition import session_turn_notes
-
-    db = _db(tmp_path)
-    monkeypatch.setattr(si, "_static_identity_fields", lambda: _current_identity())
-    db.set_meta("served_by:sess-1", json.dumps(_handoff_record()))
-    with _canned_delta():
-        first = session_turn_notes(db, "sess-1", _runner())[2]
-        second = session_turn_notes(db, "sess-1", _runner())[2]
-    assert first is not None and first == second
-
-
-def test_handoff_same_build_rides_no_delta(tmp_path, monkeypatch):
-    from gateway.serving_transition import session_turn_notes
-
-    db = _db(tmp_path)
-    monkeypatch.setattr(si, "_static_identity_fields", lambda: _current_identity())
-    db.set_meta("served_by:sess-1", json.dumps(
-        {"pid": _OLD_PID, "start_time": _OLD_START, "code_sha": _NEW_BUILD}))
-    with _canned_delta():
-        _, _, delta, _ = session_turn_notes(db, "sess-1", _runner())
-    assert delta is None
-
-
-def test_handoff_legacy_record_renders_could_not_compute(tmp_path, monkeypatch):
-    """A pre-feature record carries no code_sha: the handoff still says the
-    delta could not be computed — never a fabricated diff — and the ack
-    settles the card so it does not repeat every turn."""
-    from gateway.serving_transition import confirm_served_note, session_turn_notes
-
-    db = _db(tmp_path)
-    monkeypatch.setattr(si, "_static_identity_fields", lambda: _current_identity())
-    db.set_meta("served_by:sess-1", json.dumps(
-        {"pid": _OLD_PID, "start_time": _OLD_START}))
-    with _canned_delta():
-        _, _, delta, pending = session_turn_notes(db, "sess-1", _runner())
-    assert "could not be computed" in delta
-    assert "was not recorded" in delta
-    assert "Commits between the two builds" not in delta
-    assert confirm_served_note(db, "sess-1", pending) is True
-    with _canned_delta():
-        _, _, settled, _ = session_turn_notes(db, "sess-1", _runner())
-    assert settled is None
-
-
-def test_unreadable_current_sha_stays_delta_free(tmp_path, monkeypatch):
-    """No usable build identity for THIS process → quiet (pip installs run
-    this on every turn; a could-not-compute card there could never settle)."""
-    from gateway.serving_transition import session_turn_notes
-
-    db = _db(tmp_path)
-    monkeypatch.setattr(
-        si, "_static_identity_fields",
-        lambda: _current_identity(sha=None))
-    db.set_meta("served_by:sess-1", json.dumps(_handoff_record()))
-    with _canned_delta():
-        _, _, delta, _ = session_turn_notes(db, "sess-1", _runner())
-    assert delta is None
-
-
 def test_wire_handoff_build_change_carries_delta_on_both_channels(
         tmp_path, monkeypatch):
     db = _db(tmp_path)

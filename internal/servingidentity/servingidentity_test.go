@@ -313,8 +313,6 @@ func stateFromTable(input map[string]any) *StateFile {
 	}
 }
 
-
-
 func probeFromTable(input map[string]any) SuccessorIdentity {
 	v := tableString(input["successor_identity"])
 	if v == "" {
@@ -608,4 +606,3 @@ func TestOwnerActionMatrix(t *testing.T) {
 		}
 	}
 }
-

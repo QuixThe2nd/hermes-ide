@@ -1134,6 +1134,15 @@
       "expect": "none"
     },
     {
+      "name": "code_delta_non_dict_record_none",
+      "op": "code_delta_decision",
+      "input": {
+        "stored": "42",
+        "code_sha": "e5f60718e5f60718e5f60718e5f60718e5f60718"
+      },
+      "expect": "none"
+    },
+    {
       "name": "code_delta_same_build_none",
       "op": "code_delta_decision",
       "input": {

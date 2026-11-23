@@ -269,6 +269,7 @@ def test_shared_table_covers_the_honesty_contract():
         # settle a could-not-compute card)
         "code_delta_no_previous_record_none",
         "code_delta_corrupt_record_none",
+        "code_delta_non_dict_record_none",
         "code_delta_same_build_none",
         "code_delta_changed_build_delta",
         "code_delta_legacy_record_unprovable",
