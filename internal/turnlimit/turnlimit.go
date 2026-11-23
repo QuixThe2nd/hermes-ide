@@ -1,6 +1,8 @@
 // Package turnlimit is the Go twin of the agent turn-budget normalization
 // contract in hermes_cli/config.py (resolve_turn_limit) and
-// hermes_cli/config_defaults.py (DEFAULT_MAX_TURNS = 512). Every
+// hermes_cli/config_defaults.py (DEFAULT_MAX_TURNS = 512; raised from
+// 256 in PR #890, 2026-11 — doc references still saying 256 were
+// corrected in PR #894). Every
 // config-reading site (cli.py, gateway/run.py, cron/scheduler.py) funnels
 // agent.max_turns through the single Python resolver instead of a bare
 // int(...), so the spellings below mean the same thing everywhere.
@@ -32,6 +34,8 @@
 //   - Magnitudes that exceed int64 (Python: arbitrary-precision ints, e.g.
 //     "10**30") saturate at the Unlimited sentinel: no Go int can express
 //     them, and a loop bounded by such a cap is behaviorally unbounded.
+//   - History: the default was 256 until PR #890 (2026-11) raised it to
+//     512; any doc or comment still citing 256 is stale.
 //   - The result is always ≥ 1 given a sane default, so loop conditions
 //     like `while api_call_count < agent.max_iterations` behave correctly
 //     even on the default path.
