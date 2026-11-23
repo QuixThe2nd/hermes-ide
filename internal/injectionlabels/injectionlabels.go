@@ -49,6 +49,10 @@ const GenericLabel = "🧠 Injecting context"
 // heading rather than a table label. Mirrors KIND_MEMORY.
 const KindMemory = "memory"
 
+// SpilloverContinuationLabel distinguishes later chunks of one persisted-output
+// card from a separate card. Mirrors CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL.
+const SpilloverContinuationLabel = "📄 Large tool result saved to disk (continued)"
+
 // KindLabels maps a known injection kind to its heading line. Mirrors
 // CONTEXT_INJECTION_KIND_LABELS; a kind absent from the table renders
 // GenericLabel. The kinds split by surface:
@@ -78,7 +82,7 @@ var KindLabels = map[string]string{
 	"compaction":     "🗜️ Injecting conversation summary",
 	"steer":          "🧭 Injecting steering update",
 	"subdirectory":   "🗂️ Injecting directory context",
-	"spillover":      "📦 Injecting persisted output",
+	"spillover":      "📦 Large tool result saved to disk",
 }
 
 // MemoryHeading renders the memory heading. A positive recalledCount is
@@ -104,6 +108,16 @@ func FormatHeading(label, detail string) string {
 		return label
 	}
 	return label + " (" + detail + ")"
+}
+
+// ContinuationHeading labels later chunks of a lone spillover card without
+// making them look like separate injections. Metadata details belong to the
+// primary heading; every other kind shape retains its existing heading.
+func ContinuationHeading(kinds []string, meta map[string]string, defaultHeading string) string {
+	if len(kinds) == 1 && kinds[0] == "spillover" {
+		return SpilloverContinuationLabel
+	}
+	return defaultHeading
 }
 
 // HeadingLines renders the ordered heading lines for an injection payload's

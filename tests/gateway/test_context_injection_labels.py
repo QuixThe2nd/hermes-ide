@@ -150,6 +150,32 @@ def test_multiline_headings_respect_tiny_caps():
     assert all(len(message) <= 50 for message in messages)
 
 
+_SPILLOVER_LABEL = "📦 Large tool result saved to disk"
+_SPILLOVER_CONTINUATION = "📄 Large tool result saved to disk (continued)"
+
+
+def test_long_spillover_card_preserves_content_and_labels_continuations():
+    content = "<persisted-output>spill-1.txt</persisted-output>\n" + "output line\n" * 30
+    messages = _fmt(
+        content=content, injected_chars=len(content), sources=["tool"],
+        kinds=["spillover"], message_limit=180,
+    )
+    assert len(messages) > 2
+    assert messages[0].startswith(f"{_SPILLOVER_LABEL}\n```\n")
+    assert all(m.startswith(f"{_SPILLOVER_CONTINUATION}\n```\n") for m in messages[1:])
+    displayed = "".join(
+        m.split("\n```\n", 1)[1].removesuffix("\n```") for m in messages
+    )
+    assert displayed == content
+
+
+def test_no_content_and_non_spillover_cards_keep_expected_headings():
+    assert _fmt(sources=["tool"], kinds=["spillover"], include_content=False) == [_SPILLOVER_LABEL]
+    messages = _fmt(content="x" * 400, kinds=["restart"], message_limit=160)
+    assert len(messages) > 1
+    assert all(m.startswith("🔁 Injecting restart notice\n") for m in messages)
+
+
 # ---------------------------------------------------------------------------
 # Runner seam (TurnRunner._progress_context_injection)
 # ---------------------------------------------------------------------------
@@ -223,6 +249,28 @@ def test_runner_keeps_generic_heading_for_legacy_payload():
         {"content": "some note", "injected_chars": 9, "sources": ["gateway"]},
     )
     assert _drain(progress_queue) == ["🧠 Injecting context"]
+
+
+def test_runner_labels_each_spillover_event_as_a_new_card():
+    from gateway.run_turn_runner import TurnRunner
+
+    class _SmallAdapter(_Adapter):
+        MAX_MESSAGE_LENGTH = 180
+
+    class _Stub:
+        def _delivery_adapter_for(self, source):
+            return _SmallAdapter()
+
+    ctx, progress_queue = _queue_ctx()
+    runner = TurnRunner(_Stub(), ctx)
+    for content in ("first spillover\n" + "output line\n" * 30, "second spillover"):
+        payload = {"content": content, "injected_chars": len(content),
+                   "sources": ["tool"], "kinds": ["spillover"]}
+        runner.progress_callback("context.injected", "context", None, payload)
+    messages = _drain(progress_queue)
+    assert sum(m.startswith(f"{_SPILLOVER_LABEL}\n") for m in messages) == 2
+    assert any(m.startswith(f"{_SPILLOVER_CONTINUATION}\n") for m in messages)
+    assert messages[-1].startswith(f"{_SPILLOVER_LABEL}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +436,11 @@ def _python_twin(section, case):
         context_injection_heading_lines,
     )
 
+    if section == "continuation_cases":
+        messages = _fmt(content="x" * 400, kinds=case.get("kinds"),
+                        meta=case.get("meta"), message_limit=160)
+        assert _header(messages) == case["default"]
+        return _header(messages[1:])
     if section == "cases":
         return context_injection_heading_lines(
             case.get("kinds"), memory_sourced=case.get("memory_sourced", False),
@@ -423,6 +476,11 @@ _CONTRACT_SECTIONS = {
                    "memory_sourced": c.get("memory_sourced", False),
                    "recalled_count": c.get("recalled_count"), "meta": c.get("meta")},
         lambda c: c["expect_lines"],
+    ),
+    "continuation_cases": (
+        lambda c: {"op": "continuation", "kinds": c.get("kinds"),
+                   "meta": c.get("meta"), "default": c["default"]},
+        lambda c: c["expect"],
     ),
     "classifier_cases": (
         lambda c: {"op": "classify", "text": c["text"]},

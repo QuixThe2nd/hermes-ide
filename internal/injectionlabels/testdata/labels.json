@@ -14,8 +14,9 @@
     "compaction": "🗜️ Injecting conversation summary",
     "steer": "🧭 Injecting steering update",
     "subdirectory": "🗂️ Injecting directory context",
-    "spillover": "📦 Injecting persisted output"
+    "spillover": "📦 Large tool result saved to disk"
   },
+  "spillover_continuation_label": "📄 Large tool result saved to disk (continued)",
   "memory": {
     "plain": "🧠 Injecting memory",
     "one": "🧠 Injecting 1 memory",
@@ -303,8 +304,40 @@
         "spillover"
       ],
       "expect_lines": [
-        "📦 Injecting persisted output"
+        "📦 Large tool result saved to disk"
       ]
+    }
+  ],
+  "continuation_cases": [
+    {
+      "name": "spillover_uses_continuation",
+      "kinds": ["spillover"],
+      "default": "📦 Large tool result saved to disk",
+      "expect": "📄 Large tool result saved to disk (continued)"
+    },
+    {
+      "name": "spillover_meta_still_uses_continuation",
+      "kinds": ["spillover"],
+      "meta": {"spillover": "result.txt"},
+      "default": "📦 Large tool result saved to disk (result.txt)",
+      "expect": "📄 Large tool result saved to disk (continued)"
+    },
+    {
+      "name": "other_kind_keeps_default",
+      "kinds": ["restart"],
+      "default": "🔁 Injecting restart notice",
+      "expect": "🔁 Injecting restart notice"
+    },
+    {
+      "name": "mixed_kinds_keep_combined_default",
+      "kinds": ["spillover", "restart"],
+      "default": "📦 Large tool result saved to disk\n🔁 Injecting restart notice",
+      "expect": "📦 Large tool result saved to disk\n🔁 Injecting restart notice"
+    },
+    {
+      "name": "legacy_keeps_generic_default",
+      "default": "🧠 Injecting context",
+      "expect": "🧠 Injecting context"
     }
   ],
   "classifier_cases": [

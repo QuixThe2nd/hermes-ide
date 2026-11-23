@@ -14,9 +14,10 @@ import (
 
 // sharedTable mirrors testdata/labels.json.
 type sharedTable struct {
-	GenericLabel string            `json:"generic_label"`
-	KindLabels   map[string]string `json:"kind_labels"`
-	Memory       struct {
+	GenericLabel               string            `json:"generic_label"`
+	KindLabels                 map[string]string `json:"kind_labels"`
+	SpilloverContinuationLabel string            `json:"spillover_continuation_label"`
+	Memory                     struct {
 		Plain string `json:"plain"`
 		One   string `json:"one"`
 		Many  string `json:"many"`
@@ -26,14 +27,15 @@ type sharedTable struct {
 		EphemeralRow   string            `json:"ephemeral_row"`
 		ToolSchemasRow string            `json:"tool_schemas_row"`
 	} `json:"section_row_labels"`
-	Cases            []sharedCase      `json:"cases"`
-	ClassifierCases  []classifierCase  `json:"classifier_cases"`
-	SessionCardCases []sessionCardCase `json:"session_card_cases"`
-	EventCardCases   []eventCardCase   `json:"event_card_cases"`
-	CompactionCases  []compactionCase  `json:"compaction_cases"`
-	SpilloverCases   []spilloverCase   `json:"spillover_cases"`
-	SummaryPrefixes  []string          `json:"summary_prefixes"`
-	PersistedTag     string            `json:"persisted_output_tag"`
+	Cases             []sharedCase       `json:"cases"`
+	ClassifierCases   []classifierCase   `json:"classifier_cases"`
+	SessionCardCases  []sessionCardCase  `json:"session_card_cases"`
+	EventCardCases    []eventCardCase    `json:"event_card_cases"`
+	CompactionCases   []compactionCase   `json:"compaction_cases"`
+	SpilloverCases    []spilloverCase    `json:"spillover_cases"`
+	SummaryPrefixes   []string           `json:"summary_prefixes"`
+	ContinuationCases []continuationCase `json:"continuation_cases"`
+	PersistedTag      string             `json:"persisted_output_tag"`
 }
 
 // sessionCardCase is one manifest→(content, sha) expectation for
@@ -98,6 +100,16 @@ type sharedCase struct {
 	ExpectLines   []string          `json:"expect_lines"`
 }
 
+// continuationCase pins when a later chunk gets its own continuation label
+// and when the card's existing heading must be retained.
+type continuationCase struct {
+	Name    string            `json:"name"`
+	Kinds   []string          `json:"kinds"`
+	Meta    map[string]string `json:"meta"`
+	Default string            `json:"default"`
+	Expect  string            `json:"expect"`
+}
+
 // classifierCase is one clean-user-message→(kind, detail) expectation for
 // ClassifyUserMessage: goal continuations, skill invocations, and the
 // negative shapes that must stay unclassified.
@@ -131,6 +143,9 @@ func TestLabelsMatchSharedTable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(KindLabels, table.KindLabels) {
 		t.Errorf("KindLabels = %q, want %q", KindLabels, table.KindLabels)
+	}
+	if SpilloverContinuationLabel != table.SpilloverContinuationLabel {
+		t.Errorf("SpilloverContinuationLabel = %q, want %q", SpilloverContinuationLabel, table.SpilloverContinuationLabel)
 	}
 	if got := MemoryHeading(0); got != table.Memory.Plain {
 		t.Errorf("MemoryHeading(0) = %q, want %q", got, table.Memory.Plain)
@@ -170,6 +185,16 @@ func TestHeadingLinesMatchSharedTable(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.ExpectLines) {
 			t.Errorf("%s: HeadingLines(%q, memorySourced=%v, recalledCount=%d, meta=%q) = %q, want %q",
 				tc.Name, tc.Kinds, tc.MemorySourced, tc.RecalledCount, tc.Meta, got, tc.ExpectLines)
+		}
+	}
+}
+
+func TestContinuationHeadingMatchSharedTable(t *testing.T) {
+	for _, tc := range loadTable(t).ContinuationCases {
+		got := ContinuationHeading(tc.Kinds, tc.Meta, tc.Default)
+		if got != tc.Expect {
+			t.Errorf("%s: ContinuationHeading(%q, %q, %q) = %q, want %q",
+				tc.Name, tc.Kinds, tc.Meta, tc.Default, got, tc.Expect)
 		}
 	}
 }
