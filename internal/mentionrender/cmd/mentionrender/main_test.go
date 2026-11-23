@@ -56,6 +56,18 @@ func TestRenders(t *testing.T) {
 	}
 }
 
+func TestRendersTitleMode(t *testing.T) {
+	bin := binary(t)
+	resp, code := query(t, bin,
+		`{"content":"<@222> please introduce urselves to <@111>","bot_id":"222","bot_name":"Hermes","names":{"111":"Alice"},"mode":"title"}`)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if want := "please introduce urselves to @Alice"; resp.Text != want {
+		t.Fatalf("text = %q, want %q", resp.Text, want)
+	}
+}
+
 func TestUnknownModeExitsTwo(t *testing.T) {
 	bin := binary(t)
 	_, code := query(t, bin, `{"content":"hi","mode":"sideways"}`)

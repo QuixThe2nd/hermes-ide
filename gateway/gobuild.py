@@ -4,16 +4,11 @@ Several bridges execute a small Go module as a stdin-JSON → stdout-JSON
 helper binary (``gateway/bot_allowlist.py``,
 ``plugins/platforms/discord/mention_render.py``, …). Each needs the same
 dance: prefer a cached binary under ``$HERMES_HOME/cache/<name>/`` whose
-filename is content-hashed from the Go sources (so a tree update never
-serves a stale helper), else build it from the repo checkout with the local
-Go toolchain. :class:`HelperBinary` is that dance, parameterized per helper
-— a fourth copy of it does not get written.
-
-Resolution never raises: source hashing, cache-path resolution and the build
-can all fail (unreadable checkout, unwritable home, no toolchain), and every
-caller is a message-path feature that must decide its own failure posture
-(fail-closed for the authorization gate, fail-open for rendering) rather
-than inherit an exception.
+filename is content-hashed from the Go sources (a tree update never serves a
+stale helper), else build it from the repo checkout with the local Go
+toolchain. :class:`HelperBinary` is that dance — a fourth copy never gets
+written. Resolution never raises; every caller decides its own failure
+posture (fail-closed for the authorization gate, fail-open for rendering).
 """
 
 from __future__ import annotations

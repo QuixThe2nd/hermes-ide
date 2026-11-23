@@ -2,6 +2,7 @@ package mentionrender
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,4 +78,188 @@ func TestSanitizeNamePinsInvariants(t *testing.T) {
 			t.Fatalf("SanitizeName(%q) = %q still holds a mention token", hostile, got)
 		}
 	}
+}
+
+// TestMentionTokenDocumentsAcceptedForms pins which strings the token regex
+// accepts and how parseToken classifies them. The bridge's Python pre-check
+// regex must accept exactly the same shapes, or token-bearing text would
+// silently skip rendering.
+func TestMentionTokenDocumentsAcceptedForms(t *testing.T) {
+	valid := []struct {
+		in   string
+		kind tokenKind
+		id   string
+	}{
+		{"<@123>", kindUser, "123"},
+		{"<@!123>", kindUser, "123"}, // legacy nickname form
+		{"<@&123>", kindRole, "123"},
+		{"<#123>", kindChannel, "123"},
+	}
+	for _, tc := range valid {
+		if !mentionToken.MatchString(tc.in) {
+			t.Fatalf("mentionToken does not match %q", tc.in)
+		}
+		kind, id := parseToken(tc.in)
+		if kind != tc.kind || id != tc.id {
+			t.Fatalf("parseToken(%q) = {%v %s}, want {%v %s}", tc.in, kind, id, tc.kind, tc.id)
+		}
+	}
+	invalid := []string{
+		"<@abc>", // non-numeric id
+		"<@123",   // unterminated
+		"<@>",     // empty id
+		"@123>",   // missing opener
+		"<x@123>", // wrong prefix
+		"plain",
+	}
+	for _, in := range invalid {
+		if mentionToken.MatchString(in) {
+			t.Fatalf("mentionToken unexpectedly matches %q", in)
+		}
+	}
+}
+
+// TestRenderNeverMutatesNames: callers reuse their name map across renders
+// (the Python bridge builds it once per message); Render must not write to it.
+func TestRenderNeverMutatesNames(t *testing.T) {
+	names := map[string]string{"111": "Alice"}
+	before := map[string]string{"111": "Alice"}
+	for _, mode := range []string{ModeBody, ModeTitle} {
+		Render(Request{Content: "hi <@111> and <@222>", BotID: "222", BotName: "Hermes", Names: names, Mode: mode})
+	}
+	if len(names) != len(before) || names["111"] != before["111"] {
+		t.Fatalf("names mutated by Render: %v", names)
+	}
+}
+
+// TestSharedCaseProperties pins invariants across every table row, not just
+// the frozen strings: a title never carries any mention token, and body text
+// never carries the bot's own raw token when its name is known (the "hole"
+// bug this module exists to fix).
+func TestSharedCaseProperties(t *testing.T) {
+	for _, tc := range loadCases(t) {
+		got := Render(Request{
+			Content: tc.Content,
+			BotID:   tc.BotID,
+			BotName: tc.BotName,
+			Names:   tc.Names,
+			Mode:    tc.Mode,
+		})
+		if tc.Mode == ModeTitle && mentionToken.MatchString(got) {
+			t.Fatalf("%s: title %q still holds a mention token", tc.Name, got)
+		}
+		if tc.Mode == ModeBody && tc.BotName != "" && tc.BotID != "" {
+			for _, raw := range []string{"<@" + tc.BotID + ">", "<@!" + tc.BotID + ">"} {
+				if strings.Contains(got, raw) {
+					t.Fatalf("%s: body %q still holds the bot's raw token %s", tc.Name, got, raw)
+				}
+			}
+		}
+	}
+}
+
+// FuzzRender feeds untrusted-shaped content through the same entry point the
+// gateway pipes live Discord text into. Properties, not exact strings: never
+// panic, titles never leak tokens, and body output keeps every non-mention
+// word of the input.
+func FuzzRender(f *testing.F) {
+	seeds := []string{
+		"<@222>", // addressing run only: title falls back to emptyTitle
+		"hi <@111> and <@!222>",
+		"<@222> /restart",
+		"<@&333> deploy to <#444>",
+		"<@999><@998>",
+		"\x00\uFEFF<@111>\n\n",
+		"<@111><@111><@111><@111>",
+		"@@@@<<<<>>>>",
+	}
+	for _, s := range seeds {
+		f.Add(s, "222")
+	}
+	names := map[string]string{"111": "Alice", "999": "@everyone", "998": "<@1>"}
+	f.Fuzz(func(t *testing.T, content, botID string) {
+		for _, mode := range []string{ModeBody, ModeTitle} {
+			got := Render(Request{
+				Content: content,
+				BotID:   botID,
+				BotName: "Hermes",
+				Names:   names,
+				Mode:    mode,
+			})
+			if mode == ModeTitle && mentionToken.MatchString(got) {
+				t.Fatalf("title %q holds a mention token (content %q)", got, content)
+			}
+		}
+	})
+}
+
+// TestTitleTruncationBoundaries pins the historical title shaping: cap at 80
+// runes, an over-long title keeps the first 77 plus an ellipsis, and an
+// empty title falls back to a fixed placeholder. Body text is never clamped.
+func TestTitleTruncationBoundaries(t *testing.T) {
+	render := func(content, mode string) string {
+		return Render(Request{Content: content, BotID: "222", BotName: "Hermes", Mode: mode})
+	}
+	exactly80 := strings.Repeat("a", 80)
+	if got := render(exactly80, ModeTitle); got != exactly80 {
+		t.Fatalf("80-rune title = %q (len %d), want unchanged", got, len([]rune(got)))
+	}
+	exactly81 := strings.Repeat("a", 81)
+	want81 := strings.Repeat("a", titleEllipsisAt) + titleEllipsis
+	if got := render(exactly81, ModeTitle); got != want81 {
+		t.Fatalf("81-rune title = %q, want %q", got, want81)
+	}
+	// A mention-driven title over the cap truncates the same way.
+	got := render("hi <@111> "+strings.Repeat("b", 80), ModeTitle)
+	if len([]rune(got)) > maxTitleRunes {
+		t.Fatalf("title over cap: %d runes", len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, titleEllipsis) {
+		t.Fatalf("truncated title %q lacks the ellipsis", got)
+	}
+	// Body text is the model's input: never clamped.
+	longBody := strings.Repeat("x", 200)
+	if got := render(longBody, ModeBody); got != longBody {
+		t.Fatalf("body was clamped to %d runes", len([]rune(got)))
+	}
+	// Addressing-run-only titles collapse to nothing and fall back.
+	if got := render("<@222>", ModeTitle); got != emptyTitle {
+		t.Fatalf("empty title = %q, want %q", got, emptyTitle)
+	}
+}
+
+// TestSanitizeNameBoundaries pins the name cap and the mass-ping refusal:
+// Discord display names are user-controlled text inlined into model input.
+func TestSanitizeNameBoundaries(t *testing.T) {
+	long := strings.Repeat("n", maxNameRunes+40)
+	if got := SanitizeName(long); len([]rune(got)) != maxNameRunes {
+		t.Fatalf("long name = %d runes, want capped at %d", len([]rune(got)), maxNameRunes)
+	}
+	for _, ping := range []string{"everyone", "Everyone", "EVERYONE", "here", "Here", "HERE"} {
+		if got := SanitizeName(ping); got != "" {
+			t.Fatalf("SanitizeName(%q) = %q, want refused", ping, got)
+		}
+	}
+	// Padding does not smuggle a mass ping past the refusal.
+	if got := SanitizeName("  everyone  "); got != "" {
+		t.Fatalf("padded mass ping rendered as %q", got)
+	}
+	// A name that merely CONTAINS a ping word is fine once '@' is dropped.
+	if got := SanitizeName("@everyone fan club"); got == "" || strings.Contains(got, "@") {
+		t.Fatalf("SanitizeName(\"@everyone fan club\") = %q", got)
+	}
+}
+
+// ExampleRender is the wire contract the Python bridge codes against: one
+// Request in, rendered text out.
+func ExampleRender() {
+	got := Render(Request{
+		Content: "then <@111> is my main agent, and <@222> is my public agent",
+		BotID:   "222",
+		BotName: "Hermes",
+		Names:   map[string]string{"111": "Alice"},
+		Mode:    ModeBody,
+	})
+	fmt.Println(got)
+	// Output: then @Alice (<@111>) is my main agent, and @Hermes is my public agent
 }
