@@ -32,8 +32,11 @@ jobs:
           python-version: '3.x'
 
       - name: Refresh badges on latest main, commit, push
-        # GITHUB_TOKEN (not a GitHub App token) on purpose: App-token pushes
-        # retrigger workflows, GITHUB_TOKEN pushes do not (see js-autofix.yml).
+        # BADGE_PUSH_PAT (owner fine-grained PAT, contents:write on this repo)
+        # is required: Protect Main bypasses only the owner account, so
+        # GITHUB_TOKEN and App-installation pushes are both rejected (GH013,
+        # "push declined due to repository rule violations") and the badges
+        # silently rot. App-token pushes would also retrigger workflows.
         #
         # main moves between checkout and push on this repo; committing on the
         # checkout-time SHA lost every push race since Nov 15 ("! [rejected]
@@ -42,9 +45,20 @@ jobs:
         # current tip, discard any stale edit, hard-reset onto it, and
         # recompute the badge region there. If the push STILL races, refetch
         # and recompute — bounded at 3 attempts, then fail loudly.
+        env:
+          BADGE_TOKEN: ${{ secrets.BADGE_PUSH_PAT }}
         run: |
+          set -euo pipefail
+          if [ -z "${BADGE_TOKEN:-}" ]; then
+            echo "::error::secret BADGE_PUSH_PAT is not set on this repo; the badge push cannot bypass Protect Main. Add the owner fine-grained PAT (contents:write) as BADGE_PUSH_PAT."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # push-url-local: the credential travels only to the push, never to fetch.
+          git remote set-url --push origin "https://x-access-token:${BADGE_TOKEN}@github.com/QuixThe2nd/hermes-ide.git"
+          cleanup_url() { git remote set-url --push origin https://github.com/QuixThe2nd/hermes-ide.git; }
+          trap cleanup_url EXIT
           for attempt in 1 2 3; do
             git fetch origin main
             git checkout -- README.md 2>/dev/null || true # drop any stale edit from a prior attempt
