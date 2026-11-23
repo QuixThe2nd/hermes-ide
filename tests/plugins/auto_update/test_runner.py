@@ -27,6 +27,7 @@ from plugins.auto_update.runner import (
     UPDATE_APPLY_ARGV,
     UPDATE_CHECK_ARGV,
     UPDATE_PREPARE_ARGV,
+    _activation_timeout_seconds,
     _check_output_indicates_update_available,
     build_stock_updater_argv,
     run_scheduled_update,
@@ -106,10 +107,10 @@ def _scripted(monkeypatch, responses: dict, *, activation_responses=None):
     if activation_responses is not None:
         responses["activate"] = activation_responses
 
-    def run_cmd(argv):
+    def run_cmd(argv, **_kwargs):
         return _run(responses, calls, argv)
 
-    def run_activation(argv):
+    def run_activation(argv, **_kwargs):
         return _run({"activate": responses.get("activate")}, activation_calls, argv)
 
     return run_cmd, run_activation, calls, activation_calls
@@ -569,6 +570,74 @@ def test_runner_activation_timeout_is_nonzero(home, enabled, monkeypatch):
     assert outcome.reason == "activation_timeout"
     assert activation_calls == ["activate"]
 
+
+# ---------------------------------------------------------------------------
+# Activation subprocess budget derives from the gateway drain window
+# ---------------------------------------------------------------------------
+
+
+def _write_drain_timeout(home: Path, seconds: float) -> None:
+    (home / "config.yaml").write_text(
+        f"gateway:\n  drain_timeout: {seconds}\n", encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    "configured, expected",
+    [(5000, 5000 + 300.0), (60, 3600.0), (10_000_000, 86400.0)],
+    ids=["tracks-config", "floor-keeps-old-budget", "ceiling-one-day"],
+)
+def test_activation_timeout_derivation(home, monkeypatch, configured, expected):
+    """drain + headroom, clamped so weird configs keep a sane budget."""
+    monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+    _write_drain_timeout(home, configured)
+    assert _activation_timeout_seconds() == expected
+
+
+def test_activation_timeout_without_config_covers_the_default_drain(home, monkeypatch):
+    monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+    assert _activation_timeout_seconds() >= DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+
+def test_activation_timeout_survives_a_broken_config_read(home, monkeypatch):
+    """A resolution failure must not kill the tick: fall back to the default."""
+    import hermes_cli.gateway as gateway_cli
+    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+    def _boom():
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", _boom)
+    assert _activation_timeout_seconds() >= DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+
+def test_runner_gives_only_the_activation_child_a_drain_derived_timeout(
+    home, enabled, monkeypatch
+):
+    """Check/prepare keep the fixed 3600s budget; activation gets drain + headroom."""
+    monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+    monkeypatch.setattr("plugins.auto_update.runner.read_live_update", lambda: None)
+    _write_drain_timeout(home, 5000)
+    timeouts: dict[str, float] = {}
+
+    def run_cmd(argv, **kwargs):
+        mode = _mode(argv)
+        timeouts[mode] = kwargs.get("timeout")
+        stdout = UPDATE_AVAILABLE_STDOUT if mode == "check" else ""
+        return subprocess.CompletedProcess(list(argv), 0, stdout=stdout, stderr="")
+
+    def run_activation(argv, **kwargs):
+        timeouts["activate"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+    outcome = run_scheduled_update(
+        cfg=BASE_CFG, run_cmd=run_cmd, run_activation=run_activation
+    )
+
+    assert outcome.reason == "activation_attempted"
+    assert timeouts == {"check": 3600.0, "prepare": 3600.0, "activate": 5000 + 300.0}
 
 # ---------------------------------------------------------------------------
 # Boundary invariants
