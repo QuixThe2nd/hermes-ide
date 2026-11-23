@@ -51,7 +51,8 @@ async def test_inject_watch_notification_uses_remembered_anchor(tmp_path):
     class _Adapter:
         async def handle_message(self, event):
             captured["message_id"] = event.message_id
-
+            # admit_internal_event requires a concrete admission receipt.
+            event._gateway_accepted = True
     runner.adapters = {Platform.DISCORD: _Adapter()}
     # resolve_delivery_transport is not exercised for native adapters when
     # the literal scan finds the platform first; keep it simple.
@@ -91,6 +92,7 @@ async def test_inject_watch_notification_without_anchor_stays_none(tmp_path):
     class _Adapter:
         async def handle_message(self, event):
             captured["message_id"] = event.message_id
+            event._gateway_accepted = True
 
     runner.adapters = {Platform.DISCORD: _Adapter()}
 
