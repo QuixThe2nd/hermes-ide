@@ -119,6 +119,36 @@ func TestSentinelStringRoundTrip(t *testing.T) {
 	}
 }
 
+// TestBridgeRoundTrips mirrors TestEnvVarBridgeSimulation in
+// tests/hermes_cli/test_resolve_turn_limit.py: the gateway bridge writes
+// str(value) to HERMES_MAX_ITERATIONS and the resolver reads it back, so
+// every spelling the bridge can emit must round-trip through Resolve.
+func TestBridgeRoundTrips(t *testing.T) {
+	t.Run("int", func(t *testing.T) {
+		if got := Resolve(strconv.Itoa(120), true, DefaultMaxTurns); got != 120 {
+			t.Errorf("Resolve(str(120)) = %d, want 120", got)
+		}
+	})
+	for _, spelling := range []string{"none", "unlimited"} {
+		t.Run(spelling, func(t *testing.T) {
+			if got := Resolve(spelling, true, DefaultMaxTurns); got != Unlimited {
+				t.Errorf("Resolve(%q) = %d, want Unlimited", spelling, got)
+			}
+		})
+	}
+	// The hazard the None guard in gateway/run.py's bridge exists to
+	// prevent: YAML `null` becomes Python None and str(None) = "None" — a
+	// documented unlimited spelling. If the guard regressed, a bare
+	// `max_turns:` key would silently become unlimited instead of the
+	// DefaultMaxTurns budget. Resolve must keep treating "None" as the
+	// spelling so the guard stays load-bearing.
+	t.Run("yaml_null_str", func(t *testing.T) {
+		if got := Resolve("None", true, DefaultMaxTurns); got != Unlimited {
+			t.Errorf("Resolve(%q) = %d, want Unlimited (guard must skip None)", "None", got)
+		}
+	})
+}
+
 func TestUnlimitedSentinel(t *testing.T) {
 	// The sentinel is the Go equivalent of Python's sys.maxsize and must
 	// dominate any realistic turn count.
