@@ -1730,3 +1730,73 @@ def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_ch
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert capsys.readouterr().err == ""
+
+
+# ── Superseded marker: a later pull moved HEAD and its restart already landed ──
+#
+# The marker's ``expected_sha`` names the code ITS pull was to restart the fleet onto. When a
+# newer pull advanced the checkout and its own restart obligation was satisfied, the fleet serves
+# a SHA the marker never recorded — an exact-match gate keeps that zombie marker warning on every
+# unattended tick forever. The marker is then evaluated against current reality: discharged only
+# when every probed gateway serves the CURRENT checkout SHA in state ``current``.
+
+
+def test_superseded_marker_discharged_when_fleet_serves_current_head(monkeypatch, capsys):
+    old_sha, head_sha = "e" * 40, "f" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=old_sha, runtimes=[{"kind": "gateway", "profile": "default"}]
+    )
+    _patch_marker_sha(monkeypatch, head_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": head_sha, "code_version": "0.22.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd_fleet._update_owes_fleet_restart() is False
+
+
+def test_superseded_marker_kept_when_gateway_serves_older_code(monkeypatch, capsys):
+    old_sha, mid_sha, head_sha = "d" * 40, "e" * 40, "f" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=old_sha, runtimes=[{"kind": "gateway", "profile": "default"}]
+    )
+    _patch_marker_sha(monkeypatch, head_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": mid_sha, "code_version": "0.21.0", "state": "stale"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+@pytest.mark.parametrize("probe", ["empty", "raises"])
+def test_superseded_marker_kept_without_healthy_probe(monkeypatch, capsys, probe):
+    """No healthy current-fleet snapshot, no discharge — even for a superseded marker."""
+    old_sha, head_sha = "e" * 40, "f" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=old_sha, runtimes=[{"kind": "gateway", "profile": "default"}]
+    )
+    _patch_marker_sha(monkeypatch, head_sha)
+    if probe == "raises":
+        def _boom(**kwargs):
+            raise OSError("probe unavailable")
+
+        monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", _boom)
+    else:
+        monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: [])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()

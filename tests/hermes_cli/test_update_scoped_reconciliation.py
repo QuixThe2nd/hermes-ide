@@ -18,7 +18,9 @@ CASES = [
     ("stale-successor", {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}, None, [dict(CURRENT, state="stale", code_sha="old")], True),
     ("unknown-successor", {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}, None, [dict(CURRENT, state="unknown")], True),
     ("marker-no-sha", {}, "", [CURRENT], True),
-    ("checkout-moved", {}, "old", [CURRENT], True),
+    # Contract change (superseded marker): once HEAD moved past the marker and the fleet
+    # provably serves that HEAD, the newer pull's satisfied restart settles the old marker.
+    ("checkout-moved", {}, "old", [CURRENT], False),
     ("marker-empty-no-receipt", {}, "new", [], True),
     ("markerless-stamped-manual", {"outcome": "partial", "plan": {"runtimes": [MANUAL]}}, None, [], False),
     ("old-manual-new-marker", {"outcome": "success", "post_update": {"sha": "old"}, "plan": {"runtimes": [MANUAL]}, "fleet": []}, "new", [], True),
