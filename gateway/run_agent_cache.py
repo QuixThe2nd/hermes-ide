@@ -741,6 +741,30 @@ class GatewayAgentCacheMixin:
             _process_baseline = getattr(
                 running_agent, "_gateway_turn_process_baseline", None
             )
+            # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
+            # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
+            # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
+            # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                _invoke_hook(
+                    "agent_loop_stopped",
+                    session_key=session_key,
+                    platform=source.platform.value if source.platform else "",
+                    reason=interrupt_reason,
+                    invalidation_reason=invalidation_reason,
+                )
+            except Exception:
+                logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+        # The turn's hard interrupt reaches only its in-turn children; background delegations were
+        # detached at dispatch and would otherwise run to completion and wake the session later.
+        # Each interrupted unit still returns as a completion (status=interrupted, partial output).
+        from tools.async_delegation import interrupt_for_session
+        interrupt_for_session(
+            session_key=session_key, reason=invalidation_reason,
+            parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
+
         # Bump the generation *before* scheduling the reap thread and capture
         # the post-bump value: task_id is session-scoped (task_id ==
         # session_id), so if a replacement turn claims this session and
