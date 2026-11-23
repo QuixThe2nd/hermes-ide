@@ -258,9 +258,15 @@ def _scan_workdirs_cached(roots: list[Path]) -> dict[str, Path]:
                     return dict(state.result)
                 if not state.walking:
                     state.walking = True
-                    threading.Thread(
-                        target=_refresh_walk, args=(state, roots), daemon=True
-                    ).start()
+                    try:
+                        threading.Thread(
+                            target=_refresh_walk, args=(state, roots), daemon=True
+                        ).start()
+                    except Exception:
+                        # A failed start must neither fail the request nor
+                        # wedge the cache: clear the flag, release waiters,
+                        # and let the next stale request try again.
+                        _complete_walk(state, None)
                 return dict(state.result)
             if state.walking:
                 state.cond.wait()
@@ -285,12 +291,20 @@ def find_lane_workdirs() -> list[Path]:
     is in scope wherever it lives (re-read on every call), and configured
     scan roots add bounded walk-in discovery on top (for runs that predate
     the registry), cached for SCAN_WALK_CACHE_TTL_SEC. A workdir appearing
-    under two sources is reported once.
+    under two sources is reported once. Cached scan workdirs are
+    re-validated on every call — a ``.hermes-lane`` that went missing or
+    became a symlink inside the cache window drops out immediately.
     """
     found: dict[str, Path] = {}
     for workdir in _registry_workdirs():
         found.setdefault(str(workdir), workdir)
     for key, workdir in _scan_workdirs_cached(_resolved_scan_roots()).items():
+        lane = workdir / LANE_DIR_NAME
+        try:
+            if not workdir.is_dir() or not lane.is_dir() or lane.is_symlink():
+                continue
+        except OSError:
+            continue
         found.setdefault(key, workdir)
     return sorted(found.values())
 

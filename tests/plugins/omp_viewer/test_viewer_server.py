@@ -998,6 +998,108 @@ def test_stale_scan_result_is_served_immediately_and_refreshed_in_background(
     assert new_workdir in server.find_lane_workdirs()
 
 
+def test_failed_refresh_thread_start_serves_stale_and_recovers(
+    scan_root: Path, monkeypatch
+) -> None:
+    """A refresh thread that fails to start neither fails the request nor
+    wedges the cache: the stale result is served, and a later request
+    schedules the refresh again."""
+    _make_session(scan_root, "first", "backend_dev", "a.jsonl", [])
+    now = {"t": 1_000.0}
+    monkeypatch.setattr(server, "_walk_now", lambda: now["t"])
+
+    first = server.find_lane_workdirs()
+    now["t"] += server.SCAN_WALK_CACHE_TTL_SEC + 1.0
+
+    real_thread = threading.Thread
+
+    class ExplodingThread:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading, "Thread", ExplodingThread)
+    stale = server.find_lane_workdirs()
+    assert stale == first
+    monkeypatch.setattr(threading, "Thread", real_thread)
+
+    refreshed = threading.Event()
+    real_complete = server._complete_walk
+
+    def publishing_complete(state, result):
+        real_complete(state, result)
+        if result is not None:
+            refreshed.set()
+
+    monkeypatch.setattr(server, "_complete_walk", publishing_complete)
+
+    new_workdir = _make_session(scan_root, "second", "backend_dev", "b.jsonl", []).parents[2]
+    assert server.find_lane_workdirs() == first, "stale result must be served while re-scheduling"
+    assert refreshed.wait(timeout=10), "no background refresh ran after the failed start"
+    assert new_workdir in server.find_lane_workdirs()
+
+
+def test_cached_workdir_with_symlinked_lane_dir_is_dropped_inside_window(
+    scan_root: Path, monkeypatch
+) -> None:
+    """A cached workdir whose .hermes-lane becomes a symlink inside the
+    window is re-validated out of find_lane_workdirs() and list_runs()."""
+    _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [_user_event("x")])
+    workdir = scan_root / "proj"
+    counts = _counted_listings(scan_root, monkeypatch)
+
+    first = server.find_lane_workdirs()
+    assert workdir in first
+    after_first = dict(counts)
+
+    target = scan_root / "swapped-target"
+    (target / "backend_dev").mkdir(parents=True)
+    _write_events(target / "backend_dev" / "evil.jsonl", [_user_event("evil")])
+    (workdir / server.LANE_DIR_NAME).rename(workdir / "lane-real")
+    (workdir / server.LANE_DIR_NAME).symlink_to(target, target_is_directory=True)
+
+    second = server.find_lane_workdirs()
+    assert workdir not in second
+    runs = server.list_runs()["runs"]
+    assert all(run["workdir"] != str(workdir) for run in runs)
+    assert not any(run["session_file"].endswith("evil.jsonl") for run in runs)
+    assert counts == after_first, "re-validation rewalked the scan root"
+
+
+def test_cached_workdir_deleted_inside_window_is_dropped(
+    scan_root: Path,
+) -> None:
+    """A cached workdir deleted inside the window disappears from the next
+    answer — the cache never resurrects it."""
+    import shutil
+
+    _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [_user_event("x")])
+    workdir = scan_root / "proj"
+    assert workdir in server.find_lane_workdirs()
+
+    shutil.rmtree(workdir)
+    assert workdir not in server.find_lane_workdirs()
+
+
+def test_workdir_revalidation_inside_window_does_not_rewalk_the_scan_root(
+    scan_root: Path, monkeypatch
+) -> None:
+    """Re-validating a cached workdir is a stat pair, never a re-walk."""
+    import shutil
+
+    _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [_user_event("x")])
+    workdir = scan_root / "proj"
+    counts = _counted_listings(scan_root, monkeypatch)
+
+    server.find_lane_workdirs()
+    shutil.rmtree(workdir)
+    after_delete = dict(counts)
+
+    assert workdir not in server.find_lane_workdirs()
+    assert counts == after_delete, "re-validation rewalked the scan root"
+
 def test_registry_workdir_appears_immediately_within_the_freshness_window(
     tmp_path: Path, monkeypatch
 ) -> None:
