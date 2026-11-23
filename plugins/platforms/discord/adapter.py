@@ -1408,6 +1408,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
+            # First-use build of the mention renderer happens in the background
+            # now so the first token-bearing message normally finds it ready
+            # (a render never waits for a build; see mention_render).
+            mention_render.warm()
             # Intents: Server Members only when usernames must be resolved — an unenabled privileged
             # intent can keep the bot offline. ``"*"`` is the open-mode wildcard, not a username.
             intents = Intents.default()
@@ -7646,21 +7650,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
             if self._client.user:
-                rendered = await self._render_mentions_for_model(message, normalized_content)
-                if rendered is not None:
-                    normalized_content = rendered
-                else:
-                    # Fail-open: the historical strip, exactly as before.
-                    normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                    normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
-        else:
-            # Not mentioned: render other users' mentions for the event text
-            # only — message.content keeps its raw tokens for the downstream
-            # raw-mention readers, as it always has for these messages.
-            rendered = await self._render_mentions_for_model(message, normalized_content)
-            if rendered is not None:
-                normalized_content = rendered
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -7793,7 +7785,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
+        # Render mentions as readable names at the single point where the
+        # model-facing event text is built — from the message's ORIGINAL raw
+        # text, only after the message has been admitted for dispatch (I5:
+        # every gate, the command check above, and message.content all read
+        # exactly the values they read before mention rendering existed).
+        # Command text is exempt: a command parser must see the raw tokens.
         event_text = normalized_content
+        if msg_type != MessageType.COMMAND:
+            rendered = await self._render_mentions_for_model(message, raw_content)
+            if rendered is not None:
+                event_text = rendered
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
         # ── History backfill ─────────────────────────────────────────
