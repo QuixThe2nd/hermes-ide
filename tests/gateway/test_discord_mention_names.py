@@ -11,6 +11,7 @@ testdata/cases.json is shared with the Go table tests.
 import json
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -241,6 +242,130 @@ async def test_helper_never_invoked_for_mention_free_text(monkeypatch):
     monkeypatch.setattr(mention_render, "_RESOLVER", SimpleNamespace(get=_explode))
     for render in (mention_render.render_body_async, mention_render.render_title_async):
         assert await render("plain text, no tokens", bot_id="222", bot_name="Hermes", names={}) is None
+
+# ── gates and command parsers see byte-identical text (I5) ──────────────
+
+
+def _count_helper_spawns(monkeypatch):
+    """Count real helper subprocess spawns through the bridge."""
+    spawns = []
+    real_run = mention_render.subprocess.run
+
+    def _spy(cmd, *args, **kwargs):
+        spawns.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mention_render.subprocess, "run", _spy)
+    return spawns
+
+
+@pytest.mark.asyncio
+async def test_command_with_self_mention_argument_keeps_raw_command_text(adapter, monkeypatch):
+    """``<@bot> /restart <@bot>`` must reach the command parser exactly as
+    before: self mentions stripped, nothing rendered (I5)."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    event = await _dispatch(adapter, "<@222> /restart <@222>", mentions=[adapter._client.user])
+    assert event.message_type == discord_platform.MessageType.COMMAND
+    assert event.text == "/restart"
+
+
+@pytest.mark.asyncio
+async def test_command_with_user_mention_argument_keeps_raw_token(adapter, monkeypatch):
+    """A command that parses a user argument must see the raw token (I5)."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    event = await _dispatch(
+        adapter, "<@222> /cmd <@111>",
+        mentions=[adapter._client.user,
+                  SimpleNamespace(id=111, display_name="Alice", name="alice", bot=False)],
+    )
+    assert event.message_type == discord_platform.MessageType.COMMAND
+    assert event.text == "/cmd <@111>"
+
+
+# ── rendering happens once, after admission (I5 + I6) ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_non_mention_message_renders_once_after_admission(adapter, monkeypatch):
+    """A mention-free message admitted by a free-response channel renders its
+    user mentions exactly once, after the gates."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "321")
+    spawns = _count_helper_spawns(monkeypatch)
+    event = await _dispatch(
+        adapter, "hello <@111>",
+        mentions=[SimpleNamespace(id=111, display_name="Alice", name="alice", bot=False)],
+    )
+    assert event.text == "hello @Alice (<@111>)"
+    assert len(spawns) == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_dropped_message_never_invokes_helper(adapter, monkeypatch):
+    """A message the channel policy drops must never spawn the helper (I6)."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")  # channel 321 is outside policy
+    spawns = _count_helper_spawns(monkeypatch)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321), content="hello <@111>",
+        mentions=[SimpleNamespace(id=111, display_name="Alice", name="alice", bot=False)],
+    )
+    assert await adapter._handle_message(message) is False
+    adapter.handle_message.assert_not_awaited()
+    assert spawns == []
+
+
+# ── render latency is bounded (I6) and the bridge never raises ──────────
+
+
+@pytest.mark.asyncio
+async def test_slow_helper_falls_back_within_render_budget(adapter, monkeypatch, tmp_path):
+    """A hung helper must not delay the message beyond the render cap."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    sleeper = tmp_path / "sleeper.sh"
+    sleeper.write_text("#!/bin/sh\nsleep 5\n")
+    sleeper.chmod(0o755)
+    monkeypatch.setattr(mention_render, "_RESOLVER", SimpleNamespace(peek=lambda: str(sleeper)))
+    started = time.monotonic()
+    event = await _dispatch(
+        adapter, "<@222> ask <@111> about it",
+        mentions=[adapter._client.user,
+                  SimpleNamespace(id=111, display_name="Alice", name="alice", bot=False)],
+    )
+    elapsed = time.monotonic() - started
+    assert event.text == "ask <@111> about it"  # historical-strip fallback
+    assert elapsed < 4  # render cap (~2 s) plus slack, far under the old 10 s
+
+
+@pytest.mark.asyncio
+async def test_unbuilt_helper_uses_fallback_and_builds_in_background(adapter, monkeypatch):
+    """When the binary is not resolved yet, the message takes the historical
+    text immediately and the build is kicked off in the background."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    warm_calls = []
+    monkeypatch.setattr(
+        mention_render, "_RESOLVER",
+        SimpleNamespace(peek=lambda: None, warm=lambda: warm_calls.append(1)),
+    )
+    event = await _dispatch(
+        adapter, "<@222> ask <@111> about it",
+        mentions=[adapter._client.user,
+                  SimpleNamespace(id=111, display_name="Alice", name="alice", bot=False)],
+    )
+    assert event.text == "ask <@111> about it"
+    assert warm_calls  # background build kicked off, never awaited
+
+
+@pytest.mark.asyncio
+async def test_raising_resolver_never_propagates(monkeypatch):
+    """Nothing in the bridge can raise into the message path."""
+    def _boom():
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr(mention_render, "_RESOLVER", SimpleNamespace(peek=_boom))
+    assert await mention_render.render_body_async(
+        "ask <@111> about it", bot_id="222", bot_name="Hermes", names={"111": "Alice"},
+    ) is None
 
 
 # ── shared rendering table through the real binary ───────────────────────
