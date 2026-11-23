@@ -80,6 +80,14 @@ class GatewayAgentCacheMixin:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+        # Provider-declared identity mappings (MemoryProvider.identity_signature)
+        # bust the cache under the ``memory.`` prefix: a writer-identity or
+        # alias-table change must rebuild the agent even when config.yaml is
+        # byte-identical.
+        for key, value in cls._memory_provider_identity_signature(
+            cfg_get(cfg, "memory", "provider")
+        ).items():
+            out[f"memory.{key}"] = value
 
         return out
 
