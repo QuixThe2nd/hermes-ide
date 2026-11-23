@@ -240,15 +240,6 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
 
 
 
-def _read_fleet_marker_expected_sha() -> str:
-    """``expected_sha`` recorded in the pending marker ("" when absent/unreadable)."""
-    with suppress(OSError):
-        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8-sig").splitlines():
-            if line.startswith("expected_sha="):
-                return line.split("=", 1)[1].strip()
-    return ""
-
-
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
