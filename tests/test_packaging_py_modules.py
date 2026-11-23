@@ -73,3 +73,21 @@ def test_every_root_module_imported_by_packaged_code_is_shipped():
     missing = {f: v for f, v in missing.items() if v}
     assert not missing, f"packaged code imports root modules the wheel would not ship: {missing}"
     assert "hermes_state" in shipped and "setup" not in shipped
+
+def test_root_py_modules_skips_non_identifier_stems():
+    # A running job can drop scratch files in a checkout root (the detached-service
+    # wrapper ``.hermes-agent-cli.out.run.py`` from tools/harness_persist.py, scratch
+    # scripts like ``not-a-module.py``). Their stems are not importable module names;
+    # setuptools reads a dot-containing stem as a dotted package path and fails the
+    # build. The derived list must contain only valid identifiers — and still cover
+    # every real root module.
+    scratch = [REPO_ROOT / ".hermes-agent-cli.out.run.py", REPO_ROOT / "not-a-module.py"]
+    for path in scratch:
+        path.write_text("", encoding="utf-8")
+    try:
+        names = _root_py_modules()
+    finally:
+        for path in scratch:
+            path.unlink(missing_ok=True)
+    assert all(name.isidentifier() for name in names)
+    assert {"run_agent", "hermes_state", "toolsets"} <= names
