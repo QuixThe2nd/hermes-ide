@@ -419,3 +419,123 @@ func TestBPath(t *testing.T) {
 		}
 	}
 }
+
+// TestExemptPrefixes pins the path-exemption contract: files under
+// exemptPrefixes are excluded from the Python/Go totals, the exclusion
+// is reported, and everything else stays gated exactly as before.
+// Each case builds a real repo: baseFiles are committed at the base,
+// then remove deletes paths and headFiles are written and committed.
+func TestExemptPrefixes(t *testing.T) {
+	cases := []struct {
+		name      string
+		baseFiles map[string][]byte
+		remove    []string
+		headFiles map[string][]byte
+		wantCode  int
+		wantOut   []string
+	}{
+		{
+			name: "exempt plugin python passes with zero go lines",
+			headFiles: map[string][]byte{
+				"plugins/omp_viewer/server.py": lines(40, "p"),
+			},
+			wantCode: 0,
+			wantOut: []string{
+				"python added lines: 0",
+				"excluded (exempt): 40 lines across 1 files (prefixes: plugins/omp_viewer/)",
+				"OK:",
+			},
+		},
+		{
+			name: "exempt additions do not rescue non-exempt over-quota python",
+			headFiles: map[string][]byte{
+				"plugins/claude_viewer/server.py":       lines(30, "v"),
+				"tests/plugins/claude_viewer/test_s.py": lines(10, "t"),
+				"tools/check.py":                        lines(5, "p"),
+				"tools/check.go":                        lines(1, "g"),
+			},
+			wantCode: 1,
+			wantOut: []string{
+				"python added lines: 5",
+				"go added lines: 1",
+				"excluded (exempt): 40 lines across 2 files (prefixes: plugins/claude_viewer/, tests/plugins/claude_viewer/)",
+				"python added lines (5) exceed go added lines (1)",
+			},
+		},
+		{
+			name: "mixed exempt and non-exempt within quota passes",
+			headFiles: map[string][]byte{
+				"plugins/omp_viewer/server.py": lines(9, "v"),
+				"tools/check.py":               lines(3, "p"),
+				"tools/check.go":               lines(3, "g"),
+			},
+			wantCode: 0,
+			wantOut: []string{
+				"python added lines: 3",
+				"go added lines: 3",
+				"excluded (exempt): 9 lines across 1 files (prefixes: plugins/omp_viewer/)",
+			},
+		},
+		{
+			name: "net-deletion exemption still applies alongside exempt paths",
+			baseFiles: map[string][]byte{
+				"legacy.py": lines(20, "l"),
+			},
+			remove: []string{"legacy.py"},
+			headFiles: map[string][]byte{
+				"plugins/omp_viewer/server.py": lines(50, "v"),
+				"tools/stub.py":                lines(2, "p"),
+			},
+			wantCode: 0,
+			wantOut: []string{
+				"python added lines: 2",
+				"python deleted lines: 20",
+				"excluded (exempt): 50 lines across 1 files (prefixes: plugins/omp_viewer/)",
+				"net-deletion exemption",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newRepo(t)
+			for name, content := range tc.baseFiles {
+				writeFile(t, repo, name, content)
+			}
+			base := commit(t, repo, "base")
+			for _, name := range tc.remove {
+				if err := os.Remove(filepath.Join(repo, filepath.FromSlash(name))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, content := range tc.headFiles {
+				writeFile(t, repo, name, content)
+			}
+			commit(t, repo, "change")
+
+			code, out, _ := check(t, repo, base, "HEAD")
+			if code != tc.wantCode {
+				t.Fatalf("exit = %d, want %d\n%s", code, tc.wantCode, out)
+			}
+			for _, want := range tc.wantOut {
+				assertContains(t, out, want)
+			}
+		})
+	}
+}
+
+// TestNonExemptDiffPrintsNoExemptionLine pins that the visibility line
+// only fires when an exempt path is actually in the diff.
+func TestNonExemptDiffPrintsNoExemptionLine(t *testing.T) {
+	repo := newRepo(t)
+	base := commit(t, repo, "base")
+	writeFile(t, repo, "a.go", lines(2, "g"))
+	commit(t, repo, "add go")
+
+	code, out, _ := check(t, repo, base, "HEAD")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if strings.Contains(out, "excluded (exempt)") {
+		t.Fatalf("unexpected exemption line in output:\n%s", out)
+	}
+}
