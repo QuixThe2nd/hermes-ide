@@ -61,6 +61,13 @@ from gateway.platforms.event import MessageEvent
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionEntry, SessionSource
 
+
+def _final_body(text: str) -> str:
+    """The agent's response body without the always-on runtime footer (model ·
+    context % · timings) that gateway/run.py appends to the final message."""
+    return text.split("\n\n")[0]
+
+
 SESSION_KEY = "agent:main:discord:dm:12345"
 SESSION_ID = "sess-hyg-episode"
 
@@ -387,7 +394,7 @@ async def test_inline_commit_posts_start_card_then_success_edit(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
 
     starts = [
         c for c in _sent_contents(adapter) if c.startswith(COMPRESSION_TOOL_START_PREFIX)
@@ -429,7 +436,7 @@ async def test_turn_hold_expiry_edits_deferred_then_adopts_success(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
 
     starts = [
         c for c in _sent_contents(adapter) if c.startswith(COMPRESSION_TOOL_START_PREFIX)
@@ -487,7 +494,7 @@ async def test_turn_hold_deferred_attempt_that_never_commits_fails_the_card(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     assert await _wait_for_edit(
         adapter, lambda c: c == compression_tool_deferred_line()
     ), f"deferred edit missing: {_edit_contents(adapter)}"
@@ -523,7 +530,7 @@ async def test_timeout_closes_card_as_failure_never_success(monkeypatch, tmp_pat
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     failure_edit = await _wait_for_edit(
         adapter, lambda c: c.startswith(COMPRESSION_TOOL_FAILURE_PREFIX)
     )
@@ -561,7 +568,7 @@ async def test_non_episode_rail_adapter_gets_no_card(monkeypatch, tmp_path):
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
 
     tool_lines = [
         c
@@ -621,7 +628,7 @@ async def test_second_attempt_hands_over_card_and_drops_superseded_terminal(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     assert await _wait_for_edit(
         adapter, lambda c: c == compression_tool_deferred_line()
     ), f"attempt 1 deferred edit missing: {_edit_contents(adapter)}"
@@ -633,7 +640,7 @@ async def test_second_attempt_hands_over_card_and_drops_superseded_terminal(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     assert any(
         e["content"] == compression_tool_start_line() for e in adapter.edits
     ), f"attempt 2 hand-over start edit missing: {_edit_contents(adapter)}"
@@ -754,7 +761,7 @@ async def test_agent_rail_independent_of_open_hygiene_card(monkeypatch, tmp_path
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     assert await _wait_for_edit(
         adapter, lambda c: c == compression_tool_deferred_line()
     ), f"hygiene card not open (non-terminal): {_edit_contents(adapter)}"
@@ -872,7 +879,7 @@ async def test_deferred_edit_fires_exactly_once_on_double_fire(monkeypatch, tmp_
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     assert await _wait_for_edit(
         adapter, lambda c: c == compression_tool_deferred_line()
     ), f"deferred edit missing: {_edit_contents(adapter)}"
@@ -985,7 +992,7 @@ async def test_inline_success_card_names_actual_compressor_route(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
 
     successes = [
         c
@@ -1019,7 +1026,7 @@ async def test_inline_success_card_labels_local_summary_not_provider(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
 
     successes = [
         c
@@ -1057,7 +1064,7 @@ async def test_inline_success_card_labels_feasibility_skip_local_summary(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
 
     successes = [
         c
@@ -1091,7 +1098,7 @@ async def test_deferred_adoption_card_names_compressor_route(
     result = await asyncio.wait_for(
         runner._handle_message(_make_event(Platform.DISCORD)), timeout=15
     )
-    assert result == "ok"
+    assert _final_body(result) == "ok"
     assert await _wait_for_edit(
         adapter, lambda c: c == compression_tool_deferred_line()
     ), f"deferred edit missing: {_edit_contents(adapter)}"
