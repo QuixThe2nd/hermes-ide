@@ -23,21 +23,33 @@ Contract for callers:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
-import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+from gateway import gobuild
+
 logger = logging.getLogger(__name__)
 
 _BINARY_SOURCES = ("botallowlist.go", "cmd/botallowlist/main.go")
 _HELPER_TIMEOUT_SECONDS = 10
+
+# Resolution of the cmd/botallowlist binary (cache lookup + content hash +
+# go build) is the shared gateway/gobuild.py helper; this module keeps only
+# the allowlist-specific pin/cooldown seam and the fail-closed contract.
+_HELPER = gobuild.HelperBinary(
+    module="botallowlist",
+    sources=_BINARY_SOURCES,
+    build_target="./cmd/botallowlist",
+    cache_dir="botallowlist",
+    binary_stem="botallowlist",
+    label="allowed_bots helper",
+    failure_hint="bot messages are denied until it succeeds",
+)
 
 _bridge_lock = threading.Lock()
 _bridge_binary: Optional[str] = None
@@ -47,6 +59,7 @@ _bridge_binary: Optional[str] = None
 # re-attempt a 300 s build per message.
 _BRIDGE_RETRY_COOLDOWN_SECONDS = 300.0
 _bridge_failed_at: Optional[float] = None
+
 
 _cache_lock = threading.Lock()
 # (canonical list, author ID) → verdict. The list is small and stable, so
@@ -61,24 +74,12 @@ _warned_malformed = False
 
 def _repo_module_dir() -> Optional[Path]:
     """The internal/botallowlist checkout this tree ships, when present."""
-    module_dir = Path(__file__).resolve().parents[1] / "internal" / "botallowlist"
-    if all((module_dir / name).is_file() for name in _BINARY_SOURCES):
-        return module_dir
-    return None
+    return _HELPER.repo_module_dir()
 
 
 def _cached_binary_path() -> Path:
     """Cache location, keyed by a hash of the Go sources (staleness-proof)."""
-    module_dir = _repo_module_dir()
-    digest = "built"
-    if module_dir is not None:
-        hasher = hashlib.sha256()
-        for name in _BINARY_SOURCES:
-            hasher.update((module_dir / name).read_bytes())
-        digest = hasher.hexdigest()[:12]
-    from hermes_constants import get_hermes_home
-
-    return get_hermes_home() / "cache" / "botallowlist" / f"botallowlist-{digest}"
+    return _HELPER.cached_binary_path()
 
 
 def _resolve_go_binary() -> Optional[str]:
@@ -89,32 +90,7 @@ def _resolve_go_binary() -> Optional[str]:
     authorization gate must not go down with its helper — every failure path
     returns None and the caller fails closed.
     """
-    try:
-        binary = _cached_binary_path()
-        if binary.is_file() and os.access(binary, os.X_OK):
-            return str(binary)
-    except Exception:
-        return None
-    module_dir = _repo_module_dir()
-    if module_dir is None or shutil.which("go") is None:
-        return None
-    try:
-        binary.parent.mkdir(parents=True, exist_ok=True)
-        staging = binary.with_suffix(".tmp")
-        build = subprocess.run(
-            ["go", "build", "-o", str(staging), "./cmd/botallowlist"],
-            cwd=module_dir, capture_output=True, text=True, timeout=300,
-        )
-        if build.returncode == 0 and staging.is_file():
-            os.replace(staging, binary)  # atomic: concurrent gateways converge
-            return str(binary)
-        logger.warning(
-            "allowed_bots helper build failed (go build exit %s); bot messages are "
-            "denied until it succeeds", build.returncode,
-        )
-    except Exception as exc:
-        logger.warning("allowed_bots helper build failed: %s", exc)
-    return None
+    return _HELPER.resolve()
 
 
 def go_binary() -> Optional[str]:
