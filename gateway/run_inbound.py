@@ -164,7 +164,7 @@ class GatewayInboundMixin:
 
     async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
         """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the
-        sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
+        sender's ID and the allowlist fix in the WARNING log and, once per sender, in the notification channel."""
         from gateway.run import logger
 
         from hermes_constants import display_hermes_home

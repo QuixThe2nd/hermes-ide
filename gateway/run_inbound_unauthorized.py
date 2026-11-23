@@ -6,7 +6,7 @@ Two audiences, two rules:
   ``ignore``: an allowlist is configured, so any reply would leak that the bot exists).
 * The **owner** is the one who can fix a mis-typed allowlist, so an ignored DM is logged at
   WARNING with the sender's ID and the allowlist / pairing-mode fix, and surfaced once per
-  (platform, user) per gateway process in the platform's home channel when one is configured.
+  (platform, user) per gateway process in the platform's notification channel when one is configured.
   No pairing request is minted for an ignored sender: strangers must not create server state
   when the owner has restricted access.
 """
@@ -58,7 +58,7 @@ PAIRING_RATE_LIMITED_REPLY = (
 def unauthorized_owner_hint(
     platform_name: str, user_id: str, user_name: str = "", *, hermes_home: str,
 ) -> str:
-    """One-line hint for the owner (log + home channel): who was dropped and how to let them in.
+    """One-line hint for the owner (log + notification channel): who was dropped and how to let them in.
     No pairing request is minted for an ignored sender (a configured allowlist means the owner chose
     to restrict access), so the ways in are the allowlist itself or switching the platform to
     pairing mode."""
@@ -83,10 +83,10 @@ def unauthorized_owner_hint(
 
 
 class UnauthorizedOwnerNotifier:
-    """Tells the owner's home channel about the first drop of each unrecognized DM sender.
+    """Tells the owner's notification channel about the first drop of each unrecognized DM sender.
 
     One notice per (platform, user_id) per gateway process: the first drop is the useful signal (an
-    owner who typo'd their own ID); repeats would only let a stranger spam the home channel.
+    owner who typo'd their own ID); repeats would only let a stranger spam the notification channel.
     """
 
     def __init__(self, max_seen: int = _MAX_SEEN_SENDERS) -> None:
@@ -104,19 +104,19 @@ class UnauthorizedOwnerNotifier:
         return True
 
     async def notify(self, runner, source, hint: str) -> None:
-        """Best-effort post to the source platform's home channel; silent when none is configured."""
-        for platform, _cfg, home, transport in runner._home_channel_transports():
+        """Best-effort post to the source platform's notification channel; silent when none is configured."""
+        for platform, _cfg, channel, transport in runner._notification_channel_transports():
             if platform != source.platform:
                 continue
-            if str(home.chat_id) == str(source.chat_id):
-                # The stranger's DM *is* the home channel (misconfiguration); posting there would
-                # answer the unauthorized user, which the ignore behaviour exists to prevent.
+            if str(channel.chat_id) == str(source.chat_id):
+                # The stranger's DM *is* the notification channel (misconfiguration); posting there
+                # would answer the unauthorized user, which the ignore behaviour exists to prevent.
                 return
-            # Automatic operator diagnostic on the home channel; same boundary as the state.db warning.
+            # Automatic operator diagnostic on the notification channel; same boundary as the state.db warning.
             from gateway.warning_notifications import present_notification
             await present_notification(
-                lambda: runner._send_home_channel_message(
-                    platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
+                lambda: runner._send_notification_channel_message(
+                    platform, channel, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
                 ),
                 platform=platform,
             )
