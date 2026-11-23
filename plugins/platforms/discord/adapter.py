@@ -6664,11 +6664,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     def _mention_render_facts(self, message: Any, content: str) -> Dict[str, Any]:
         """The name facts one render needs, from data Discord already
-        delivered with the message — no extra REST calls."""
+        delivered with the message — no extra REST calls. The bot's own name
+        comes from the adapter's single display-name implementation
+        (``get_bot_display_name``: guild nickname, then global name)."""
         client_user = getattr(self._client, "user", None)
+        guild = getattr(message, "guild", None)
+        guild_id = str(getattr(guild, "id", "") or "") or None
         return {
             "bot_id": str(getattr(client_user, "id", "") or ""),
-            "bot_name": mention_render.bot_display_name(message, client_user),
+            "bot_name": self.get_bot_display_name(guild_id=guild_id) or "",
             "names": mention_render.collect_names(message, content),
         }
 

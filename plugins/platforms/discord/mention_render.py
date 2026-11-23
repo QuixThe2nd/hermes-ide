@@ -7,13 +7,20 @@ already delivers with the message (``message.mentions`` with the guild
 member display name preferred, then the guild member cache; no extra REST
 calls), pipes one render request through the binary resolved via
 ``gateway/gobuild.py``, and owns the fail-open contract: any helper problem
-(no binary and no Go toolchain, build failure, timeout, unreadable output)
-returns None and the caller falls back to the historical mention handling —
-a message is never dropped over a rendering problem. One warning per
-process, then debug-level only.
+(no binary and no Go toolchain, build failure, timeout, unreadable output,
+any unexpected exception) returns None and the caller falls back to the
+historical mention handling — a message is never dropped over a rendering
+problem, and nothing here ever raises into the message path. One warning
+per process, then debug-level only.
 
-Both render entry points are async: the first-use ``go build`` and every
-render subprocess are blocking work and must not stall the event loop.
+Rendering is latency-bounded end to end. A render never waits for a build:
+the binary is resolved with :meth:`gobuild.HelperBinary.peek` (cached
+binary only), a miss kicks off a background build via ``warm()`` and this
+message takes the historical text, and a single render subprocess is
+capped at :data:`_HELPER_TIMEOUT_SECONDS`. ``warm()`` is also called when
+the adapter connects, so the first message normally finds the binary
+ready. Both render entry points are async: every render subprocess is
+blocking work and must not stall the event loop.
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ logger = logging.getLogger(__name__)
 _ANY_MENTION_TOKEN = re.compile(r"<@[!&]?\d+>|<#\d+>")
 _USER_MENTION_ID = re.compile(r"<@!?(\d+)>")
 
-_HELPER_TIMEOUT_SECONDS = 10
+_HELPER_TIMEOUT_SECONDS = 2
 
 _RESOLVER = gobuild.HelperBinary(
     module="mentionrender",
@@ -46,6 +53,17 @@ _RESOLVER = gobuild.HelperBinary(
     label="discord mention renderer",
     failure_hint="mentions render as raw tokens until it succeeds",
 )
+
+
+
+def warm() -> None:
+    """Kick off the first-use build in the background (adapter connect), so
+    the first token-bearing message normally finds the binary resolved."""
+    try:
+        _RESOLVER.warm()
+    except Exception:
+        logger.debug("discord mention renderer warm-up failed", exc_info=True)
+
 
 _warned_unavailable = False
 
@@ -87,19 +105,6 @@ def collect_names(message: Any, content: str) -> Dict[str, str]:
     return names
 
 
-def bot_display_name(message: Any, client_user: Any) -> str:
-    """The bot's own display name: guild member nickname when Discord cached
-    it on the message's guild, else the global display/user name."""
-    guild_me = getattr(getattr(message, "guild", None), "me", None)
-    for candidate in (
-        getattr(guild_me, "display_name", None),
-        getattr(client_user, "display_name", None),
-        getattr(client_user, "name", None),
-    ):
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate
-    return ""
-
 
 def _render_sync(
     mode: str, content: str, *, bot_id: str, bot_name: str, names: Dict[str, str],
@@ -108,21 +113,24 @@ def _render_sync(
 
     Never raises. Content without a mention token returns None WITHOUT
     touching the resolver: the legacy path is byte-identical for it and no
-    process (or first-use build) may be spawned for token-free text.
+    process (or first-use build) may be spawned for token-free text. A
+    binary that is not already resolved is never awaited: the build runs in
+    the background and this message takes the legacy path.
     """
     global _warned_unavailable
     if not has_mention_token(content):
         return None
-    binary = _RESOLVER.get()
-    if binary is None:
-        if not _warned_unavailable:
-            _warned_unavailable = True
-            logger.warning(
-                "discord mention renderer unavailable (no cached binary and no Go "
-                "toolchain to build one); falling back to raw-mention text"
-            )
-        return None
     try:
+        binary = _RESOLVER.peek()
+        if binary is None:
+            _RESOLVER.warm()  # background build; this message uses the fallback
+            if not _warned_unavailable:
+                _warned_unavailable = True
+                logger.warning(
+                    "discord mention renderer not built yet; building in the "
+                    "background and rendering raw-mention text until it succeeds"
+                )
+            return None
         run = subprocess.run(
             [binary],
             input=json.dumps({
@@ -134,18 +142,14 @@ def _render_sync(
             }),
             capture_output=True, text=True, timeout=_HELPER_TIMEOUT_SECONDS,
         )
+        if run.returncode != 0:
+            logger.debug(
+                "mention renderer exited %s: %s", run.returncode, run.stderr.strip(),
+            )
+            return None
+        rendered = json.loads(run.stdout).get("text")
     except Exception as exc:
         logger.debug("mention render invocation failed: %s", exc)
-        return None
-    if run.returncode != 0:
-        logger.debug(
-            "mention renderer exited %s: %s", run.returncode, run.stderr.strip(),
-        )
-        return None
-    try:
-        rendered = json.loads(run.stdout).get("text")
-    except (ValueError, AttributeError) as exc:
-        logger.debug("mention renderer returned unreadable output: %s", exc)
         return None
     return rendered if isinstance(rendered, str) else None
 

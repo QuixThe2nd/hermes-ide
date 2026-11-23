@@ -215,7 +215,8 @@ async def test_fail_open_without_helper_dispatches_historical_text(adapter, monk
     """Helper unavailable → the message is still dispatched with today's text:
     the bot's own mention deleted, other mentions raw."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-    monkeypatch.setattr(mention_render, "_RESOLVER", SimpleNamespace(get=lambda: None))
+    # peek() miss = no cached binary: fallback text + background build (warm).
+    monkeypatch.setattr(mention_render, "_RESOLVER", SimpleNamespace(peek=lambda: None, warm=lambda: None))
     event = await _dispatch(
         adapter,
         "then <@111> is my main agent, and <@222> is my public agent u talk to",
@@ -227,7 +228,9 @@ async def test_fail_open_without_helper_dispatches_historical_text(adapter, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("binary", [None, "/bin/echo"])  # missing; garbage output
 async def test_bridge_returns_none_when_helper_fails(monkeypatch, binary):
-    monkeypatch.setattr(mention_render, "_RESOLVER", SimpleNamespace(get=lambda: binary))
+    monkeypatch.setattr(
+        mention_render, "_RESOLVER", SimpleNamespace(peek=lambda: binary, warm=lambda: None),
+    )
     assert await mention_render.render_body_async(
         "ask <@111> about it", bot_id="222", bot_name="Hermes", names={"111": "Alice"},
     ) is None
