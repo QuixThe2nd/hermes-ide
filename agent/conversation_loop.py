@@ -82,7 +82,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import failed_turn_notice, site_copy
+from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -3767,7 +3767,7 @@ def _run_conversation_inlined(
                         "⚠️  The model declined to respond to this request "
                         "(safety refusal — not a Hermes/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
-                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        f"{CONTENT_POLICY_NEXT_STEPS}"
                     )
 
                     agent._cleanup_task_resources(effective_task_id)
@@ -6449,7 +6449,7 @@ def _run_conversation_inlined(
                             "⚠️  The model provider's safety filter blocked this request "
                             "(not a Hermes/gateway failure).\n\n"
                             f"Provider message: {_nonretryable_summary}\n\n"
-                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                            f"{CONTENT_POLICY_NEXT_STEPS}"
                         )
                         return _content_policy_blocked_result(
                             messages,
