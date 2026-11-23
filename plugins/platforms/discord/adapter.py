@@ -1089,6 +1089,7 @@ from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
 )
 from gateway import bot_allowlist
+from plugins.platforms.discord import mention_render
 from gateway.jev_notice import (
     format_notice_async,
     reaction_gate_record,
@@ -1407,6 +1408,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
+            # First-use build of the mention renderer happens in the background
+            # now so the first token-bearing message normally finds it ready
+            # (a render never waits for a build; see mention_render).
+            mention_render.warm()
             # Intents: Server Members only when usernames must be resolved — an unenabled privileged
             # intent can keep the bot offline. ``"*"`` is the open-mode wildcard, not a username.
             intents = Intents.default()
@@ -6661,6 +6666,46 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             thread_name = thread_name[:77] + "..."
         return thread_name
 
+    def _mention_render_facts(self, message: Any, content: str) -> Dict[str, Any]:
+        """The name facts one render needs, from data Discord already
+        delivered with the message — no extra REST calls. The bot's own name
+        comes from the adapter's single display-name implementation
+        (``get_bot_display_name``: guild nickname, then global name)."""
+        client_user = getattr(self._client, "user", None)
+        guild = getattr(message, "guild", None)
+        guild_id = str(getattr(guild, "id", "") or "") or None
+        return {
+            "bot_id": str(getattr(client_user, "id", "") or ""),
+            "bot_name": self.get_bot_display_name(guild_id=guild_id) or "",
+            "names": mention_render.collect_names(message, content),
+        }
+
+    async def _render_mentions_for_model(self, message: Any, content: str) -> Optional[str]:
+        """Model-facing text with mentions rendered as readable names.
+
+        None = renderer unavailable (or no mention token): the caller falls
+        back to the historical handling — a message is never dropped over a
+        rendering problem.
+        """
+        return await mention_render.render_body_async(
+            content, **self._mention_render_facts(message, content),
+        )
+
+    async def _auto_thread_name_for_message(self, message: Any, content: str) -> str:
+        """Placeholder thread title with mentions rendered as names.
+
+        *content* must be the message's ORIGINAL text (before the model-text
+        normalization above stripped or rendered anything), so the addressing
+        run is still visible. Falls back to the historical delete-all-mentions
+        rendering when the renderer is unavailable.
+        """
+        rendered = await mention_render.render_title_async(
+            content, **self._mention_render_facts(message, content),
+        )
+        if rendered is None:
+            return self._derive_auto_thread_name(content)
+        return rendered
+
     @staticmethod
     def _extract_rate_limit_delay(exc: BaseException) -> Optional[float]:
         """Return how long (seconds) Discord asked us to wait out a 429, else None.
@@ -6725,7 +6770,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
         return min(delay, AUTO_THREAD_RATE_LIMIT_MAX_WAIT_SECONDS)
 
-    async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
+    async def _auto_create_thread(
+        self, message: 'DiscordMessage', *, mention_source: Optional[str] = None,
+    ) -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
         Returns the created thread object, or ``None`` on failure. Both the
@@ -6743,7 +6790,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         One placeholder is posted, reused across retries, and deleted before return.
 
         """
-        thread_name = self._derive_auto_thread_name(message.content or "")
+        # Titles derive from the message's ORIGINAL text (mention_source),
+        # not the model-facing normalization that already ran on
+        # message.content — rendering twice would nest names.
+        thread_name = await self._auto_thread_name_for_message(
+            message, mention_source if mention_source is not None else (message.content or ""),
+        )
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
         last_direct_error: Exception | None = None
@@ -7655,7 +7707,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # restores the historical inline reply.
             reply_skips_thread = is_reply_message and not self._discord_auto_thread_replies()
             if auto_thread and not skip_thread and not reply_skips_thread:
-                thread = await self._auto_create_thread(message)
+                thread = await self._auto_create_thread(message, mention_source=raw_content)
                 if thread:
                     parent_channel_id = str(message.channel.id)
                     is_thread = True
@@ -7709,6 +7761,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Channel topic (TextChannels only); forum-parented threads inherit the parent topic.
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
         guild = getattr(message, "guild", None)
+        auto_thread_initial_name = None
+        if auto_threaded_channel is not None:
+            auto_thread_initial_name = (
+                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
+                or await self._auto_thread_name_for_message(message, raw_content)
+            )
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -7723,14 +7781,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             message_id=str(message.id),
             role_authorized=role_authorized,
             auto_thread_created=auto_threaded_channel is not None,
-            auto_thread_initial_name=(
-                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
-                or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
+            auto_thread_initial_name=auto_thread_initial_name,
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
+        # Render mentions as readable names at the single point where the
+        # model-facing event text is built — from the message's ORIGINAL raw
+        # text, only after the message has been admitted for dispatch (I5:
+        # every gate, the command check above, and message.content all read
+        # exactly the values they read before mention rendering existed).
+        # Command text is exempt: a command parser must see the raw tokens.
         event_text = normalized_content
+        if msg_type != MessageType.COMMAND:
+            rendered = await self._render_mentions_for_model(message, raw_content)
+            if rendered is not None:
+                event_text = rendered
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
         # ── History backfill ─────────────────────────────────────────
