@@ -86,7 +86,6 @@ Failures log a warning and never surface in chat.
 | `recall_min_scores` | — | Per-stage score floors for recall (inclusive, AND-ed): results scoring below any floor are dropped server-side. Keys: `semantic`, `keyword`, `reranker`, `final`. Object or JSON string, e.g. `{"final": 0.5}`. Unset/empty = no floors; invalid JSON is logged and ignored (recall proceeds unfloored). Applies to both auto-recall and the `hindsight_recall` tool. |
 | `recall_max_results` | `0` | Keep only the top N ranked recall results after score filtering (applied client-side; the recall API has no server-side cap). `0` = no cap. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
-| `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
 | `recall_indicator` | `false` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Off by default — the gateway's `🧠 Injecting N memories` card already reports the count; set `true` to opt in. |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
