@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
+from gateway import secure_entry
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.runtime_footer import turn_metrics
@@ -2178,8 +2179,25 @@ class TurnRunner(_TurnRunnerCore):
                 chat_id=ctx._status_chat_id or ctx.source.chat_id,
                 metadata=ctx._status_thread_metadata,
             ):
-                with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                    return agent.run_conversation(api_message, **kwargs)
+                # Native secure-login entry (Discord): with the operator's public
+                # HTTPS origin configured, bind this turn's SaveLoginPrompt to the
+                # in-gateway broker, taking precedence over the adapter-owned modal
+                # transport the scope installed above. Installs nothing otherwise
+                # (unattended/unsupported surface, unconfigured/malformed origin, no
+                # API listener) — the scope's binding stays active.
+                secure_entry_restore = secure_entry.install_turn_prompt(self._runner, ctx)
+                try:
+                    with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
+                        return agent.run_conversation(api_message, **kwargs)
+                finally:
+                    # Restore the callback the scope installed and retire any
+                    # still-pending request of THIS turn (/stop, timeout,
+                    # disconnect, completion). Scoped by the owner token captured
+                    # at install time, so a newer sibling turn's live request is
+                    # never cancelled.
+                    if secure_entry_restore is not None:
+                        with suppress(Exception):
+                            secure_entry_restore()
         finally:
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
