@@ -37,8 +37,13 @@ RESTART_SCHEMA = {
         "<new_id>'. That result is context for you, not a message to send "
         "to the user: do not repeat or quote it. Continue the interrupted "
         "task using your tools and only then reply about that work, and "
-        "do not call restart again for the same restart. Use this to pick "
-        "up config or code changes, or to recover a misbehaving gateway."
+        "do not call restart again for the same restart. This tool is the "
+        "ONLY sanctioned way to restart this gateway: never shell out to "
+        "systemctl restart, `hermes gateway restart`, or systemd-run "
+        "instead — those run inside the gateway's own cgroup, so the drain "
+        "defers on the calling turn and the caller's own activity keeps "
+        "the restart deferred indefinitely. Use this to pick up config or "
+        "code changes, or to recover a misbehaving gateway."
     ),
     "parameters": {
         "type": "object",
