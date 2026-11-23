@@ -1,0 +1,245 @@
+{
+  "comment": "Shared contract table for persistence-error classification. Consumed by internal/stateerrors (Go tests + cmd/stateerrors) and tests/hermes_state/test_error_classification_go_contract.py (real Python exceptions). kind: none|string|exception|os_error|operational_error|database_error|turn_lease|compression_closed|compression_busy|compression_in_progress|replaced|deleted_wal|corrupt. sqlite_errorcode mirrors the attribute SQLite attaches on 3.11+; enospc mirrors OSError(errno.ENOSPC).",
+  "cases": [
+    {
+      "name": "none_nil_classifies_unknown",
+      "error": {"kind": "none"},
+      "want": {"classify": "unknown", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "empty_string_classifies_unknown",
+      "error": {"kind": "string", "text": ""},
+      "want": {"classify": "unknown", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "operational_locked",
+      "error": {"kind": "operational_error", "text": "database is locked"},
+      "want": {"classify": "locked", "transient": true, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "operational_table_locked",
+      "error": {"kind": "operational_error", "text": "database table is locked"},
+      "want": {"classify": "locked", "transient": true, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "operational_busy",
+      "error": {"kind": "operational_error", "text": "sqlite_busy: database is busy"},
+      "want": {"classify": "locked", "transient": true, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "string_busy_is_not_transient",
+      "comment": "The transient predicate is type-gated on OperationalError; a bare RPC-wrapped string saying busy still classifies as locked but must not drive the read-retry path.",
+      "error": {"kind": "string", "text": "sqlite_busy: busy"},
+      "want": {"classify": "locked", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "database_error_busy_is_not_transient",
+      "error": {"kind": "database_error", "text": "database is busy"},
+      "want": {"classify": "locked", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "exception_kind_phrase_only",
+      "error": {"kind": "exception", "text": "database is locked"},
+      "want": {"classify": "locked", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "operational_disk_io_error",
+      "comment": "Intentional disagreement by design: the read-retry predicate treats SQLITE_IOERR as transient, while the cause bucket is disk.",
+      "error": {"kind": "operational_error", "text": "disk i/o error on wal read"},
+      "want": {"classify": "disk", "transient": true, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "string_disk_io_error",
+      "error": {"kind": "string", "text": "disk i/o error"},
+      "want": {"classify": "disk", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "operational_sqlite_full",
+      "error": {"kind": "operational_error", "text": "database or disk is full"},
+      "want": {"classify": "disk", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": true, "fts_scoped": false}
+    },
+    {
+      "name": "string_readonly_database",
+      "comment": "classify's broad readonly fallback lands in the disk bucket even though the disk-full marker list does not match.",
+      "error": {"kind": "string", "text": "attempt to write a readonly database"},
+      "want": {"classify": "disk", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "string_read_only_file_system",
+      "error": {"kind": "string", "text": "read-only file system"},
+      "want": {"classify": "disk", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "string_no_space_left",
+      "error": {"kind": "string", "text": "no space left on device"},
+      "want": {"classify": "disk", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": true, "fts_scoped": false}
+    },
+    {
+      "name": "os_error_enospc_shortcut",
+      "comment": "The errno shortcut fires without depending on message wording.",
+      "error": {"kind": "os_error", "text": "No space left on device", "enospc": true},
+      "want": {"classify": "disk", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": true, "fts_scoped": false}
+    },
+    {
+      "name": "os_error_without_enospc_is_not_disk",
+      "comment": "Not every OSError is a disk-full: no errno shortcut, no marker wording.",
+      "error": {"kind": "os_error", "text": "operation not permitted"},
+      "want": {"classify": "unknown", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "database_error_malformed_image",
+      "comment": "#77386: the corruption phrase must beat the disk bucket even though the text contains the substring disk.",
+      "error": {"kind": "database_error", "text": "database disk image is malformed"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": true, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "database_error_malformed_schema",
+      "error": {"kind": "database_error", "text": "malformed database schema"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": true, "malformed_schema": true, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "string_malformed_image_not_diagnosed",
+      "comment": "The malformed diagnostics predicates are type-gated on the DatabaseError family; a wrapped string only classifies.",
+      "error": {"kind": "string", "text": "database disk image is malformed"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "operational_malformed_also_diagnosed",
+      "comment": "OperationalError subclasses DatabaseError in the sqlite3 hierarchy, so the malformed diagnostics predicates fire for it too.",
+      "error": {"kind": "operational_error", "text": "database disk image is malformed"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": true, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "database_error_not_a_database",
+      "error": {"kind": "database_error", "text": "file is not a database"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "corruption_phrase_beats_disk_fallback",
+      "error": {"kind": "string", "text": "disk failure: database corruption reported"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "fts_vtab_code_outranks_generic_prose",
+      "comment": "#97794: SQLITE_CORRUPT_VTAB scopes the damage to the FTS index even when the message is the generic malformed-image text.",
+      "error": {"kind": "database_error", "text": "database disk image is malformed", "sqlite_errorcode": 267},
+      "want": {"classify": "fts_index", "transient": false, "malformed_db": true, "malformed_schema": false, "disk_full": false, "fts_scoped": true}
+    },
+    {
+      "name": "fts_vtab_code_without_fts_prose",
+      "comment": "A known result code decides alone; no FTS wording required.",
+      "error": {"kind": "database_error", "text": "node handler failed", "sqlite_errorcode": 267},
+      "want": {"classify": "fts_index", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": true}
+    },
+    {
+      "name": "known_code_contradicts_fts_prose",
+      "comment": "Fail closed: any other known code contradicts FTS-looking prose, so the text never gets a vote.",
+      "error": {"kind": "database_error", "text": "malformed database schema in messages_fts", "sqlite_errorcode": 11},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": true, "malformed_schema": true, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "fts5_report_string",
+      "comment": "Without a result code, an fts5: corruption report naming a messages_fts object is index damage.",
+      "error": {"kind": "string", "text": "fts5: database corruption in messages_fts_data"},
+      "want": {"classify": "fts_index", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": true}
+    },
+    {
+      "name": "fts_object_with_corruption_marker",
+      "error": {"kind": "string", "text": "sqlite error: database disk image is malformed inside messages_fts_idx"},
+      "want": {"classify": "fts_index", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": true}
+    },
+    {
+      "name": "fts_object_name_alone_is_not_corruption",
+      "comment": "Naming the FTS object without a corruption report or marker is not index damage.",
+      "error": {"kind": "string", "text": "messages_fts_docsize has a missing row"},
+      "want": {"classify": "unknown", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_turn_lease",
+      "comment": "Lease fencing classifies by type: the message carries no locked/busy wording.",
+      "error": {"kind": "turn_lease", "text": "holder no longer owns this turn"},
+      "want": {"classify": "turn_lease", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "phrase_turn_lease_beats_locked",
+      "comment": "The phrase table is ordered: turn lease wins over locked when both appear.",
+      "error": {"kind": "string", "text": "turn lease conflict while database is locked"},
+      "want": {"classify": "turn_lease", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_compression_in_progress_collapses_to_busy",
+      "comment": "SessionCompressionInProgressError subclasses CompressionSessionBusyError; both buckets are compression.",
+      "error": {"kind": "compression_in_progress", "text": "concurrent writer collided with a live compression lock"},
+      "want": {"classify": "compression", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_compression_busy",
+      "error": {"kind": "compression_busy", "text": "a non-owner tried to write during compression"},
+      "want": {"classify": "compression", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_compression_closed",
+      "error": {"kind": "compression_closed", "text": "write targeted a parent already closed by compression"},
+      "want": {"classify": "compression_closed", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "phrase_compression_closed_beats_busy",
+      "error": {"kind": "string", "text": "session closed by compression; database is busy"},
+      "want": {"classify": "compression_closed", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "phrase_being_compressed",
+      "error": {"kind": "string", "text": "session is being compressed by another worker"},
+      "want": {"classify": "compression", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "phrase_compression_lease",
+      "error": {"kind": "string", "text": "compression lease held by pid 12"},
+      "want": {"classify": "compression", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_deleted_wal_beats_replaced_parent",
+      "comment": "DeletedWalGenerationError subclasses StateDbReplacedError; the isinstance ladder checks it first because the recovery artifact differs.",
+      "error": {"kind": "deleted_wal", "text": "a live process holds a deleted state.db-wal inode"},
+      "want": {"classify": "deleted_wal", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "phrase_deleted_wal_shm",
+      "error": {"kind": "string", "text": "a live process holds a deleted state.db-shm inode"},
+      "want": {"classify": "deleted_wal", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_replaced",
+      "error": {"kind": "replaced", "text": "state.db was replaced underneath this process"},
+      "want": {"classify": "replaced", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "phrase_replaced",
+      "error": {"kind": "string", "text": "fatal: state.db was replaced underneath the gateway"},
+      "want": {"classify": "replaced", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_corrupt_quarantine",
+      "comment": "StateDbCorruptError subclasses sqlite3.DatabaseError, but the marker-less quarantine text keeps the diagnostics predicates closed.",
+      "error": {"kind": "corrupt", "text": "quarantined after structural damage"},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "typed_corrupt_beats_fts_code",
+      "comment": "The typed ladder runs before the FTS provenance check: a quarantined handle stays corrupt even when it carries SQLITE_CORRUPT_VTAB.",
+      "error": {"kind": "corrupt", "text": "database disk image is malformed", "sqlite_errorcode": 267},
+      "want": {"classify": "corrupt", "transient": false, "malformed_db": true, "malformed_schema": false, "disk_full": false, "fts_scoped": true}
+    },
+    {
+      "name": "operational_locked_with_busy_code",
+      "comment": "A non-VTAB result code never implies FTS scoping, and the locked phrase still classifies.",
+      "error": {"kind": "operational_error", "text": "database is locked", "sqlite_errorcode": 5},
+      "want": {"classify": "locked", "transient": true, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    },
+    {
+      "name": "unknown_gibberish",
+      "error": {"kind": "string", "text": "something else entirely"},
+      "want": {"classify": "unknown", "transient": false, "malformed_db": false, "malformed_schema": false, "disk_full": false, "fts_scoped": false}
+    }
+  ]
+}

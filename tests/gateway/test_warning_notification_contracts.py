@@ -86,7 +86,7 @@ def test_bad_config_containers_do_not_abort_startup_warning(tmp_path, monkeypatc
     gateway = object.__new__(GatewayRunner)
     gateway._session_db_init_error = "database is locked"
     gateway._session_db_handle_cache = None
-    gateway._home_channel_transports = lambda: [(Platform.SLACK, None, None, None)]
-    gateway._send_home_channel_message = AsyncMock()
+    gateway._notification_channel_transports = lambda: [(Platform.SLACK, None, None, None)]
+    gateway._send_notification_channel_message = AsyncMock()
     asyncio.run(gateway._send_session_db_warning_notifications())
-    assert gateway._send_home_channel_message.await_count == int(expected)
+    assert gateway._send_notification_channel_message.await_count == int(expected)

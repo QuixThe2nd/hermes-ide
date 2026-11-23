@@ -49,12 +49,12 @@ def _runner_with_startup_failure(monkeypatch, clock: _Clock, *, heals: bool):
         runner._open_session_db_for_active_scope(raise_on_error=True)
     clock.now = 5.0  # past the backoff: the pre-broadcast re-check is allowed to open
     sent: list[str] = []
-    monkeypatch.setattr(runner, "_home_channel_transports", lambda: [("discord", {}, "home", object())])
+    monkeypatch.setattr(runner, "_notification_channel_transports", lambda: [("discord", {}, "home", object())])
 
-    async def _capture(_platform, _home, _transport, message, _fmt):
+    async def _capture(_platform, _channel, _transport, message, _fmt):
         sent.append(message)
 
-    monkeypatch.setattr(runner, "_send_home_channel_message", _capture)
+    monkeypatch.setattr(runner, "_send_notification_channel_message", _capture)
     return runner, sent
 
 

@@ -2009,11 +2009,11 @@ class GatewayTurnMixin:
 
         return response
 
-    # Chat-side next steps keyed by HTTP status; `{relogin}` is the profile-aware host command,
-    # filled from the turn's agent provider.
+    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
+    # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
     _STATUS_HINTS = {
         401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
-              "Run `{relogin}` on the host, or use /model to switch models."),
+              "Use /login here, or run `{relogin}` on the host."),
         402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
         529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
@@ -2365,6 +2365,13 @@ class GatewayTurnMixin:
         persist_user_display_kind = (
             "internal_notification" if getattr(event, "internal", False) else None
         )
+        # Delivery IDs are only unique in their transport namespace. Keyless turns
+        # need their own identity, even when another process writes to this session.
+        import uuid
+        _owner_namespace = [source.platform.value, source.profile, source.scope_id,
+                            source.chat_id, source.thread_id, str(event.message_id)]
+        persistence_owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(_owner_namespace)))
+                             if event.message_id else str(uuid.uuid4()))
         # Build the context prompt to inject.  The render is pinned per
         # session, keyed by a hash of the exact renderer inputs
         # (_ephemeral_change_key).  A key hit reuses the pinned bytes verbatim
@@ -4053,6 +4060,8 @@ class GatewayTurnMixin:
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata={
+                    "gateway_input_owner": persistence_owner, **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 turn_started_at=_msg_start_time,
             )
@@ -4691,26 +4700,20 @@ class GatewayTurnMixin:
             # Crash-resilience for failures that happen before AIAgent enters
             # run_conversation() (for example: provider/httpx client init
             # failures). In that path the agent cannot persist the current
-            # inbound turn itself, so append the user message here once. If the
-            # agent already reached its early turn-start persistence, the latest
-            # transcript user row will match and we skip the duplicate.
+            # inbound turn itself, so append the user message here once. An
+            # accepted turn is identifiable by gateway_input_owner, never by
+            # its content: content and unrelated writers cannot establish
+            # ownership. If this turn's owner marker is already present, the
+            # agent persisted the row itself and we skip the duplicate.
             try:
                 if 'message_text' in locals() and message_text is not None and session_entry is not None:
-                    _already_persisted = False
-                    try:
-                        _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                    except Exception:
-                        _recent_transcript = []
-                    for _msg in reversed(_recent_transcript[-10:]):
-                        if _msg.get("role") == "user":
-                            _expected_user_content = (
-                                persist_user_message
-                                if persist_user_message is not None
-                                else message_text
-                            )
-                            _already_persisted = (_msg.get("content") == _expected_user_content)
-                            break
-                    if not _already_persisted:
+                    _owned = await self.async_session_store.has_input_owner(
+                        session_entry.session_id, persistence_owner)
+                    if _owned:
+                        logger.debug(
+                            "Inbound user message already persisted by %s for session %s",
+                            persistence_owner, session_entry.session_id)
+                    else:
                         _user_entry = {
                             "role": "user",
                             "content": (
@@ -4723,6 +4726,9 @@ class GatewayTurnMixin:
                                 if persist_user_timestamp is not None
                                 else time.time()
                             ),
+                            "display_metadata": {
+                                "gateway_input_owner": persistence_owner,
+                            },
                         }
                         if 'persist_user_display_kind' in locals() and persist_user_display_kind:
                             _user_entry["display_kind"] = persist_user_display_kind
@@ -6779,6 +6785,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         message_type: Optional[str] = None,
         scheduled_heartbeat: bool = False,
         turn_started_at: Optional[float] = None,
@@ -7149,6 +7156,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
             turn_started_at=turn_started_at,
         )
