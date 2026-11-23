@@ -809,7 +809,27 @@ class GatewayAgentCacheMixin:
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            parked = adapter.get_pending_message(session_key)  # consume
+            # A /stop-class interrupt discards a parked HUMAN follow-up (the user just
+            # canceled the session). A parked INTERNAL wake (delegation completion,
+            # context-card flush) is machine-originated work the gateway owes the
+            # session — the same invariant run_busy.py's overflow rule encodes — so it
+            # survives: restage it for the command drain to restart, or, when the
+            # discarded head was human, pull the oldest internal wake out of the
+            # overflow ahead of the humans queued before it.
+            if parked is not None and getattr(parked, "internal", False) \
+                    and not self._is_goal_continuation_event(parked):
+                adapter._pending_messages[session_key] = parked
+            elif parked is not None or self._overflow_queue(session_key):
+                overflow = self._overflow_queue(session_key) or ()
+                wake_idx = next(
+                    (i for i, queued in enumerate(overflow)
+                     if getattr(queued, "internal", False)
+                     and not self._is_goal_continuation_event(queued)),
+                    None,
+                )
+                if wake_idx is not None:
+                    adapter._pending_messages[session_key] = overflow.pop(wake_idx)
         if _iac_state is not None:
             _iac_state.persistent.pending_command_text = None
         if release_running_state:
