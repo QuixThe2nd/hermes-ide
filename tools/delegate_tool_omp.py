@@ -743,6 +743,13 @@ def run_omp_lane(
     session_dir = _lane_session_dir(directory, model)
     _write_live(directory, session_dir, model)
     base["session_dir"] = str(session_dir)
+    try:
+        # Best-effort: a viewer-notice failure must never fail the lane run.
+        from plugins.omp_viewer.watch import emit_lane_watch_notice
+
+        emit_lane_watch_notice(session_dir)
+    except Exception:
+        logger.debug("omp lane watch notice failed", exc_info=True)
     config = dict(omp_config if omp_config is not None else (_cfg().get("omp") or {}))
     if spec.get("goal") is True:
         return run_omp_goal(

@@ -548,7 +548,16 @@ body {
     if (!q) return null;
     const found = state.runs.find((r) =>
       r.session_file === q || basename(r.session_file) === q || runStem(r.session_file) === q);
-    return found ? found.session_file : null;
+    if (found) return found.session_file;
+    // A #<session-dir> link (the watch link the lane emits) resolves to the
+    // newest transcript in that lane session directory; runs are sorted
+    // newest-first, so the first prefix match is the live one.
+    if (q.startsWith('/')) {
+      const dir = q.replace(/\/+$/, '') + '/';
+      const inDir = state.runs.find((r) => r.session_file.startsWith(dir));
+      if (inDir) return inDir.session_file;
+    }
+    return null;
   }
 
   function el(tag, cls) {

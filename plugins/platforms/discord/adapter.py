@@ -31,6 +31,7 @@ from urllib.parse import quote, urljoin
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
 from tools.claude_viewer_url import is_allowed_watch_url
+from plugins.omp_viewer.url import is_allowed_watch_url as _omp_lane_url_allowed
 from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,63 @@ def _claude_agent_markdown_progress(url: str) -> str:
     )
 
 
+_OMP_LANE_STATUS_PREFIX = "OMP Lane: "
+
+
+def _omp_lane_status_url(content: str) -> Optional[str]:
+    """Return the watch URL when *content* is exactly an OMP Lane status line.
+
+    The URL itself is vetted by ``plugins.omp_viewer.url.is_allowed_watch_url``
+    — scheme http/https, path ``/`` only, no query, fragment empty or an
+    absolute traversal-free session directory, and a private-network host.
+    The viewer is unauthenticated, so that host gate is what keeps an embed
+    from pointing at something off the LAN/tailnet.
+    """
+    if content is None:
+        return None
+    text = content.strip()
+    if not text.startswith(_OMP_LANE_STATUS_PREFIX):
+        return None
+    url = text[len(_OMP_LANE_STATUS_PREFIX):].strip()
+    if not url or any(ch.isspace() for ch in url):
+        return None
+    if not _omp_lane_url_allowed(url):
+        return None
+    return url
+
+
+def _omp_lane_embed_spec(url: str) -> Dict[str, Any]:
+    """Pure-data embed fields for an OMP lane live-progress card."""
+    return {
+        "title": "OMP Lane",
+        "url": url,
+        "description": _format_discord_markdown_link("Watch live session", url),
+        "color": 0xF0B429,
+        "footer": "Hermes · OMP lane",
+    }
+
+
+def _build_omp_lane_embed(url: str) -> Any:
+    """Build a discord.Embed for an OMP lane live-progress URL (no external artwork)."""
+    spec = _omp_lane_embed_spec(url)
+    embed = discord.Embed(
+        title=spec["title"],
+        url=spec["url"],
+        description=spec["description"],
+        color=spec["color"],
+    )
+    embed.set_footer(text=spec["footer"])
+    return embed
+
+
+def _format_omp_lane_markdown_progress(url: str) -> str:
+    """Forum/fail-soft markdown form — no raw dumped URL."""
+    return (
+        f"{_OMP_LANE_STATUS_PREFIX}"
+        f"{_format_discord_markdown_link('Watch live session', url)}"
+    )
+
+
 def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Callable[[str], Any]]]:
     """Resolve an agent status line to ``(url, markdown_line, embed_factory)``.
 
@@ -152,6 +210,9 @@ def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Call
     claude_url = _claude_agent_status_url(content)
     if claude_url:
         return claude_url, _claude_agent_markdown_progress(claude_url), _build_claude_agent_embed
+    omp_url = _omp_lane_status_url(content)
+    if omp_url:
+        return omp_url, _format_omp_lane_markdown_progress(omp_url), _build_omp_lane_embed
     return None
 
 

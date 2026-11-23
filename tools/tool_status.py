@@ -34,19 +34,21 @@ _tool_status_call_id: ContextVar[Optional[str]] = ContextVar(
     default=None,
 )
 
-# Branded agent-viewer status lines. ``delegate_claude_agent`` announces a
-# freshly spawned run's live viewer page through this callback while the run
-# is still going; platform adapters render those exact lines as branded cards
-# (Discord converts them into embeds). The prefixes are the producer/consumer
-# contract: the emitting tools build their line from them, and the gateway
-# uses them to recognize the line so it can be ordered against the
-# tool-progress row. The adapters' own URL validators
-# (``_claude_agent_status_url`` in plugins/platforms/discord/adapter.py)
-# keep their copies for validation.
+# Branded agent-viewer status lines. ``delegate_claude_agent`` and the OMP
+# lane launcher announce a freshly spawned run's live viewer page through
+# this callback while the run is still going; platform adapters render
+# those exact lines as branded cards (Discord converts them into embeds).
+# The prefixes are the producer/consumer contract: the emitting tools build
+# their line from them, and the gateway uses them to recognize the line so
+# it can be ordered against the tool-progress row. The adapters' own URL
+# validators (``_claude_agent_status_url`` in
+# plugins/platforms/discord/adapter.py) keep their copies for validation.
 CLAUDE_AGENT_VIEWER_STATUS_PREFIX = "Claude Code Agent: "
+OMP_LANE_VIEWER_STATUS_PREFIX = "OMP Lane: "
 
 AGENT_VIEWER_STATUS_PREFIXES = (
     CLAUDE_AGENT_VIEWER_STATUS_PREFIX,
+    OMP_LANE_VIEWER_STATUS_PREFIX,
 )
 
 
