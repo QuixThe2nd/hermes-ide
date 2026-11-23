@@ -326,6 +326,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
+| `DISCORD_ALLOWED_BOTS` | No | — | Comma-separated Discord bot user IDs, or the `discord.allowed_bots` list in `config.yaml`. When set, a bot-authored message is admitted only if its author is in this list **and** the `DISCORD_ALLOW_BOTS` mode admits it — the list narrows, it never widens. Unset or empty: no effect. A malformed value denies bot messages (humans unaffected). |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -347,6 +348,16 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 ### Bot-to-bot handoffs: tag once, collect the burst
 
 Bot input remains opt-in (`DISCORD_ALLOW_BOTS=none` by default). When enabled with `mentions` or `all`, **starting a bot handoff requires a literal `<@BOT_ID>` / `<@!BOT_ID>` in the message content by default**. Discord's automatic reply ping alone does not start a handoff. Human-authored messages retain their existing mention behavior.
+
+To admit only specific peer bots rather than every bot in a server, list their user IDs — either form works:
+
+```yaml
+discord:
+  allow_bots: mentions
+  allowed_bots: ["123456789012345678", "234567890123456789"]
+```
+
+With `allowed_bots` set, `mentions` admits a listed bot only when it `@mentions` Hermes as usual, `all` admits listed bots without further bot-specific checks, and `none` still admits nothing. An unlisted bot is dropped exactly as `allow_bots: none` drops it. The list never applies to human authors.
 
 After an admitted bot mention, Hermes briefly accepts unmentioned follow-ups from **that same bot in that same channel or thread**. Text follow-ups enter the existing text batcher, so a rapidly split response can reach the agent together without repeating the tag on every part. No special sender protocol or part markers are required.
 

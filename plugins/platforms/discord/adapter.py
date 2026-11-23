@@ -627,6 +627,7 @@ _GATE_ENV_KEYS = (
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
     "DISCORD_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_BOTS",
+    "DISCORD_ALLOWED_BOTS",
     "GATEWAY_ALLOW_ALL_USERS",
     "GATEWAY_ALLOWED_USERS",
 )
@@ -1026,6 +1027,7 @@ from plugins.platforms.discord.reaction_gate import (
 from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
 )
+from gateway import bot_allowlist
 from gateway.jev_notice import (
     format_notice_async,
     reaction_gate_record,
@@ -2395,6 +2397,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             allow_bots = self._get_allow_bots()
             bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
+                return False, False
+            # Per-bot allowlist (discord.allowed_bots): narrow-only — an
+            # unlisted bot is dropped exactly as allow_bots="none" drops it;
+            # a listed bot still faces the mode rules below. An unset/empty
+            # list returns True without invoking the helper.
+            if not self._allowed_bots_admits(str(getattr(message.author, "id", "") or "")):
                 return False, False
             if (
                 allow_bots == "mentions"
@@ -6097,6 +6105,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
         return str(raw or "none").lower().strip() or "none"
 
+    def _get_allowed_bots(self):
+        """Raw per-bot allowlist value (``discord.allowed_bots``), per-profile."""
+        return self._gate_raw("allowed_bots", "DISCORD_ALLOWED_BOTS")
+
+    def _allowed_bots_admits(self, author_id: str) -> bool:
+        """Whether the per-bot allowlist admits this bot author (narrow-only).
+
+        Unset/empty list → True without invoking the helper (behaviour
+        identical to a gateway without the setting). Unevaluable list →
+        False (fail closed). Listed bots still face the ``allow_bots`` mode
+        rules after this gate; human authors never reach it.
+        """
+        return bot_allowlist.admits(self._get_allowed_bots(), author_id)
+
     @staticmethod
     def _bot_tag_debounce_key(message: Any) -> str:
         return (
@@ -8779,6 +8801,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # grant in _is_allowed_user — never applies to DMs).
     _gate("allowed_guilds", "DISCORD_ALLOWED_GUILDS", from_platform_extra=True)
     _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
+    # allowed_bots: extra keeps the original YAML shape (a list, or a CSV /
+    # JSON-array string) because the helper parses every form; the env
+    # bridge always carries the comma-joined string form. Seeded like every
+    # gate so a hub-side adapter that sees only PlatformConfig.extra can
+    # still evaluate the list.
+    allowed_bots_cfg = (
+        discord_cfg["allowed_bots"] if "allowed_bots" in discord_cfg
+        else platform_extra_cfg.get("allowed_bots")
+    )
+    if allowed_bots_cfg is not None:
+        seeded_extra["allowed_bots"] = allowed_bots_cfg
+        _env_default("DISCORD_ALLOWED_BOTS", allowed_bots_cfg)
     clarify_mentions_cfg = (
         discord_cfg["clarify_mentions"] if "clarify_mentions" in discord_cfg
         else platform_extra_cfg.get("clarify_mentions")

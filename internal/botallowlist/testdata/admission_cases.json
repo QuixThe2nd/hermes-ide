@@ -1,0 +1,32 @@
+{
+  "comment": "Shared admission table for the bot allowlist. internal/botallowlist Go tests and the Python bridge test (tests/gateway/test_discord_allowed_bots.py) both consume these cases: Parse must accept/reject as marked, Member must answer listed, and the cmd/botallowlist binary must exit 1 exactly on malformed rows. The Python bridge derives its admit verdict as: malformed -> deny; count == 0 -> admit (an empty list narrows nothing); otherwise listed.",
+  "cases": [
+    {"name": "yaml list of strings, member", "raw": ["111", "222"], "author_id": "222", "listed": true, "count": 2, "malformed": false},
+    {"name": "yaml list of strings, non-member", "raw": ["111"], "author_id": "222", "listed": false, "count": 1, "malformed": false},
+    {"name": "yaml list of ints", "raw": [111, 222], "author_id": "111", "listed": true, "count": 2, "malformed": false},
+    {"name": "snowflake int keeps every digit", "raw": [123456789012345678901], "author_id": "123456789012345678901", "listed": true, "count": 1, "malformed": false},
+    {"name": "csv string", "raw": "111, 222 ,333", "author_id": "333", "listed": true, "count": 3, "malformed": false},
+    {"name": "csv string with empty tail", "raw": "111,", "author_id": "111", "listed": true, "count": 1, "malformed": false},
+    {"name": "json array string", "raw": "[\"111\",\"222\"]", "author_id": "222", "listed": true, "count": 2, "malformed": false},
+    {"name": "json array string of ints", "raw": "[111]", "author_id": "111", "listed": true, "count": 1, "malformed": false},
+    {"name": "invalid json array string falls back to csv", "raw": "[111, abc", "author_id": "abc", "listed": true, "count": 2, "malformed": false},
+    {"name": "json array with trailing garbage is csv", "raw": "[\"111\"] extra", "author_id": "111", "listed": false, "count": 1, "malformed": false},
+    {"name": "json object string is csv-shaped garbage", "raw": "{\"id\":\"111\"}, x", "author_id": "111", "listed": false, "count": 2, "malformed": false},
+    {"name": "null narrows nothing", "raw": null, "author_id": "111", "listed": false, "count": 0, "malformed": false},
+    {"name": "empty string narrows nothing", "raw": "", "author_id": "111", "listed": false, "count": 0, "malformed": false},
+    {"name": "empty list narrows nothing", "raw": [], "author_id": "111", "listed": false, "count": 0, "malformed": false},
+    {"name": "empty json array narrows nothing", "raw": "[]", "author_id": "111", "listed": false, "count": 0, "malformed": false},
+    {"name": "csv of separators narrows nothing", "raw": ",,", "author_id": "111", "listed": false, "count": 0, "malformed": false},
+    {"name": "top-level number", "raw": 111, "author_id": "111", "listed": true, "count": 1, "malformed": false},
+    {"name": "no prefix match", "raw": ["111"], "author_id": "1111", "listed": false, "count": 1, "malformed": false},
+    {"name": "no substring match", "raw": ["111"], "author_id": "11", "listed": false, "count": 1, "malformed": false},
+    {"name": "no numeric normalization", "raw": ["111"], "author_id": "0111", "listed": false, "count": 1, "malformed": false},
+    {"name": "empty author never listed", "raw": ["111"], "author_id": "", "listed": false, "count": 1, "malformed": false},
+    {"name": "object is malformed", "raw": {"id": "111"}, "author_id": "111", "malformed": true},
+    {"name": "bool is malformed", "raw": true, "author_id": "111", "malformed": true},
+    {"name": "nested list is malformed", "raw": [["111"]], "author_id": "111", "malformed": true},
+    {"name": "map entry is malformed", "raw": [{"id": "111"}], "author_id": "111", "malformed": true},
+    {"name": "bool entry is malformed", "raw": [true], "author_id": "111", "malformed": true},
+    {"name": "null entry is malformed", "raw": [null], "author_id": "111", "malformed": true}
+  ]
+}
