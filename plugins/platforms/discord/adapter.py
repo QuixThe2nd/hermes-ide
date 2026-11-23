@@ -71,90 +71,6 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     return f"[{escaped_label}](<{escaped_url}>)"
 
 
-_CLAUDE_AGENT_STATUS_PREFIX = "Claude Code Agent: "
-_CLAUDE_AGENT_ICON_URL = "https://claude.ai/images/claude_app_icon.png"
-_CLAUDE_AGENT_BRAND_URL = "https://claude.ai"
-
-
-def _claude_agent_status_url(content: str) -> Optional[str]:
-    """Return the watch URL when *content* is exactly a Claude Code Agent status line.
-
-    The URL itself is vetted by ``is_allowed_watch_url``
-    (tools/claude_viewer_url.py) — scheme http/https, path ``/`` only, no
-    query, fragment empty or a run stem, and a private-network host. The
-    viewer is unauthenticated, so that host gate is what keeps an embed from
-    pointing at something off the LAN/tailnet.
-    """
-    if content is None:
-        return None
-    text = content.strip()
-    if not text.startswith(_CLAUDE_AGENT_STATUS_PREFIX):
-        return None
-    url = text[len(_CLAUDE_AGENT_STATUS_PREFIX) :].strip()
-    if not url or any(ch.isspace() for ch in url):
-        return None
-    if not is_allowed_watch_url(url):
-        return None
-    return url
-
-
-def _claude_agent_embed_spec(url: str) -> Dict[str, Any]:
-    """Pure-data embed fields for a Claude Code Agent live-progress card."""
-    return {
-        "title": "Claude Code Agent",
-        "url": url,
-        "description": _format_discord_markdown_link("Watch live session", url),
-        "author": {
-            "name": "Claude Code",
-            "icon_url": _CLAUDE_AGENT_ICON_URL,
-            "url": _CLAUDE_AGENT_BRAND_URL,
-        },
-        "thumbnail": _CLAUDE_AGENT_ICON_URL,
-        "color": 0xD97757,
-        "footer": "Anthropic · Claude Code",
-    }
-
-
-def _build_claude_agent_embed(url: str) -> Any:
-    """Build a discord.Embed for a Claude Code Agent live-progress URL."""
-    spec = _claude_agent_embed_spec(url)
-    embed = discord.Embed(
-        title=spec["title"],
-        url=spec["url"],
-        description=spec["description"],
-        color=spec["color"],
-    )
-    author = spec["author"]
-    embed.set_author(
-        name=author["name"],
-        icon_url=author["icon_url"],
-        url=author["url"],
-    )
-    embed.set_thumbnail(url=spec["thumbnail"])
-    embed.set_footer(text=spec["footer"])
-    return embed
-
-
-def _claude_agent_markdown_progress(url: str) -> str:
-    """Forum/fail-soft markdown form — no raw dumped URL."""
-    return (
-        f"{_CLAUDE_AGENT_STATUS_PREFIX}"
-        f"{_format_discord_markdown_link('Watch live session', url)}"
-    )
-
-
-def _agent_progress_embed_payload(content: str) -> Optional[Tuple[str, str, Callable[[str], Any]]]:
-    """Resolve an agent status line to ``(url, markdown_line, embed_factory)``.
-
-    Matched prefixes are disjoint, so at most one branch applies. Returns
-    ``None`` for ordinary content, which takes the plain-text send path.
-    """
-    claude_url = _claude_agent_status_url(content)
-    if claude_url:
-        return claude_url, _claude_agent_markdown_progress(claude_url), _build_claude_agent_embed
-    return None
-
-
 class _Snowflake:
     """``.id``-only Snowflake stand-in for ``channel.history(before=...)``; avoids
     ``discord.Object``, which stubbed discord test doubles cannot build."""
@@ -4353,59 +4269,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # path clears it for every later attempt of this send.
             reference = await self._reply_reference_for_send(reply_to, channel, metadata)
 
-            agent_progress = _agent_progress_embed_payload(content)
-            if agent_progress:
-                agent_url, markdown_progress, build_embed = agent_progress
-                if self._is_forum_parent(channel):
-                    content = markdown_progress
-                else:
-                    try:
-                        msg = await channel.send(
-                            embed=build_embed(agent_url),
-                            reference=reference,
-                        )
-                        message_id = str(msg.id)
-                        _target_id = thread_id or chat_id
-                        if nonconversational:
-                            self._nonconversational_messages.mark_many([message_id])
-                        elif not (
-                            _looks_like_nonconversational_history_message(content)
-                            or _looks_like_self_notice_history_message(content)
-                        ):
-                            self._last_self_message_id[_target_id] = message_id
-                        # Inbox contract: every top-level bot message in the
-                        # Hermes Starts inbox channel anchors a public thread.
-                        await _inbox_thread_module().ensure_inbox_thread(
-                            self, channel, msg, content, thread_id=thread_id
-                        )
-                        result = SendResult(
-                            success=True,
-                            message_id=message_id,
-                            raw_response={"message_ids": [message_id]},
-                        )
-                        await self._record_response_async(
-                            reply_to, result, content, final_delivery, metadata
-                        )
-                        return result
-                    except Exception as e:
-                        if reference is not None and self._reference_proven_invalid(str(e)):
-                            # Discord already rejected this reference —
-                            # drop it so the markdown fallback below (and
-                            # any later chunk) can't replay a rejection
-                            # Discord has already proven permanent.
-                            logger.warning(
-                                "[%s] Reply target %s rejected the reply reference; dropping it before the markdown fallback",
-                                self.name,
-                                reply_to,
-                            )
-                            reference = None
-                        logger.debug(
-                            "[%s] agent progress embed send failed; falling back to markdown link: %s",
-                            self.name,
-                            e,
-                        )
-                        content = markdown_progress
-
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
@@ -4634,15 +4497,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             channel = await self._resolve_channel(chat_id)
             msg = channel.get_partial_message(int(message_id))
-            if (metadata or {}).get("claude_agent_progress_combined"):
-                # Discord Claude delegation single-message rail: the gateway
-                # is editing the exact notice message it recorded for this
-                # delegate_claude_agent call into the combined card. Selected
-                # ONLY by this internal metadata key — arbitrary edits never
-                # take the embed path.
-                return await self._edit_combined_agent_progress(
-                    msg, message_id, content
-                )
             formatted = self.format_message(content)
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
@@ -4691,34 +4545,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
-
-    async def _edit_combined_agent_progress(
-        self, msg, message_id: str, content: str
-    ) -> SendResult:
-        """Edit a delegation notice into the single combined card (metadata-gated).
-
-        Reached only from ``edit_message`` with the internal
-        ``claude_agent_progress_combined`` metadata key: the notice text
-        stays as the message content and the FINAL line — a viewer URL
-        re-validated here by the same strict ``_claude_agent_status_url``
-        checks used for sends — renders as the branded embed. A line that
-        no longer validates degrades to a plain-text edit of the full
-        content (notice + link both stay visible) rather than losing
-        either. Embed-transport failures raise to the caller so the
-        gateway can fall back to the legacy standalone card.
-        """
-        text = (content or "").strip()
-        lines = text.split("\n") if text else []
-        url = _claude_agent_status_url(lines[-1]) if lines else None
-        if url is None:
-            await msg.edit(content=self.format_message(content))
-            return SendResult(success=True, message_id=message_id)
-        prefix = "\n".join(lines[:-1]).strip()
-        await msg.edit(
-            content=self.format_message(prefix) if prefix else None,
-            embed=_build_claude_agent_embed(url),
-        )
-        return SendResult(success=True, message_id=message_id)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent Discord message.
