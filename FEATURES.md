@@ -171,7 +171,7 @@ A cron job can claim its own scrollback with a `thread:` deliver token: `deliver
 
 Installs with a provisioned inbox channel (hermes_starts, or the home_server `#inbox`) get that behavior by default: a job created from a Discord session in the inbox's guild whose delivery would default to `origin` is rewritten at create time to the `inbox` token, giving every cron job its own job-named thread under the inbox instead of rooting in the chat it was created from. Explicit targets are never rewritten, installs without a provisioned inbox are unaffected, and `cron.inbox_delivery_enforce: false` opts out.
 
-Config gains API retry backoff timing plus fallback chains for web search and web extract. `agent.tool_call_narration_guidance` is on by default and asks the model to briefly explain a tool call before it makes one. Parent agents run on a default 256-turn budget (`agent.max_turns`, the same default `run_agent.py`'s `main()` uses); set it higher or to `none`/`0` for no limit. The silent default — what a no-override install lands on when `model.default` is empty and no model was ever picked — is Grok-4.6 through xAI OAuth (`xai-oauth`), matching the reference gateway's primary; every implicit path shares one source of truth (`PREFERRED_SILENT_DEFAULT_PROVIDER`/`_MODEL` in `hermes_cli/models.py`, mirrored by the model catalog's `default` labels, with aggregators spelling it `x-ai/grok-4.6`). The GLM-5.3-Flash / GPT-5.6-Sol / Kimi-K3 fallback chain is unchanged. `security.allow_agent_config_writes` lets an operator opt out of the `write_file` and `patch` guard on the Hermes config file; it is off by default. `display.notify_on_complete` can send a native OS notification when a turn finishes, including over an SSH target, and is also off by default.
+Config gains API retry backoff timing plus fallback chains for web search and web extract. `agent.tool_call_narration_guidance` is on by default and asks the model to briefly explain a tool call before it makes one. Parent agents run on a default 256-turn budget (`agent.max_turns`, the same default `run_agent.py`'s `main()` uses); set it higher or to `none`/`0` for no limit. The silent default — what a no-override install lands on when `model.default` is empty and no model was ever picked — is Grok-4.6 through xAI OAuth (`xai-oauth`), matching the reference gateway's primary; every implicit path shares one source of truth (`PREFERRED_SILENT_DEFAULT_PROVIDER`/`_MODEL` in `hermes_cli/models.py`, mirrored by the model catalog's `default` labels, with aggregators spelling it `x-ai/grok-4.6`). The GLM-5.3-Flash / GPT-5.6-Sol / Kimi-K3 fallback chain is unchanged. `security.allow_agent_config_writes` lets an operator opt out of the `write_file` and `patch` guard on the Hermes config file; it is off by default. `display.notify_on_complete` can send a native OS notification through `notify-send` or a custom command when a turn finishes and is also off by default.
 
 `compression.tail_mode` defaults to `lean`, which clamps the verbatim tail to 10–25K. Set it to `legacy` to restore the old `0.20 × threshold` tail.
 
@@ -220,7 +220,23 @@ Use any model you want — OpenRouter, OpenAI, your own endpoint, and [many othe
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
+### Windows (native, PowerShell)
+
+> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
+
+Run this in PowerShell:
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
+
+If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible dependencies.
+>
+> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
 After installation:
 
@@ -228,6 +244,41 @@ After installation:
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
+
+### Troubleshooting
+
+#### Windows Defender or antivirus flags `uv.exe` as malware
+
+If your antivirus (Bitdefender, Windows Defender, etc.) quarantines `uv.exe` from the Hermes `bin` folder (`%LOCALAPPDATA%\hermes\bin\uv.exe`), this is a **false positive**. The file is Astral's `uv` — the Rust Python package manager Hermes bundles to manage its Python environment. ML-based antivirus engines commonly flag unsigned Rust binaries that download and install packages.
+
+**To verify your copy is authentic:**
+
+```powershell
+# Install GitHub CLI if needed
+winget install --id GitHub.cli
+
+# Login to GitHub
+gh auth login
+
+# Run verification
+$uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe"
+$ver = (& $uv --version).Split(' ')[1]
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$zip = "$env:TEMP\uv.zip"
+Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+gh attestation verify $zip --repo astral-sh/uv
+Expand-Archive $zip "$env:TEMP\uv_x" -Force
+(Get-FileHash "$env:TEMP\uv_x\uv.exe").Hash -eq (Get-FileHash $uv).Hash
+```
+
+If attestation says "Verification succeeded" and the last line prints `True`, you're good.
+
+**To whitelist Hermes:**
+- **Windows Defender:** Run PowerShell as Admin → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\bin"`
+- **Bitdefender:** Add an exception in the Bitdefender console (Protection > Antivirus > Settings > Manage Exceptions)
+- Whitelist the **folder**, not the file hash — Hermes updates `uv` and the hash changes every version
+
+For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://github.com/astral-sh/uv/issues/13553), [astral-sh/uv#15011](https://github.com/astral-sh/uv/issues/15011), [astral-sh/uv#10079](https://github.com/astral-sh/uv/issues/10079).
 
 ---
 

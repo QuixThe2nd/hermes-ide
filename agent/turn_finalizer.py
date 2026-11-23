@@ -661,11 +661,9 @@ def finalize_turn(
         logger.debug("resolve_session_title failed: %s", _title_err)
 
     # Optional native OS notification (display.notify_on_complete) — the
-    # desktop-toast sibling of bell_on_complete. Primary use case: the
-    # gateway runs on a headless Linux box and the user sits at a Mac, so
-    # notify_on_complete_ssh ships the AppleScript to the Mac. Interrupted
-    # turns stay silent inside notify_session_complete; every failure is
-    # swallowed there so this can never delay or break the turn.
+    # desktop-toast sibling of bell_on_complete. Interrupted turns stay silent
+    # inside notify_session_complete; every failure is swallowed there so this
+    # can never delay or break the turn.
     try:
         from hermes_cli.config import load_config_readonly
         _display_cfg = (load_config_readonly() or {}).get("display") or {}
@@ -676,7 +674,6 @@ def finalize_turn(
                 platform=_platform,
                 interrupted=interrupted,
                 completed=completed,
-                ssh_target=str(_display_cfg.get("notify_on_complete_ssh") or ""),
                 command=str(_display_cfg.get("notify_on_complete_command") or ""),
                 title=_session_title,
             )
