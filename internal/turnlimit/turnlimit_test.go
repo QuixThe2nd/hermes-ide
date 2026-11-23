@@ -2,6 +2,7 @@ package turnlimit
 
 import (
 	"math"
+	"strconv"
 	"testing"
 )
 
@@ -41,6 +42,8 @@ var resolveCases = []struct {
 	{"INF_upper", "INF", true, DefaultMaxTurns, Unlimited},
 	{"none_padded", " none ", true, DefaultMaxTurns, Unlimited},
 	{"unlimited_padded", "  unlimited  ", true, DefaultMaxTurns, Unlimited},
+	{"Unlimited_titlecase", "Unlimited", true, DefaultMaxTurns, Unlimited},
+	{"INFINITE_upper", "INFINITE", true, DefaultMaxTurns, Unlimited},
 	{"infinite_tabbed", "\tinfinite\t", true, DefaultMaxTurns, Unlimited},
 
 	// Positive numbers pass through exactly.
@@ -101,6 +104,18 @@ func TestDefaultMaxTurnsIs512(t *testing.T) {
 	// turns. Must track hermes_cli/config_defaults.py::DEFAULT_MAX_TURNS.
 	if DefaultMaxTurns != 512 {
 		t.Errorf("DefaultMaxTurns = %d, want 512", DefaultMaxTurns)
+	}
+}
+
+func TestSentinelStringRoundTrip(t *testing.T) {
+	// The gateway bridge writes str(value) to HERMES_MAX_ITERATIONS and the
+	// resolver reads it back (Python twin: test_sentinel_str_int_round_trip
+	// in tests/hermes_cli/test_resolve_turn_limit.py). The decimal spelling
+	// of the sentinel must survive that round trip exactly — it must never
+	// fall back to the default or a truncated value.
+	raw := strconv.Itoa(Unlimited)
+	if got := Resolve(raw, true, DefaultMaxTurns); got != Unlimited {
+		t.Errorf("Resolve(%q) = %d, want Unlimited sentinel (%d)", raw, got, Unlimited)
 	}
 }
 
