@@ -24,16 +24,15 @@ def _via_shared_reader(p: Path, monkeypatch) -> dict:
     return read_json_or_empty(p)
 
 
-def _via_hindsight_runtime_deps(p: Path, monkeypatch) -> dict:
-    import hermes_cli.memory_setup as ms
-    monkeypatch.setattr(ms, "get_hermes_home", lambda: p.parent.parent)  # <home>/hindsight/config.json
-    deps = ms._provider_pip_dependencies("hindsight", ["hindsight-client"])
-    return {"workspace": "bom-ws" if "hindsight-all" in deps else None, "container_tag": None}
+def _via_hindsight_config(p: Path, monkeypatch) -> dict:
+    import plugins.memory.hindsight as hs
+    monkeypatch.setattr(hs, "get_hermes_home", lambda: p.parent.parent)  # <home>/hindsight/config.json
+    return hs._load_config()
 
 
 @pytest.mark.parametrize("filename, loader", [
     ("retaindb.json", _via_shared_reader),
-    ("hindsight/config.json", _via_hindsight_runtime_deps),
+    ("hindsight/config.json", _via_hindsight_config),
 ])
 def test_plugin_config_json_tolerates_bom(tmp_path, monkeypatch, filename, loader):
     target = tmp_path / filename
