@@ -1204,6 +1204,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._bot_tag_debounce_until: Dict[str, float] = {}
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Thread ids this adapter ADOPTED after losing the one-thread-per-message
+        # race (Discord 160004): named by the client that created them, so the
+        # semantic auto-title rename lane must stay off them. Recorded here, not
+        # on the thread object — a real discord.Thread is fully slotted (no
+        # __dict__), so attribute markers never stick. Bounded like the other
+        # per-message id sets above.
+        self._adopted_auto_thread_ids: "OrderedDict[str, None]" = OrderedDict()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._typing_deadlines: Dict[str, float] = {}
@@ -6924,9 +6931,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         the source message id, so the race loser resolves the winner's thread
         directly: ``message.thread``, the client's channel cache, then one
         ``fetch_channel`` with a single short retry for transient errors. The
-        thread is marked ``_hermes_auto_thread_adopted`` so the auto-title
-        rename lane skips it; returns None (caller takes the normal failure
-        path) when it cannot be resolved.
+        thread is recorded in ``self._adopted_auto_thread_ids`` (bounded) so the
+        auto-title rename lane skips it; returns None (caller takes the normal
+        failure path) when it cannot be resolved.
         """
         thread = getattr(message, "thread", None)
         if thread is None and self._client:
@@ -6951,10 +6958,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                                     await asyncio.sleep(0.5)
         if thread is None:
             return None
-        try:
-            setattr(thread, "_hermes_auto_thread_adopted", True)
-        except Exception:
-            pass
+        while len(self._adopted_auto_thread_ids) >= 256:
+            self._adopted_auto_thread_ids.popitem(last=False)
+        self._adopted_auto_thread_ids[str(thread.id)] = None
         logger.info(
             "[Discord] Adopted existing thread %s for message %s (created by another client)",
             getattr(thread, "id", None) or message.id, message.id,
@@ -7840,7 +7846,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # falsy initial name keeps this bot's semantic auto-title rename
                 # lane (_is_discord_auto_thread_lane) off the other bot's thread.
                 None
-                if getattr(auto_threaded_channel, "_hermes_auto_thread_adopted", False)
+                if str(auto_threaded_channel.id) in self._adopted_auto_thread_ids
                 else (
                     getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
                     or await self._auto_thread_name_for_message(message, raw_content)

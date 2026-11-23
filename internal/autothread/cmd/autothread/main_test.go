@@ -266,3 +266,40 @@ func TestCLISuccessKeepsStderrClean(t *testing.T) {
 		t.Errorf("stderr = %q on a successful run, want empty", stderr)
 	}
 }
+
+// TestCLIRejectsMistypedFields: a field of the wrong JSON type is a decode
+// error (exit 2), never silently a zero value — the bridge relies on the
+// non-zero exit to fail safe rather than classify a mangled request. (A
+// null field value is NOT such an error: encoding/json treats null into a
+// value field as a no-op, same as omitting the field.)
+func TestCLIRejectsMistypedFields(t *testing.T) {
+	binary := buildBinary(t)
+	for _, payload := range []string{
+		`{"status": 429.5}`,  // fractional number into an int field
+		`{"code": "160004"}`, // string into an int field
+		`{"message": 42}`,    // number into a string field
+		`{"status": 1e3}`,    // exponent form is a float, not an int
+	} {
+		code, stdout := runBinary(t, binary, payload)
+		if code != 2 {
+			t.Errorf("payload %q: exit = %d (stdout %q), want 2", payload, code, stdout)
+		}
+	}
+}
+
+// TestCLIFailureWritesStderrDiagnostic: the bridge surfaces stderr as its
+// failure diagnostic, so a rejected envelope must SAY why — exit 2 with an
+// empty stderr would leave the operator with no cause.
+func TestCLIFailureWritesStderrDiagnostic(t *testing.T) {
+	binary := buildBinary(t)
+	code, stdout, stderr := runBinaryWithStderr(t, binary, `not json`)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q on a rejected envelope, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "invalid request") {
+		t.Errorf("stderr = %q, want it to name the decode failure", stderr)
+	}
+}

@@ -315,3 +315,58 @@ func TestRateLimitedTextBeatsTransientStatus(t *testing.T) {
 		t.Errorf("503 + rate-limit text = %q, want rate_limited (wait beats retry)", got)
 	}
 }
+
+// TestBare429SubstringInMessage pins the raw-message substring recognizer:
+// the digits "429" anywhere in the error text mean rate limiting even when
+// the HTTP status was lost (duck-typed re-wraps), and the match IS a bare
+// substring — the package contract says "a bare 429 anywhere", so digits
+// inside a longer number still trip it.
+func TestBare429SubstringInMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"digits only, no status", 0, "429"},
+		{"buried in prose", 400, "upstream said 429 slow down"},
+		{"inside a longer number", 0, "retry bucket 42931 exhausted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.status, 0, tc.message); got != RateLimited {
+				t.Errorf("Classify(%d, 0, %q) = %q, want %q",
+					tc.status, tc.message, got, RateLimited)
+			}
+		})
+	}
+	// A durable JSON code does not veto the text signal: the code only
+	// authorizes adoption at 160004, it never downgrades rate limiting.
+	if got := Classify(400, 50035, "429 too many requests"); got != RateLimited {
+		t.Errorf("400/50035 + 429 text = %q, want %q", got, RateLimited)
+	}
+}
+
+// TestTransientMarkersAreCaseInsensitive: markers match the lowercased
+// text, so a shouty or title-cased transport error is still worth the one
+// short-backoff retry.
+func TestTransientMarkersAreCaseInsensitive(t *testing.T) {
+	for _, message := range []string{
+		"TIMED OUT",
+		"Connection Reset By Peer",
+		"SERVICE UNAVAILABLE",
+		"EOF",
+	} {
+		if got := Classify(0, 0, message); got != Retry {
+			t.Errorf("Classify(0, 0, %q) = %q, want %q", message, got, Retry)
+		}
+	}
+}
+
+// TestAdoptTextBeatsRetryStatus: precedence is Adopt > Retry, so a
+// retryable 5xx status carrying the already-created text still means the
+// thread exists — the text fallback for code-losing re-wraps is not
+// downgraded by a transient-looking status.
+func TestAdoptTextBeatsRetryStatus(t *testing.T) {
+	if got := Classify(503, 0, "A thread has already been created for this message"); got != Adopt {
+		t.Errorf("503 + already-created text = %q, want adopt", got)
+	}
+}

@@ -8,8 +8,8 @@ ADOPTS the existing thread (its id equals the source message id) instead of
 seeding a second thread or dropping the request. The classification rule
 lives in ``internal/autothread`` (Go); both suites pin the shared table
 ``internal/autothread/testdata/classification_cases.json``. Adopted threads
-carry ``_hermes_auto_thread_adopted`` so this bot's semantic auto-title
-rename never clobbers the creator's name.
+are recorded on the adapter (``_adopted_auto_thread_ids``) so this bot's
+semantic auto-title rename never clobbers the creator's name.
 """
 
 import asyncio
@@ -97,6 +97,25 @@ def _existing_thread(thread_id, name="other bot's thread", parent=None):
     return SimpleNamespace(
         id=thread_id, name=name, parent=parent, parent_id=getattr(parent, "id", None),
         guild=getattr(parent, "guild", None), topic=None)
+
+class _SlottedThread:
+    """discord.Thread stand-in: fully slotted, no __dict__.
+
+    Real discord.Thread objects reject attribute writes (setattr raises
+    AttributeError); SimpleNamespace fakes silently accept arbitrary
+    attributes, which is what let the dead setattr marker pass review.
+    This stand-in fails exactly like production.
+    """
+
+    __slots__ = ("id", "name", "parent", "parent_id", "guild", "topic")
+
+    def __init__(self, thread_id, name="other bot's thread", parent=None):
+        self.id = thread_id
+        self.name = name
+        self.parent = parent
+        self.parent_id = getattr(parent, "id", None)
+        self.guild = getattr(parent, "guild", None)
+        self.topic = None
 
 
 def _make_message(channel, *, msg_id=42, content="<@999> hello bots",
@@ -232,7 +251,7 @@ class TestAutoThreadAdoption:
         channel.seed_message.create_thread.assert_not_called()
         assert "[Discord] Adopted existing thread 42 for message 42 " \
                "(created by another client)" in caplog.text
-        assert getattr(result, "_hermes_auto_thread_adopted", False) is True
+        assert str(result.id) in adapter._adopted_auto_thread_ids
         assert getattr(result, "_hermes_auto_thread_initial_name", None) is None
 
     @pytest.mark.asyncio
@@ -301,7 +320,7 @@ class TestAutoThreadAdoption:
 
         assert result is seed_thread
         channel.send.assert_awaited_once()  # historical behavior preserved
-        assert getattr(result, "_hermes_auto_thread_adopted", False) is False
+        assert str(result.id) not in adapter._adopted_auto_thread_ids
 
     @pytest.mark.asyncio
     async def test_non_160004_400_still_uses_seed_fallback(self, adapter):
@@ -319,7 +338,7 @@ class TestAutoThreadAdoption:
         assert len(calls) == 1
         channel.send.assert_awaited_once()
         channel.seed_message.delete.assert_awaited_once()  # placeholder cleaned up
-        assert getattr(result, "_hermes_auto_thread_adopted", False) is False
+        assert str(result.id) not in adapter._adopted_auto_thread_ids
         assert getattr(result, "_hermes_auto_thread_initial_name", None) is not None
 
     @pytest.mark.asyncio
@@ -336,7 +355,7 @@ class TestAutoThreadAdoption:
 
         assert result is created
         assert events == [("add", WAITING_EMOJI), ("remove", WAITING_EMOJI)]
-        assert getattr(result, "_hermes_auto_thread_adopted", False) is False
+        assert str(result.id) not in adapter._adopted_auto_thread_ids
 
 
 class TestClassifierOffTheEventLoop:
@@ -410,7 +429,7 @@ class TestClassifierOffTheEventLoop:
 
         assert result is seed_thread
         channel.send.assert_awaited_once()  # historical behavior preserved
-        assert getattr(result, "_hermes_auto_thread_adopted", False) is False
+        assert str(result.id) not in adapter._adopted_auto_thread_ids
 
 
 class _RenameProbe(GatewayTopicThreadsMixin):
@@ -454,6 +473,63 @@ class TestAdoptedThreadRouting:
         channel.send.assert_not_called()  # no failure notice, no seed placeholder
         # The rename-lane marker stays unset: the other bot named the thread.
         assert event.source.auto_thread_initial_name is None
+
+    @pytest.mark.asyncio
+    async def test_slotted_adopted_thread_keeps_rename_lane_off(self, adapter):
+        """Adopting a REAL (slotted) thread: no attribute write may stick or
+        raise, and the dispatched event must carry a falsy
+        auto_thread_initial_name so the rename lane stays off the other
+        bot's thread."""
+        channel = _TextChannel(channel_id=100)
+        existing = _SlottedThread(42, parent=channel)
+        adapter._client = _client_with(existing)
+        message, _, _ = _make_message(
+            channel, create_thread_side_effect=_ThreadAlreadyExists())
+
+        handled = await adapter._handle_message(message)
+
+        assert handled is True
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_type == "thread"
+        assert event.source.thread_id == "42"
+        assert not event.source.auto_thread_initial_name
+
+    @pytest.mark.asyncio
+    async def test_slotted_own_thread_keeps_initial_name(self, adapter):
+        """Positive control: a thread THIS bot created still enters the
+        rename lane — the initial name comes off the derived placeholder
+        even when no attribute write can stick on a slotted thread."""
+        channel = _TextChannel(channel_id=100)
+        created = _SlottedThread(424242, name="hello bots", parent=channel)
+        adapter._client = _client_with(None)
+        message, _, _ = _make_message(
+            channel, create_thread_side_effect=[created])
+
+        handled = await adapter._handle_message(message)
+
+        assert handled is True
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id == "424242"
+        assert event.source.auto_thread_initial_name == "hello bots"
+
+
+    @pytest.mark.asyncio
+    async def test_adoption_record_is_bounded(self, adapter):
+        """The adapter lives for the process lifetime: the adoption record
+        must stop growing and evict oldest-first (the same bounded OrderedDict
+        shape as the response-gate id sets)."""
+        channel = _TextChannel()
+        for n in range(300):
+            message, _, _ = _make_message(
+                channel, msg_id=1000 + n,
+                thread_marker=_SlottedThread(1000 + n, parent=channel))
+            result = await adapter._adopt_existing_auto_thread(message)
+            assert result is not None
+
+        record = adapter._adopted_auto_thread_ids
+        assert len(record) < 300, "the record must be bounded"
+        assert "1000" not in record, "the oldest adoption was evicted"
+        assert "1299" in record, "the newest adoption is kept"
 
     @pytest.mark.asyncio
     async def test_adopted_thread_is_not_semantic_renamed(self, adapter):
