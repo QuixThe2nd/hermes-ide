@@ -1,6 +1,9 @@
 package injectionlabels
 
-import "fmt"
+import (
+	"strconv"
+	"strings"
+)
 
 // Injection kinds produced by the card builders below. They are the keys of
 // KindLabels; repeated here as typed constants so a builder can never emit a
@@ -108,13 +111,61 @@ type Section struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// SectionRowLabels maps a session-inventory manifest kind to the
+// human-readable row the card shows for it: emoji + words, like the other
+// injection headings. A "<kind>:<detail>" key wins over the bare kind
+// (identity's soul/default split); "{detail}" in a template substitutes
+// the manifest row's detail. Mirrors SECTION_ROW_LABELS in
+// agent/context_injection_cards.py — the shared table
+// (testdata/labels.json, "section_row_labels") pins both twins
+// byte-for-byte so they cannot drift.
+var SectionRowLabels = map[string]string{
+	"identity:soul": "🪪 SOUL.md",
+	"identity":      "🪪 Default identity",
+	"docs":          "📖 Hermes docs pointer",
+	"guidance":      "📏 Guidance ({detail} rules)",
+	"skills_index":  "📚 Skills index",
+	"auto_skills":   "📚 Auto-loaded skills ({detail})",
+	"coding_brief":  "💻 Coding brief",
+	"caller_system": "🧵 Caller system prompt",
+	"context_files": "🗂️ Project context (AGENTS.md)",
+	"workspace":     "🏗️ Workspace snapshot",
+	"environment":   "🌍 Environment probe",
+	"bot_mode":      "🤖 Bot-mode protocol",
+	"profile":       "👤 Profile",
+	"platform":      "💬 Platform ({detail})",
+	"plugins":       "🧩 Plugin prompt sections ({detail})",
+	"timestamp":     "🕐 Timestamp",
+	"runtime_env":   "⚙️ Runtime environment",
+}
+
+// RenderSectionRow renders one manifest (kind, detail) pair through
+// SectionRowLabels. Unknown kinds keep the raw "kind" / "kind (detail)"
+// rendering so future manifest rows stay additive-safe.
+func RenderSectionRow(kind, detail string) string {
+	if detail != "" {
+		if label, ok := SectionRowLabels[kind+":"+detail]; ok {
+			return label
+		}
+		if template, ok := SectionRowLabels[kind]; ok {
+			return strings.ReplaceAll(template, "{detail}", detail)
+		}
+		return kind + " (" + detail + ")"
+	}
+	if label, ok := SectionRowLabels[kind]; ok {
+		return label
+	}
+	return kind
+}
+
 // Session-inventory rows that are not prompt sections: the per-request
 // ephemeral session context and the tool-schema count ride the same card
 // because they are injected on every call but change with the same shape
-// as the manifest, so the same sha gate honestly covers them.
+// as the manifest, so the same sha gate honestly covers them. The Python
+// twin's EPHEMERAL_ROW / TOOL_SCHEMAS_ROW constants mirror these.
 const (
-	EphemeralRow   = "session context (ephemeral, per-request)"
-	ToolSchemasRow = "%d tool schemas"
+	EphemeralRow   = "🧵 Session context (ephemeral)"
+	ToolSchemasRow = "🔧 {count} tool schemas"
 )
 
 // SessionInventoryCard composes the once-per-shape session-context card:
@@ -132,17 +183,13 @@ const (
 func SessionInventoryCard(sections []Section, ephemeral bool, toolCount int) (Card, string) {
 	lines := make([]string, 0, len(sections)+2)
 	for _, s := range sections {
-		if s.Detail != "" {
-			lines = append(lines, fmt.Sprintf("%s (%s)", s.Kind, s.Detail))
-		} else {
-			lines = append(lines, s.Kind)
-		}
+		lines = append(lines, RenderSectionRow(s.Kind, s.Detail))
 	}
 	if ephemeral {
 		lines = append(lines, EphemeralRow)
 	}
 	if toolCount > 0 {
-		lines = append(lines, fmt.Sprintf(ToolSchemasRow, toolCount))
+		lines = append(lines, strings.ReplaceAll(ToolSchemasRow, "{count}", strconv.Itoa(toolCount)))
 	}
 	content := joinLines(lines)
 	return newCard(KindSession, content, SourceSession, nil), sha256Hex(content)

@@ -21,6 +21,29 @@
     "one": "🧠 Injecting 1 memory",
     "many": "🧠 Injecting 3 memories"
   },
+  "section_row_labels": {
+    "rows": {
+      "identity:soul": "🪪 SOUL.md",
+      "identity": "🪪 Default identity",
+      "docs": "📖 Hermes docs pointer",
+      "guidance": "📏 Guidance ({detail} rules)",
+      "skills_index": "📚 Skills index",
+      "auto_skills": "📚 Auto-loaded skills ({detail})",
+      "coding_brief": "💻 Coding brief",
+      "caller_system": "🧵 Caller system prompt",
+      "context_files": "🗂️ Project context (AGENTS.md)",
+      "workspace": "🏗️ Workspace snapshot",
+      "environment": "🌍 Environment probe",
+      "bot_mode": "🤖 Bot-mode protocol",
+      "profile": "👤 Profile",
+      "platform": "💬 Platform ({detail})",
+      "plugins": "🧩 Plugin prompt sections ({detail})",
+      "timestamp": "🕐 Timestamp",
+      "runtime_env": "⚙️ Runtime environment"
+    },
+    "ephemeral_row": "🧵 Session context (ephemeral)",
+    "tool_schemas_row": "🔧 {count} tool schemas"
+  },
   "cases": [
     {
       "name": "legacy_payload_without_kinds_renders_generic",
@@ -353,21 +376,21 @@
       ],
       "ephemeral": false,
       "tool_count": 0,
-      "expect_content": "identity (soul)\ncontext_files\ntimestamp",
-      "expect_sha": "2c717380492f7076adf82b971cc478a61b4b22d197ae45ae0782558d97e7afc7",
+      "expect_content": "🪪 SOUL.md\n🗂️ Project context (AGENTS.md)\n🕐 Timestamp",
+      "expect_sha": "0c46c9296e829348ead7c540e37769dd9534c047f6209dc3dfa6a2e21f793807",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "identity (soul)\ncontext_files\ntimestamp",
-        "injected_chars": 39,
+        "content": "🪪 SOUL.md\n🗂️ Project context (AGENTS.md)\n🕐 Timestamp",
+        "injected_chars": 52,
         "sources": [
           "session"
         ]
       }
     },
     {
-      "name": "blank_detail_renders_bare_kind",
+      "name": "default_identity_and_skills_index_render_labels",
       "sections": [
         {
           "kind": "identity",
@@ -380,14 +403,14 @@
       ],
       "ephemeral": false,
       "tool_count": 0,
-      "expect_content": "identity (default)\nskills_index",
-      "expect_sha": "ac228d299d9ad70d4fe5f1550f5d4bd59ea4900a6ec8cd15c7be2d2ab707c134",
+      "expect_content": "🪪 Default identity\n📚 Skills index",
+      "expect_sha": "10bedb968b0bc54f79223dd687d06b74b91268614aa3935ed4588affaf31d38e",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "identity (default)\nskills_index",
-        "injected_chars": 31,
+        "content": "🪪 Default identity\n📚 Skills index",
+        "injected_chars": 33,
         "sources": [
           "session"
         ]
@@ -407,14 +430,14 @@
       ],
       "ephemeral": false,
       "tool_count": 0,
-      "expect_content": "guidance (3)\nauto_skills (2)",
-      "expect_sha": "513d36403f5bda3660929d0550e6e205c556c82938f17e35d8e413a035f0c1bf",
+      "expect_content": "📏 Guidance (3 rules)\n📚 Auto-loaded skills (2)",
+      "expect_sha": "5e040405b425c22eb68502acb9e18211d81c465d82820f3b47f93c9d9064bdba",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "guidance (3)\nauto_skills (2)",
-        "injected_chars": 28,
+        "content": "📏 Guidance (3 rules)\n📚 Auto-loaded skills (2)",
+        "injected_chars": 45,
         "sources": [
           "session"
         ]
@@ -430,14 +453,14 @@
       ],
       "ephemeral": true,
       "tool_count": 2,
-      "expect_content": "identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas",
-      "expect_sha": "137b7b80c6a68270b47af7c0d101895d71ab0e3836da77804186ef0d7ff7a203",
+      "expect_content": "🪪 SOUL.md\n🧵 Session context (ephemeral)\n🔧 2 tool schemas",
+      "expect_sha": "7d8aa0a3119f88475ac9c54d12d6ec407d0dfde5e54a08378ce72bd4b6b8fa10",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "identity (soul)\nsession context (ephemeral, per-request)\n2 tool schemas",
-        "injected_chars": 71,
+        "content": "🪪 SOUL.md\n🧵 Session context (ephemeral)\n🔧 2 tool schemas",
+        "injected_chars": 56,
         "sources": [
           "session"
         ]
@@ -453,14 +476,14 @@
       ],
       "ephemeral": false,
       "tool_count": 1,
-      "expect_content": "identity (soul)\n1 tool schemas",
-      "expect_sha": "10c5dbe050690e232263513653b9cd866067b792dbe2c4945443e53853e0357f",
+      "expect_content": "🪪 SOUL.md\n🔧 1 tool schemas",
+      "expect_sha": "998397b361bf11bcbe1871b7ccd50e6bbaba1c8c30df90796b1d79240fdb4db3",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "identity (soul)\n1 tool schemas",
-        "injected_chars": 30,
+        "content": "🪪 SOUL.md\n🔧 1 tool schemas",
+        "injected_chars": 26,
         "sources": [
           "session"
         ]
@@ -480,14 +503,14 @@
       ],
       "ephemeral": false,
       "tool_count": 0,
-      "expect_content": "identity (default)\nworkspace",
-      "expect_sha": "a881367a95f740270465f703281952503aefde60d198fbafb55f13c17b258496",
+      "expect_content": "🪪 Default identity\n🏗️ Workspace snapshot",
+      "expect_sha": "6d0ad1b60dd1a72ae54d9081a7b527cdbf50bf18e102b1a948e8d4389d991476",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "identity (default)\nworkspace",
-        "injected_chars": 28,
+        "content": "🪪 Default identity\n🏗️ Workspace snapshot",
+        "injected_chars": 40,
         "sources": [
           "session"
         ]
@@ -511,14 +534,14 @@
       ],
       "ephemeral": false,
       "tool_count": 0,
-      "expect_content": "identity (default)\nworkspace\nskills_index",
-      "expect_sha": "9170c4cbc87cefa0a890e399396707a299b6af84679e3e680e4240cdd31c36cc",
+      "expect_content": "🪪 Default identity\n🏗️ Workspace snapshot\n📚 Skills index",
+      "expect_sha": "cf123490aadf92acb3f2e7d5d76aa2ffcc05aafa77a53956145f4fb936ed53f4",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "identity (default)\nworkspace\nskills_index",
-        "injected_chars": 41,
+        "content": "🪪 Default identity\n🏗️ Workspace snapshot\n📚 Skills index",
+        "injected_chars": 55,
         "sources": [
           "session"
         ]
@@ -547,14 +570,14 @@
       "sections": [],
       "ephemeral": false,
       "tool_count": 7,
-      "expect_content": "7 tool schemas",
-      "expect_sha": "0578b32419afc0d1cb789dc131913670904f0455272ffa3f7356e1f7e91cb97e",
+      "expect_content": "🔧 7 tool schemas",
+      "expect_sha": "abd33ddcf37d9fa74d82aa790c08b164e69246dbdae89b1cb678e6fc5f37fb68",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "7 tool schemas",
-        "injected_chars": 14,
+        "content": "🔧 7 tool schemas",
+        "injected_chars": 16,
         "sources": [
           "session"
         ]
@@ -565,14 +588,41 @@
       "sections": [],
       "ephemeral": true,
       "tool_count": 0,
-      "expect_content": "session context (ephemeral, per-request)",
-      "expect_sha": "87778375e917aff71046256e2dd2c42109e41bef7937981dc8561623205c4765",
+      "expect_content": "🧵 Session context (ephemeral)",
+      "expect_sha": "e6cbea8a7e233a1793ade02f856402fed07ebda5b10b9716390f91ed30b0ad46",
       "expect_card": {
         "kinds": [
           "session"
         ],
-        "content": "session context (ephemeral, per-request)",
-        "injected_chars": 40,
+        "content": "🧵 Session context (ephemeral)",
+        "injected_chars": 29,
+        "sources": [
+          "session"
+        ]
+      }
+    },
+    {
+      "name": "unknown_kind_keeps_raw_rendering",
+      "sections": [
+        {
+          "kind": "mystery_section",
+          "detail": ""
+        },
+        {
+          "kind": "future_thing",
+          "detail": "3"
+        }
+      ],
+      "ephemeral": false,
+      "tool_count": 0,
+      "expect_content": "mystery_section\nfuture_thing (3)",
+      "expect_sha": "df80f809fd1f2fea3eceb1811491dc883fae562008cc88a6ad4d5e9979b8ccef",
+      "expect_card": {
+        "kinds": [
+          "session"
+        ],
+        "content": "mystery_section\nfuture_thing (3)",
+        "injected_chars": 32,
         "sources": [
           "session"
         ]

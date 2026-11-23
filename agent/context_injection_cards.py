@@ -93,6 +93,55 @@ def event_card(kind: str, content: str, detail: str = "") -> Dict[str, Any]:
     return payload
 
 
+# Human-readable session-inventory rows — mirrors SectionRowLabels /
+# RenderSectionRow and the EphemeralRow/ToolSchemasRow constants in
+# internal/injectionlabels/cards.go; the shared table
+# (testdata/labels.json, "section_row_labels") pins both twins byte-for-byte
+# so they cannot drift. A "<kind>:<detail>" key wins over the bare kind
+# (identity's soul/default split); "{detail}" in a template substitutes the
+# manifest row's detail.
+SECTION_ROW_LABELS = {
+    "identity:soul": "🪪 SOUL.md",
+    "identity": "🪪 Default identity",
+    "docs": "📖 Hermes docs pointer",
+    "guidance": "📏 Guidance ({detail} rules)",
+    "skills_index": "📚 Skills index",
+    "auto_skills": "📚 Auto-loaded skills ({detail})",
+    "coding_brief": "💻 Coding brief",
+    "caller_system": "🧵 Caller system prompt",
+    "context_files": "🗂️ Project context (AGENTS.md)",
+    "workspace": "🏗️ Workspace snapshot",
+    "environment": "🌍 Environment probe",
+    "bot_mode": "🤖 Bot-mode protocol",
+    "profile": "👤 Profile",
+    "platform": "💬 Platform ({detail})",
+    "plugins": "🧩 Plugin prompt sections ({detail})",
+    "timestamp": "🕐 Timestamp",
+    "runtime_env": "⚙️ Runtime environment",
+}
+EPHEMERAL_ROW = "🧵 Session context (ephemeral)"
+TOOL_SCHEMAS_ROW = "🔧 {count} tool schemas"
+
+
+def render_section_row(kind: str, detail: str = "") -> str:
+    """One human-readable inventory row for a manifest ``(kind, detail)`` pair.
+
+    Unknown kinds keep the raw ``kind`` / ``kind (detail)`` rendering so
+    future manifest rows stay additive-safe.
+    """
+    kind = str(kind)
+    detail = detail or ""
+    if detail:
+        specific = SECTION_ROW_LABELS.get(f"{kind}:{detail}")
+        if specific is not None:
+            return specific
+        template = SECTION_ROW_LABELS.get(kind)
+        if template is not None:
+            return template.replace("{detail}", detail)
+        return f"{kind} ({detail})"
+    return SECTION_ROW_LABELS.get(kind, kind)
+
+
 def emit_card(agent: Any, payload: dict) -> bool:
     """Fire one prebuilt ``context.injected`` payload; never raises."""
     callback = getattr(agent, "tool_progress_callback", None)
@@ -114,16 +163,15 @@ def session_inventory_card(
 ) -> Tuple[Dict[str, Any], str]:
     """The once-per-shape session-context card and its sha gating key.
 
-    One line per manifest section (detail in parentheses), then the
-    ephemeral and tool-schema rows. Blank content means nothing to announce.
+    One line per manifest section, rendered through ``SECTION_ROW_LABELS``,
+    then the ephemeral and tool-schema rows. Blank content means nothing to
+    announce.
     """
-    rows: List[str] = [
-        f"{kind} ({detail})" if detail else str(kind) for kind, detail in sections
-    ]
+    rows: List[str] = [render_section_row(kind, detail) for kind, detail in sections]
     if ephemeral:
-        rows.append("session context (ephemeral, per-request)")
+        rows.append(EPHEMERAL_ROW)
     if tool_count > 0:
-        rows.append(f"{tool_count} tool schemas")
+        rows.append(TOOL_SCHEMAS_ROW.format(count=tool_count))
     content = "\n".join(rows)
     return event_card("session", content), hashlib.sha256(content.encode("utf-8")).hexdigest()
 

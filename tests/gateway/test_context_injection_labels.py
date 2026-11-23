@@ -352,6 +352,23 @@ def test_headings_match_the_shared_contract_table():
         assert lines == case["expect_lines"], case["name"]
 
 
+def test_section_row_labels_match_the_shared_contract_table():
+    """The session-inventory row labels are pinned from BOTH sides: the
+    Python card builder's table and the Go twin's SectionRowLabels /
+    EphemeralRow / ToolSchemasRow must equal the shared table, so the two
+    implementations cannot drift."""
+    from agent.context_injection_cards import (
+        EPHEMERAL_ROW,
+        SECTION_ROW_LABELS,
+        TOOL_SCHEMAS_ROW,
+    )
+
+    table = json.loads(_LABELS_TABLE.read_text(encoding="utf-8"))["section_row_labels"]
+    assert SECTION_ROW_LABELS == table["rows"]
+    assert EPHEMERAL_ROW == table["ephemeral_row"]
+    assert TOOL_SCHEMAS_ROW == table["tool_schemas_row"]
+
+
 def _optional(key, value):
     """Detector output in the binary's ``{key, found/changed}`` shape."""
     flag = "found" if key == "stub" else "changed"
