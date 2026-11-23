@@ -50,18 +50,14 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
     Returns the mock for resolve_provider_client so callers can assert on
     the api_mode kwarg passed at the fallback call site.
     """
-    patches = [
-        patch(
-            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
-            return_value=None,
-        ),
+    with (
         patch(
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(
                 _mock_client(base_url=resolved_base_url),
                 resolved_model,
             ),
-        ),
+        ) as mock_rpc,
         patch(
             "hermes_cli.model_normalize.normalize_model_for_provider",
             side_effect=lambda m, p: m,
@@ -71,8 +67,7 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
             side_effect=build_anthropic
             or (lambda api_key, base_url, timeout=None, **kw: MagicMock()),
         ),
-    ]
-    with patches[0], patches[1] as mock_rpc, patches[2], patches[3]:
+    ):
         assert agent._try_activate_fallback() is True
     return mock_rpc
 

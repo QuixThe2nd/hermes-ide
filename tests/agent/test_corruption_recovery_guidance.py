@@ -165,12 +165,13 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"
     sent = []
-    monkeypatch.setattr(runner, "_home_channel_transports", lambda: [("discord", {}, "home-chat", object())])
+    monkeypatch.setattr(
+        runner, "_notification_channel_transports", lambda: [("discord", {}, "home-chat", object())])
 
-    async def _capture_send(_platform, _home, _transport, message, _log_fmt):
+    async def _capture_send(_platform, _channel, _transport, message, _log_fmt):
         sent.append(message)
 
-    monkeypatch.setattr(runner, "_send_home_channel_message", _capture_send)
+    monkeypatch.setattr(runner, "_send_notification_channel_message", _capture_send)
     asyncio.run(runner._send_session_db_warning_notifications())
     notice_commands = [line.strip() for line in sent[0].splitlines() if "hermes " in line]
     assert notice_commands and all("hermes -p research " in line for line in notice_commands), notice_commands

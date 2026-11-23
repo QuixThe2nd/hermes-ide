@@ -1,12 +1,12 @@
 """Unauthorized-sender copy: the pairing DM tells a stranger what happens next, and an ignored DM
 (allowlist configured) stays silent toward the stranger while the owner gets the approve command in
-the log and, once, in the home channel."""
+the log and, once, in the notification channel."""
 
 import logging
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
+from gateway.config import DeliveryTarget, Platform
 from gateway.pairing import PairingStore
 from gateway.run import GatewayRunner
 from gateway.run_inbound_unauthorized import pairing_code_reply, unauthorized_owner_hint
@@ -41,7 +41,7 @@ async def test_ignored_dm_sends_nothing_to_stranger_and_notifies_owner_once(tmp_
     runner, adapter = make_restart_runner()
     runner.pairing_store = PairingStore()
     runner.pairing_stores = {}
-    runner.config.platforms[Platform.DISCORD].home_channel = HomeChannel(
+    runner.config.platforms[Platform.DISCORD].notification_channel = DeliveryTarget(
         platform=Platform.DISCORD, chat_id="home-1", name="Ops")
     runner._hm_report_ignored_dm = GatewayRunner._hm_report_ignored_dm.__get__(runner, GatewayRunner)
     stranger = SessionSource(platform=Platform.DISCORD, chat_id="dm-777", user_id="777", user_name="Eve", chat_type="dm")

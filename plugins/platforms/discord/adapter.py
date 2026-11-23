@@ -6121,7 +6121,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
 
     def _is_bot_tag_debounce_continuation(self, message: Any) -> bool:
-        """Return whether an unmentioned chunk belongs to a recent bot tag."""
+        """Return whether an unmentioned chunk belongs to a recent bot tag.
+
+        A hit re-arms the window: Discord paces a bot's sends at roughly one per
+        second, so chunk N of a long handoff lands well after the tag itself; each
+        admitted chunk therefore vouches for the next one. The gateway bot loop
+        guard bounds a bot that never stops talking."""
         if (
             getattr(self, "_text_batch_delay_seconds", 0) <= 0
             or not getattr(getattr(message, "author", None), "bot", False)
@@ -6131,10 +6136,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         debounce_until = getattr(self, "_bot_tag_debounce_until", None)
         if not debounce_until:
             return False
-        deadline = debounce_until.get(key, 0.0)
-        if deadline <= time.monotonic():
+        now = time.monotonic()
+        if debounce_until.get(key, 0.0) <= now:
             debounce_until.pop(key, None)
             return False
+        debounce_until[key] = now + max(
+            self._text_batch_delay_seconds,
+            self._text_batch_split_delay_seconds,
+        )
         return True
 
     def _discord_free_response_channels(self) -> set:
