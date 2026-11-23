@@ -337,7 +337,10 @@ async def main():
                 reached=reached,
                 faults=hit,
                 requests=len(requests) - before_requests,
-                response=response,
+                # No `response` echo: it is redaction-pipeline output, which CodeQL
+                # taints from `mask_secret`'s name — keep it out of the receipt
+                # (py/clear-text-{storage,logging}-sensitive-data). `reached`
+                # already encodes the response-content assertions above.
             )
         )
     users = [r for r in rows() if r["role"] == "user" and r["active"]]
