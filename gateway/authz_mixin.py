@@ -45,6 +45,26 @@ _ALLOW_BOTS_ENV = {
     Platform.SLACK: "SLACK_ALLOW_BOTS",
 }
 
+# Platform -> ``<PLATFORM>_ALLOWED_BOTS``: the per-bot allowlist that narrows
+# which bot authors the ``ALLOW_BOTS`` mode admits. Narrow-only: unset/empty
+# changes nothing; an unlisted bot is denied exactly as ``none`` denies it.
+_ALLOWED_BOTS_ENV = {
+    Platform.DISCORD: "DISCORD_ALLOWED_BOTS",
+}
+
+
+def _allowed_bots_admit(source, extra: dict, env_key: str) -> bool:
+    """Per-bot allowlist verdict for one bot author (narrow-only).
+
+    Humans never reach this: it runs only inside the ``is_bot`` branch.
+    ``source.user_id`` is the bot author's ID. Fail closed via the bridge:
+    an unevaluable list denies.
+    """
+    from gateway import bot_allowlist
+
+    raw = _extra_or_secret(extra, "allowed_bots", env_key, "")
+    return bot_allowlist.admits(raw, str(getattr(source, "user_id", "") or ""))
+
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
 from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal  # noqa: E402
@@ -661,6 +681,13 @@ class GatewayAuthorizationMixin:
                     extra = self._adapter_extra_for_source(source)
                 mode = str(_extra_or_secret(extra, "allow_bots", allow_bots_var, "none")).lower().strip()
                 if mode in {"mentions", "all"}:
+                    # The per-bot allowlist narrows bot admission to listed
+                    # author IDs (unset/empty = unchanged). Scope-aware read:
+                    # the owning profile's secret scope, then its YAML extra —
+                    # never a raw os.environ borrow from another profile.
+                    allowed_bots_var = _ALLOWED_BOTS_ENV.get(source.platform)
+                    if allowed_bots_var and not _allowed_bots_admit(source, extra, allowed_bots_var):
+                        return False
                     return True
         return False
 
