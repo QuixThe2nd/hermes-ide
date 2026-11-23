@@ -24,9 +24,9 @@ The biggest piece of that machinery is Discord. This fork is **Discord First**: 
 
 ## Discord First
 
-Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
+Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Memories, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
 
-The home_server plugin keeps that layout in sync. It checks at most hourly, but the template fingerprint bypasses the wait when the layout changes, so new or reordered channels appear straight away. It is idempotent, keeps categories and channels in template order, never deletes anything, renames legacy Quotas and Chat categories to Models and Lounges in place, and does not clobber existing home, notification, or rename targets.
+The home_server plugin keeps that layout in sync. It checks at most hourly, but the template fingerprint bypasses the wait when the layout changes, so new or reordered channels appear straight away. It is idempotent, keeps categories and channels in template order, never deletes anything, renames legacy Quotas, Chat, and Honcho Memory categories to Models, Lounges, and Memories in place, and does not clobber existing home, notification, or rename targets.
 
 Notifications get their own category instead of cluttering the lounges: `#model-fallback`, `#gateway-restarts`, and `#other`. The restarts channel doubles as a session counter: `#gateway-restarts` becomes `agents-N` while Hermes is running and `restarting-N-agents` while it drains, so you can see how many sessions are alive without opening another dashboard.
 
