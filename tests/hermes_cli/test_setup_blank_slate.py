@@ -91,7 +91,7 @@ class TestBlankSlateMinimizeConfig:
         _blank_slate_minimize_config(cfg)
 
         assert cfg["agent"]["max_turns"] == DEFAULT_MAX_TURNS
-        assert DEFAULT_MAX_TURNS == 256
+        assert DEFAULT_MAX_TURNS == 512
 
 
 class TestBlankSlateFork:

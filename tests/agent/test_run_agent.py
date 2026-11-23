@@ -70,11 +70,11 @@ class TestMainMaxTurnsDefault:
     def test_default_derives_from_default_max_turns(self):
         # main() is the public entry point (fire.Fire(main)); a run with no
         # explicit max_turns must land on DEFAULT_MAX_TURNS — the same
-        # 256-turn budget every other construction path shares — so the
+        # 512-turn budget every other construction path shares — so the
         # default tracks the constant instead of a private literal.
         from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
 
-        assert DEFAULT_MAX_TURNS == 256
+        assert DEFAULT_MAX_TURNS == 512
         assert self._run_main(query="hi")["max_iterations"] == DEFAULT_MAX_TURNS
 
     def test_explicit_max_turns_reach_agent_exactly(self):
