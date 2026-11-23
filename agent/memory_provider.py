@@ -178,8 +178,8 @@ class MemoryProvider(ABC):
         return ""
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Formatted recall context for the upcoming turn ("" if none). Must be fast — recall
-        in the background and return cached results; ``session_id`` scopes concurrent sessions."""
+        """Formatted recall context for the upcoming turn ("" if none). Must be bounded —
+        the manager joins the calling thread with a timeout; ``session_id`` scopes concurrent sessions."""
         return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
