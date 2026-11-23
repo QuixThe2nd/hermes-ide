@@ -217,6 +217,33 @@ def test_tool_result_chokepoint_cards(commit_kwargs, expected, monkeypatch):
     assert [(p["kinds"][0], p["content"]) for p in _cards(agent)] == expected
 
 
+def test_subdirectory_card_meta_names_the_loaded_files(monkeypatch):
+    """The card names WHAT was loaded from the tracker's structured state,
+    not a regex over the rendered hint text."""
+    agent = _wire_cards(_tool_agent())
+    agent._subdirectory_hints.last_loaded_paths = ["pkg/AGENTS.md"]
+    _commit(agent, monkeypatch, result="file body", hints=HINTS)
+    [card] = _cards(agent, "subdirectory")
+    assert card["meta"] == {"subdirectory": "pkg/AGENTS.md"}
+
+
+def test_subdirectory_card_meta_joins_multiple_loaded_files(monkeypatch):
+    agent = _wire_cards(_tool_agent())
+    agent._subdirectory_hints.last_loaded_paths = ["pkg/AGENTS.md", "gateway/AGENTS.md"]
+    _commit(agent, monkeypatch, result="file body", hints=HINTS)
+    [card] = _cards(agent, "subdirectory")
+    assert card["meta"] == {"subdirectory": "pkg/AGENTS.md, gateway/AGENTS.md"}
+
+
+def test_subdirectory_card_without_loaded_paths_carries_no_meta(monkeypatch):
+    """A tracker that never loaded (or a legacy fake without the attribute)
+    keeps the bare card — no empty meta detail."""
+    agent = _wire_cards(_tool_agent())
+    _commit(agent, monkeypatch, result="file body", hints=HINTS)
+    [card] = _cards(agent, "subdirectory")
+    assert "meta" not in card
+
+
 def test_tool_message_bytes_identical_with_and_without_cards(monkeypatch):
     """Display plumbing stays off the model path: the tool message is
     byte-identical whether the card pipeline is wired or absent."""

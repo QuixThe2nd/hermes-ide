@@ -16,6 +16,7 @@ import (
 type sharedTable struct {
 	GenericLabel               string            `json:"generic_label"`
 	KindLabels                 map[string]string `json:"kind_labels"`
+	KindDetailTemplates        map[string]string `json:"kind_detail_templates"`
 	SpilloverContinuationLabel string            `json:"spillover_continuation_label"`
 	Memory                     struct {
 		Plain string `json:"plain"`
@@ -158,6 +159,44 @@ func TestLabelsMatchSharedTable(t *testing.T) {
 	}
 }
 
+// TestKindDetailTemplatesMatchSharedTable pins the per-kind detail templates
+// — kinds whose meta detail REPLACES the generic label tail instead of
+// suffixing it ("🗂️ Injecting pkg/AGENTS.md", not
+// "🗂️ Injecting directory context (pkg/AGENTS.md)") — against the shared
+// table the Python contract test also reads.
+func TestKindDetailTemplatesMatchSharedTable(t *testing.T) {
+	table := loadTable(t)
+	if !reflect.DeepEqual(KindDetailTemplates, table.KindDetailTemplates) {
+		t.Errorf("KindDetailTemplates = %q, want %q", KindDetailTemplates, table.KindDetailTemplates)
+	}
+}
+
+// TestFormatKindHeadingRendersDetailTemplate pins the template substitution:
+// the detail lands in place of the generic tail, verbatim — a path with a
+// percent sign or braces must never be reinterpreted as a format directive,
+// and a kind without a template keeps the "label (detail)" suffix.
+func TestFormatKindHeadingRendersDetailTemplate(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   string
+		detail string
+		expect string
+	}{
+		{"single_file", "subdirectory", "pkg/AGENTS.md", "🗂️ Injecting pkg/AGENTS.md"},
+		{"multiple_files", "subdirectory", "pkg/AGENTS.md, gateway/AGENTS.md", "🗂️ Injecting pkg/AGENTS.md, gateway/AGENTS.md"},
+		{"percent_sign_is_not_a_directive", "subdirectory", "pkg/100%/AGENTS.md", "🗂️ Injecting pkg/100%/AGENTS.md"},
+		{"braces_are_not_resubstituted", "subdirectory", "pkg/{detail}/AGENTS.md", "🗂️ Injecting pkg/{detail}/AGENTS.md"},
+		{"blank_detail_keeps_table_label", "subdirectory", "", "🗂️ Injecting directory context"},
+		{"kind_without_template_keeps_suffix", "skill", "research", "📚 Injecting skill (research)"},
+	}
+	for _, c := range cases {
+		if got := FormatKindHeading(c.kind, KindLabels[c.kind], c.detail); got != c.expect {
+			t.Errorf("%s: FormatKindHeading(%q, %q, %q) = %q, want %q",
+				c.name, c.kind, KindLabels[c.kind], c.detail, got, c.expect)
+		}
+	}
+}
+
 // TestSectionRowLabelsMatchSharedTable pins the session-inventory row
 // labels: the per-kind row table and the ephemeral/tool-schema row strings
 // must equal the shared table the Python contract test also reads, so the
@@ -185,6 +224,49 @@ func TestHeadingLinesMatchSharedTable(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.ExpectLines) {
 			t.Errorf("%s: HeadingLines(%q, memorySourced=%v, recalledCount=%d, meta=%q) = %q, want %q",
 				tc.Name, tc.Kinds, tc.MemorySourced, tc.RecalledCount, tc.Meta, got, tc.ExpectLines)
+		}
+	}
+}
+
+// TestDetailTemplatesReferenceKnownKinds guards the template table against
+// drift: a detail template keyed on a kind the label table does not know is
+// dead configuration — HeadingLines only consults templates for kinds that
+// already rendered a table label.
+func TestDetailTemplatesReferenceKnownKinds(t *testing.T) {
+	for kind := range KindDetailTemplates {
+		if _, ok := KindLabels[kind]; !ok {
+			t.Errorf("detail template for unknown kind %q — dead configuration", kind)
+		}
+	}
+}
+
+// TestSubdirectoryCardDetailMeta pins the card-side contract behind the
+// heading template: the loaded file(s) land in meta so the display layer
+// can name them, and a legacy producer without paths keeps the bare card
+// (no empty meta key, which would suffix nothing).
+func TestSubdirectoryCardDetailMeta(t *testing.T) {
+	hints := "[Subdirectory context discovered: pkg/AGENTS.md]"
+	cases := []struct {
+		name   string
+		detail string
+		meta   map[string]string
+	}{
+		{"no_detail_keeps_bare_card", "", nil},
+		{"single_file", "pkg/AGENTS.md", map[string]string{KindSubdir: "pkg/AGENTS.md"}},
+		{"multiple_files_joined", "pkg/AGENTS.md, gateway/AGENTS.md",
+			map[string]string{KindSubdir: "pkg/AGENTS.md, gateway/AGENTS.md"}},
+	}
+	for _, c := range cases {
+		card := SubdirectoryCard(hints, c.detail)
+		if !reflect.DeepEqual(card.Meta, c.meta) {
+			t.Errorf("%s: SubdirectoryCard(%q, %q).Meta = %v, want %v",
+				c.name, hints, c.detail, card.Meta, c.meta)
+		}
+		if card.Content != hints || card.InjectedChars != len([]rune(hints)) {
+			t.Errorf("%s: content fields drifted: %+v", c.name, card)
+		}
+		if len(card.Kinds) != 1 || card.Kinds[0] != KindSubdir {
+			t.Errorf("%s: kinds = %v, want [%q]", c.name, card.Kinds, KindSubdir)
 		}
 	}
 }
@@ -306,7 +388,7 @@ func TestEventCardsMatchSharedTable(t *testing.T) {
 		case "spillover":
 			card = SpilloverCard(c.Stub)
 		case "subdirectory":
-			card = SubdirectoryCard(c.Hints)
+			card = SubdirectoryCard(c.Hints, c.Detail)
 		case "compaction":
 			card = CompactionCard(c.Summary)
 		case "assembled":

@@ -1049,7 +1049,8 @@ def _commit_tool_result(
     if _spilled_stub:
         emit_card(agent, event_card("spillover", _spilled_stub))
     if subdir_hints:
-        emit_card(agent, event_card("subdirectory", subdir_hints))
+        _hint_paths = getattr(agent._subdirectory_hints, "last_loaded_paths", None) or []
+        emit_card(agent, event_card("subdirectory", subdir_hints, detail=", ".join(_hint_paths)))
 
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.

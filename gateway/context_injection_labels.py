@@ -36,6 +36,16 @@ CONTEXT_INJECTION_KIND_LABELS = {
     "subdirectory": "🗂️ Injecting directory context",
     "spillover": "📦 Large tool result saved to disk",
 }
+
+# Kinds whose meta detail REPLACES the generic tail of the label instead of
+# suffixing it: "🗂️ Injecting pkg/AGENTS.md" names the loaded file, where
+# "🗂️ Injecting directory context (pkg/AGENTS.md)" buries it. Blank or
+# absent detail falls back to the table label. Mirrors KindDetailTemplates
+# in the Go twin; the shared table (testdata/labels.json,
+# "kind_detail_templates") pins both byte-for-byte.
+CONTEXT_INJECTION_KIND_DETAIL_TEMPLATES = {
+    "subdirectory": "🗂️ Injecting {detail}",
+}
 CONTEXT_INJECTION_SPILLOVER_CONTINUATION_LABEL = "📄 Large tool result saved to disk (continued)"
 CONTEXT_INJECTION_GENERIC_LABEL = "🧠 Injecting context"
 
@@ -67,6 +77,17 @@ def _format_heading(label: str, detail: Any) -> str:
     return f"{label} ({detail})" if isinstance(detail, str) and detail else label
 
 
+def _format_kind_heading(kind: str, label: str, detail: Any) -> str:
+    """One kind's heading: the detail template when the kind has one and a
+    detail was carried, else the plain ``label (detail)`` suffix.
+    ``detail`` substitutes verbatim — ``str.format`` never re-interprets the
+    argument's own braces. Mirrors ``FormatKindHeading`` in the Go twin."""
+    template = CONTEXT_INJECTION_KIND_DETAIL_TEMPLATES.get(kind)
+    if template and isinstance(detail, str) and detail:
+        return template.format(detail=detail)
+    return _format_heading(label, detail)
+
+
 def context_injection_heading_lines(
     kinds: Optional[Sequence[Optional[str]]],
     *,
@@ -81,9 +102,10 @@ def context_injection_heading_lines(
     the generic heading; duplicate OUTPUT lines render once.
 
     ``meta`` optionally maps a kind to the detail naming WHAT it carried (the
-    skill's name); the kind's label renders suffixed ``(detail)``. Memory
-    ignores meta (its recall count already speaks), and meta on an
-    unclassifiable kind drops with the label.
+    skill's name, the loaded hint file's path); the kind's label renders
+    suffixed ``(detail)``, or through the kind's detail template when it has
+    one. Memory ignores meta (its recall count already speaks), and meta on
+    an unclassifiable kind drops with the label.
     """
     if not kinds:
         return [_memory_heading(recalled_count)] if memory_sourced else [
@@ -97,7 +119,7 @@ def context_injection_heading_lines(
         elif isinstance(kind, str) and kind:
             label = CONTEXT_INJECTION_KIND_LABELS.get(kind)
             if label is not None:
-                line = _format_heading(label, meta.get(kind))
+                line = _format_kind_heading(kind, label, meta.get(kind))
             else:
                 # Unknown kind: unclassifiable bytes never get a specific
                 # label they may not deserve, and its meta drops with it.

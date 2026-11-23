@@ -27,10 +27,11 @@
 //     rather than a table label.
 //   - A legacy payload (no kinds) derives from memory-sourced alone, exactly
 //     as the pre-kinds formatter did.
-//   - A kind with a non-empty meta detail renders "label (detail)"; the
-//     detail never changes the label bytes themselves. Memory ignores meta
-//     (its count already speaks), and meta on an unclassifiable kind is
-//     dropped with the label.
+//   - A kind with a non-empty meta detail renders "label (detail)", or the
+//     kind's detail template when it has one (the detail names WHAT was
+//     carried in place of the generic tail); the detail never changes the
+//     label bytes themselves. Memory ignores meta (its count already
+//     speaks), and meta on an unclassifiable kind is dropped with the label.
 //   - Duplicate OUTPUT lines render once, whatever kinds produced them.
 package injectionlabels
 
@@ -86,6 +87,18 @@ var KindLabels = map[string]string{
 	"spillover":      "📦 Large tool result saved to disk",
 }
 
+// KindDetailTemplates maps a kind to the heading template used when its meta
+// carries a detail: the detail REPLACES the generic tail of the label
+// ("🗂️ Injecting pkg/AGENTS.md" names the loaded file, where
+// "🗂️ Injecting directory context (pkg/AGENTS.md)" buries it). Kinds absent
+// from this map keep the "label (detail)" suffix of FormatHeading; a blank
+// or absent detail falls back to the table label either way. Mirrors
+// CONTEXT_INJECTION_KIND_DETAIL_TEMPLATES; the shared table
+// (testdata/labels.json, "kind_detail_templates") pins both byte-for-byte.
+var KindDetailTemplates = map[string]string{
+	"subdirectory": "🗂️ Injecting {detail}",
+}
+
 // MemoryHeading renders the memory heading. A positive recalledCount is
 // spoken discretely and pluralized ("1 memory", "3 memories"); anything
 // else — zero, negative, or unknown — renders the plain form, mirroring the
@@ -111,6 +124,18 @@ func FormatHeading(label, detail string) string {
 	return label + " (" + detail + ")"
 }
 
+// FormatKindHeading renders one kind's heading: the kind's detail template
+// when it has one and a detail was carried, else the plain
+// "label (detail)" suffix. The detail substitutes verbatim — it is never
+// passed as a format string, so a path containing a percent sign or braces
+// renders as-is. Mirrors _format_kind_heading in the Python twin.
+func FormatKindHeading(kind, label, detail string) string {
+	if template, ok := KindDetailTemplates[kind]; ok && detail != "" {
+		return strings.Replace(template, "{detail}", detail, 1)
+	}
+	return FormatHeading(label, detail)
+}
+
 // ContinuationHeading labels later chunks of a lone spillover card without
 // making them look like separate injections. Metadata details belong to the
 // primary heading; every other kind shape retains its existing heading.
@@ -130,8 +155,9 @@ func ContinuationHeading(kinds []string, meta map[string]string, defaultHeading 
 //   - the memory kind keeps its dedicated (optionally counted) heading;
 //     meta never applies to it.
 //   - known kinds render their table label, suffixed with the kind's meta
-//     detail when one was carried; unknown or blank kinds render the
-//     generic label (their meta is dropped with the label).
+//     detail when one was carried (or through the kind's detail template
+//     when it has one); unknown or blank kinds render the generic label
+//     (their meta is dropped with the label).
 //   - duplicate output lines render once.
 func HeadingLines(kinds []string, memorySourced bool, recalledCount int, meta map[string]string) []string {
 	if len(kinds) == 0 {
@@ -148,7 +174,7 @@ func HeadingLines(kinds []string, memorySourced bool, recalledCount int, meta ma
 			line = MemoryHeading(recalledCount)
 		case kind != "":
 			if label, ok := KindLabels[kind]; ok {
-				line = FormatHeading(label, meta[kind])
+				line = FormatKindHeading(kind, label, meta[kind])
 			} else {
 				line = GenericLabel
 			}

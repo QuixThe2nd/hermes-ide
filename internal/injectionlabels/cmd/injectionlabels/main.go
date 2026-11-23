@@ -28,7 +28,8 @@
 //
 //	{"op": "steer_card", "text": "…"}        → prints the Card JSON.
 //	{"op": "spillover_card", "stub": "…"}    → prints the Card JSON.
-//	{"op": "subdirectory_card", "hints": "…"} → prints the Card JSON.
+//	{"op": "subdirectory_card", "hints": "…", "detail": "pkg/AGENTS.md"}
+//	                                         → prints the Card JSON.
 //	{"op": "compaction_card", "summary": "…"} → prints the Card JSON.
 //	{"op": "assembled_card", "kind": "skill", "detail": "research",
 //	 "content": "…"}                          → prints the Card JSON.
@@ -94,7 +95,8 @@ func run(request map[string]any, stdout io.Writer) error {
 	case "spillover_card":
 		return encode(injectionlabels.SpilloverCard(stringValue(request["stub"])))
 	case "subdirectory_card":
-		return encode(injectionlabels.SubdirectoryCard(stringValue(request["hints"])))
+		return encode(injectionlabels.SubdirectoryCard(
+			stringValue(request["hints"]), stringValue(request["detail"])))
 	case "compaction_card":
 		return encode(injectionlabels.CompactionCard(stringValue(request["summary"])))
 	case "assembled_card":
