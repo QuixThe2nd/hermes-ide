@@ -108,9 +108,10 @@ def test_provisions_and_sets_env_in_process(monkeypatch):
     monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
 
     assert relay.self_provision_relay() is True
-    # The connector POST carried the gateway-asserted endpoint + route keys.
+    # The connector POST carried the resolved identity token + the
+    # gateway-asserted endpoint + route keys.
     assert captured["provision_url"] == "https://connector.example/relay/provision"
-    assert captured["access_token"] == "nas-token"
+    assert captured["access_token"] == "idp-token"
     assert captured["gateway_endpoint"] == "https://gw.example.com/inbound"
     assert captured["route_keys"] == ["guild-1", "guild-2"]
     # Creds landed in os.environ (in-process), so register_relay_adapter() reads them.
