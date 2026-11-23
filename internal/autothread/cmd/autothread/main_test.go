@@ -181,3 +181,88 @@ func TestCLIResponseShape(t *testing.T) {
 		t.Errorf("response %q lacks the decision key", trimmed)
 	}
 }
+
+// runBinaryWithStderr feeds one JSON payload to the binary and returns its
+// exit code, stdout, and stderr.
+func runBinaryWithStderr(t *testing.T, binary, payload string) (int, string, string) {
+	t.Helper()
+	cmd := exec.Command(binary)
+	cmd.Stdin = strings.NewReader(payload)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			return exit.ExitCode(), stdout.String(), stderr.String()
+		}
+		t.Fatalf("run binary: %v", err)
+	}
+	return 0, stdout.String(), stderr.String()
+}
+
+// TestCLIRejectsNonObjectEnvelopes: only a JSON object is a request. Scalar
+// payloads are decode errors (exit 2), never a guessed classification — the
+// bridge relies on a non-zero exit to fail safe.
+func TestCLIRejectsNonObjectEnvelopes(t *testing.T) {
+	binary := buildBinary(t)
+	for _, payload := range []string{`42`, `"text"`, `true`} {
+		code, stdout := runBinary(t, binary, payload)
+		if code != 2 {
+			t.Errorf("payload %q: exit = %d (stdout %q), want 2", payload, code, stdout)
+		}
+	}
+}
+
+// TestCLINullEnvelopeFailsSafe: a null payload decodes to the zero request,
+// which names no failure class — the answer is "fail", never "adopt".
+func TestCLINullEnvelopeFailsSafe(t *testing.T) {
+	binary := buildBinary(t)
+	code, stdout := runBinary(t, binary, `null`)
+	if code != 0 {
+		t.Fatalf("exit = %d for null, want 0 (zero request decodes cleanly)", code)
+	}
+	var resp response
+	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
+		t.Fatalf("unparseable response %q: %v", stdout, err)
+	}
+	if resp.Decision != autothread.Fail {
+		t.Errorf("decision = %q, want %q (the zero value must be the safe one)",
+			resp.Decision, autothread.Fail)
+	}
+}
+
+// TestCLIClassifiesOnlyTheFirstRequest: one process invocation answers one
+// request — bytes after the first JSON value are not a second verdict.
+func TestCLIClassifiesOnlyTheFirstRequest(t *testing.T) {
+	binary := buildBinary(t)
+	code, stdout := runBinary(t, binary, `{"code": 160004} {"status": 500}`)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	trimmed := strings.TrimRight(stdout, "\n")
+	if strings.Contains(trimmed, "\n") {
+		t.Errorf("response spans multiple lines: %q", stdout)
+	}
+	var resp response
+	if err := json.Unmarshal([]byte(trimmed), &resp); err != nil {
+		t.Fatalf("unparseable response %q: %v", trimmed, err)
+	}
+	if resp.Decision != autothread.Adopt {
+		t.Errorf("decision = %q, want %q (only the first request is classified)",
+			resp.Decision, autothread.Adopt)
+	}
+}
+
+// TestCLISuccessKeepsStderrClean: the bridge surfaces stderr only as a
+// failure diagnostic, so a successful classification must not chat on it.
+func TestCLISuccessKeepsStderrClean(t *testing.T) {
+	binary := buildBinary(t)
+	code, _, stderr := runBinaryWithStderr(
+		t, binary, `{"status": 400, "code": 160004, "message": "x"}`)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q on a successful run, want empty", stderr)
+	}
+}

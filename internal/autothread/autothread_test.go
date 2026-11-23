@@ -282,3 +282,36 @@ func TestRateLimitedKeysOnStatusAlone(t *testing.T) {
 		}
 	}
 }
+
+// TestFailIsTheDefault pins the boundary around the recognized classes: a
+// status just outside the retry set and durable rejections carrying no
+// adopt or rate-limit shape all land on Fail, never on a stronger verdict.
+func TestFailIsTheDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		code    int
+		message string
+	}{
+		{"missing access", 403, 50001, "Missing Access"},
+		{"unknown message", 404, 0, "Unknown Message"},
+		{"501 is not a retryable gateway status", 501, 0, "Not Implemented"},
+		{"negative status with no signals", -1, 0, "boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.status, tc.code, tc.message); got != Fail {
+				t.Errorf("Classify(%d, %d, %q) = %q, want %q",
+					tc.status, tc.code, tc.message, got, Fail)
+			}
+		})
+	}
+}
+
+// TestRateLimitedTextBeatsTransientStatus: precedence is decided by the
+// strongest signal anywhere in the payload, so rate-limit text wins even
+// when the status alone would only be worth a retry.
+func TestRateLimitedTextBeatsTransientStatus(t *testing.T) {
+	if got := Classify(503, 0, "Too Many Requests"); got != RateLimited {
+		t.Errorf("503 + rate-limit text = %q, want rate_limited (wait beats retry)", got)
+	}
+}

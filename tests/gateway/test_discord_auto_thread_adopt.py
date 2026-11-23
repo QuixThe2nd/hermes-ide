@@ -12,11 +12,13 @@ carry ``_hermes_auto_thread_adopted`` so this bot's semantic auto-title
 rename never clobbers the creator's name.
 """
 
+import asyncio
 import importlib
 import json
 import logging
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -334,6 +336,80 @@ class TestAutoThreadAdoption:
 
         assert result is created
         assert events == [("add", WAITING_EMOJI), ("remove", WAITING_EMOJI)]
+        assert getattr(result, "_hermes_auto_thread_adopted", False) is False
+
+
+class TestClassifierOffTheEventLoop:
+    """The Go-helper bridge blocks (a subprocess spawn, or a cold `go
+    build`): _auto_create_thread runs on the asyncio loop that owns every
+    bot's Discord websocket, so the classification must leave that loop."""
+
+    @pytest.mark.asyncio
+    async def test_classifier_runs_off_the_event_loop(
+        self, adapter, bridge, monkeypatch
+    ):
+        """A blocking classifier must run on a worker thread while the loop
+        keeps ticking; 160004 adoption still resolves."""
+        channel = _TextChannel()
+        existing = _existing_thread(42, parent=channel)
+        adapter._client = _client_with(existing)
+        message, _, _ = _make_message(
+            channel, create_thread_side_effect=_ThreadAlreadyExists())
+
+        loop_thread = threading.get_ident()
+        loop_ticked = threading.Event()
+        seen = {}
+
+        def _blocking_classifier(exc):
+            seen["thread"] = threading.get_ident()
+            loop_ticked.clear()
+            time.sleep(0.2)
+            # While this thread blocks, a live loop sets the event again.
+            seen["ticked_during_block"] = loop_ticked.is_set()
+            return "adopt"
+
+        monkeypatch.setattr(
+            bridge, "classify_thread_create_error", _blocking_classifier)
+
+        async def _ticker():
+            while True:
+                loop_ticked.set()
+                await asyncio.sleep(0.01)
+
+        ticker = asyncio.ensure_future(_ticker())
+        try:
+            result = await adapter._auto_create_thread(message)
+        finally:
+            ticker.cancel()
+
+        assert result is existing  # adoption still happens
+        assert seen["thread"] != loop_thread, (
+            "the classifier blocked the asyncio event loop")
+        assert seen["ticked_during_block"] is True, (
+            "the event loop stalled while the classifier blocked")
+
+    @pytest.mark.asyncio
+    async def test_raising_classifier_keeps_historical_seed_fallback(
+        self, adapter, bridge, monkeypatch
+    ):
+        """A classifier that blows up is no classification: the historical
+        seed path runs and nothing raises into the caller."""
+        def _exploding_classifier(exc):
+            raise RuntimeError("helper exploded")
+
+        monkeypatch.setattr(
+            bridge, "classify_thread_create_error", _exploding_classifier)
+        channel = _TextChannel()
+        seed_thread = _existing_thread(4242, parent=channel)
+        channel.seed_message.create_thread = AsyncMock(return_value=seed_thread)
+        adapter._client = _client_with(None)
+        message, _, _ = _make_message(
+            channel, create_thread_side_effect=_ThreadAlreadyExists())
+
+        result = await adapter._auto_create_thread(message)
+
+        assert result is seed_thread
+        channel.send.assert_awaited_once()  # historical behavior preserved
         assert getattr(result, "_hermes_auto_thread_adopted", False) is False
 
 

@@ -6825,7 +6825,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     return thread
                 except Exception as direct_error:
                     last_direct_error = direct_error
-                    if auto_thread_errors.classify_thread_create_error(direct_error) == "adopt":
+                    try:
+                        # The classifier shells out to the Go helper (a
+                        # subprocess spawn, or a cold `go build` on first
+                        # use); run it off the event loop that owns every
+                        # bot's Discord websocket.
+                        decision = await asyncio.to_thread(
+                            auto_thread_errors.classify_thread_create_error,
+                            direct_error,
+                        )
+                    except Exception:
+                        decision = None
+                    if decision == "adopt":
                         # 160004: another client (e.g. a second bot mentioned in the
                         # same message) already created the thread. Adopt it and
                         # answer there — never seed a placeholder or re-create.
