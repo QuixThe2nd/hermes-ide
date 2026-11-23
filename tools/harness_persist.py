@@ -77,7 +77,11 @@ def launch_detached_service(
     code_path = stdout_path.with_name(stdout_path.name + ".code")
     if code_path.exists():
         code_path.unlink()
-    runner = stdout_path.with_name(stdout_path.name + ".run.py")
+    # No ".py" suffix: the wrapper lands next to the stdout log, which can be a
+    # checkout root (agent_cli_runner's ".hermes-agent-cli.out"); a "*.py" file
+    # there is scanned as a root module by setup.py. It runs as
+    # ``sys.executable <path>``, so the suffix is not needed.
+    runner = stdout_path.with_name(stdout_path.name + ".run")
     runner.write_text(
         "import subprocess, sys\n"
         "from pathlib import Path\n"

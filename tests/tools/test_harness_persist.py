@@ -1,5 +1,6 @@
 """A tool harness launched from a service must outlive that service being stopped."""
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,37 @@ import pytest
 
 pytestmark = pytest.mark.platforms("linux")
 
+
+def test_detached_wrapper_is_not_a_py_file(tmp_path, monkeypatch):
+    # The wrapper lands next to the stdout log — which can be a checkout root
+    # (``.hermes-agent-cli.out`` from tools/agent_cli_runner.py). A ``*.py`` name
+    # there is picked up by setup.py's root-module scan; the stem is not a valid
+    # identifier and the wheel build fails. The wrapper runs as
+    # ``sys.executable <path>``, so it needs no suffix at all.
+    import tools.harness_persist as hp
+
+    launched = {}
+
+    def fake_run(cmd, **kwargs):
+        launched["cmd"] = cmd
+
+        class _Done:
+            returncode = 0
+
+        return _Done()
+
+    monkeypatch.setattr(hp.subprocess, "run", fake_run)
+    monkeypatch.setattr(hp, "active_service_main_pid", lambda unit: os.getpid())
+    hp.launch_detached_service(
+        ["/bin/true"], cwd=str(tmp_path), env={},
+        stdout_path=tmp_path / ".hermes-agent-cli.out", stderr_path=tmp_path / "err",
+    )
+    wrapper = tmp_path / ".hermes-agent-cli.out.run"
+    assert wrapper.is_file()
+    assert not (tmp_path / ".hermes-agent-cli.out.run.py").exists()
+    runner_arg = launched["cmd"][launched["cmd"].index("--") + 2]
+    assert runner_arg == str(wrapper)
+    assert not runner_arg.endswith(".py")
 
 def _stop(unit: str) -> None:
     subprocess.run(["systemctl", "stop", unit], check=False, timeout=30)
