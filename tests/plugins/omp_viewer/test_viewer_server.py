@@ -912,3 +912,254 @@ def test_invalid_json_and_bad_utf8_lines_are_consumed_never_rendered(
     texts, offsets = _drain_tail(path)
     assert texts == ["before", "after"]
     assert offsets[-1] == path.stat().st_size
+
+
+# ── scan-walk cache ───────────────────────────────────────────────────────
+
+
+def _counted_listings(scan_root: Path, monkeypatch) -> dict:
+    """Count directory listings under the scan root, by either walk style."""
+    import os
+
+    counts = {"iterdir": 0, "scandir": 0}
+    real_iterdir = Path.iterdir
+    real_scandir = os.scandir
+
+    def counting_iterdir(self):
+        counts["iterdir"] += 1
+        return real_iterdir(self)
+
+    def counting_scandir(path):
+        if str(path).startswith(str(scan_root)):
+            counts["scandir"] += 1
+        return real_scandir(path)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    return counts
+
+
+def test_second_call_within_window_does_not_rewalk_the_scan_root(
+    scan_root: Path, monkeypatch
+) -> None:
+    """A second find_lane_workdirs() inside the freshness window walks nothing."""
+    _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [_user_event("x")])
+    counts = _counted_listings(scan_root, monkeypatch)
+
+    first = server.find_lane_workdirs()
+    after_first = dict(counts)
+    second = server.find_lane_workdirs()
+
+    assert second == first
+    assert counts == after_first, "second call inside the freshness window rewalked the scan root"
+
+
+def test_stale_scan_result_is_served_immediately_and_refreshed_in_background(
+    scan_root: Path, monkeypatch
+) -> None:
+    """Past the window: serve the stale result now, rewalk in the background."""
+    _make_session(scan_root, "first", "backend_dev", "a.jsonl", [])
+    now = {"t": 1_000.0}
+    monkeypatch.setattr(server, "_walk_now", lambda: now["t"])
+    real_walk = server._walk_scan_roots
+    walks = {"count": 0}
+    refreshed = threading.Event()
+
+    def counting_walk(roots):
+        result = real_walk(roots)
+        walks["count"] += 1
+        if walks["count"] >= 2:
+            refreshed.set()
+        return result
+
+    monkeypatch.setattr(server, "_walk_scan_roots", counting_walk)
+
+    first = server.find_lane_workdirs()
+    assert walks["count"] == 1
+
+    now["t"] += server.SCAN_WALK_CACHE_TTL_SEC + 1.0
+    new_workdir = _make_session(scan_root, "second", "backend_dev", "b.jsonl", []).parents[2]
+
+    stale = server.find_lane_workdirs()
+    assert stale == first, "stale result must be served without waiting for the refresh walk"
+
+    assert refreshed.wait(timeout=10), "no background refresh walk ran after the window"
+    assert new_workdir in server.find_lane_workdirs()
+
+
+def test_registry_workdir_appears_immediately_within_the_freshness_window(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The registry half is read fresh on every call — never cache-delayed."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    scan_root = tmp_path / "scan"
+    scan_root.mkdir()
+    monkeypatch.setattr(server, "SCAN_ROOTS", [str(scan_root)])
+    assert server.find_lane_workdirs() == []
+
+    workdir = tmp_path / "elsewhere" / "reg-proj"
+    (workdir / server.LANE_DIR_NAME).mkdir(parents=True)
+    registry_dir = home / server.RUNS_DIR_NAME
+    registry_dir.mkdir()
+    (registry_dir / "run-1.json").write_text(
+        json.dumps({"version": 1, "workdir": str(workdir)}), encoding="utf-8"
+    )
+
+    found = server.find_lane_workdirs()
+    assert workdir.resolve() in found
+
+
+def test_new_transcript_in_a_known_workdir_appears_on_the_next_call(
+    scan_root: Path,
+) -> None:
+    """The per-workdir transcript listing is never behind the walk cache."""
+    first_file = _make_session(scan_root, "proj", "backend_dev", "a.jsonl", [_user_event("one")])
+    files = {r["session_file"] for r in server.list_runs()["runs"]}
+    assert files == {str(first_file)}
+
+    second_file = _make_session(scan_root, "proj", "backend_dev", "b.jsonl", [_user_event("two")])
+    files = {r["session_file"] for r in server.list_runs()["runs"]}
+    assert files == {str(first_file), str(second_file)}
+
+
+def test_changing_scan_roots_never_serves_the_other_roots_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The cache is keyed by the resolved roots, not by process lifetime."""
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    _make_session(root_a, "proj-a", "backend_dev", "a.jsonl", [])
+    _make_session(root_b, "proj-b", "backend_dev", "b.jsonl", [])
+
+    monkeypatch.setattr(server, "SCAN_ROOTS", [str(root_a)])
+    first = server.find_lane_workdirs()
+    assert [p.name for p in first] == ["proj-a"]
+
+    monkeypatch.setattr(server, "SCAN_ROOTS", [str(root_b)])
+    assert server.find_lane_workdirs() == [root_b.resolve() / "proj-b"]
+
+
+def test_concurrent_callers_trigger_a_single_walk(scan_root: Path, monkeypatch) -> None:
+    """N threads on a cold cache get one shared walk, not N competing ones."""
+    for i in range(4):
+        _make_session(scan_root, f"proj-{i}", "backend_dev", "a.jsonl", [])
+    real_walk = server._walk_scan_roots
+    walks = {"count": 0}
+    entered = threading.Event()
+    release = threading.Event()
+
+    def gated_walk(roots):
+        walks["count"] += 1
+        entered.set()
+        release.wait(timeout=10)
+        return real_walk(roots)
+
+    monkeypatch.setattr(server, "_walk_scan_roots", gated_walk)
+
+    n_threads = 8
+    barrier = threading.Barrier(n_threads + 1)
+    results: list = []
+
+    def worker() -> None:
+        barrier.wait(timeout=10)
+        results.append(server.find_lane_workdirs())
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=10)
+    assert entered.wait(timeout=10), "no walk started"
+    release.set()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "a caller thread did not finish"
+
+    assert walks["count"] == 1, f"expected one walk, got {walks['count']}"
+    expected = server.find_lane_workdirs()
+    assert len(results) == n_threads
+    assert all(result == expected for result in results)
+
+
+def _reference_walk(root: Path) -> list[Path]:
+    """The pre-cache pathlib walk, kept here as the parity oracle."""
+    found: dict[str, Path] = {}
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            entries = sorted(current.iterdir())
+        except OSError:
+            continue
+        try:
+            lane = current / server.LANE_DIR_NAME
+            has_lane = lane.is_dir() and not lane.is_symlink()
+        except OSError:
+            has_lane = False
+        if has_lane:
+            found.setdefault(str(current), current)
+        if depth >= server.SCAN_MAX_DEPTH:
+            continue
+        for entry in entries:
+            try:
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+            except OSError:
+                continue
+            if entry.name in server.SKIP_DIR_NAMES:
+                continue
+            stack.append((entry, depth + 1))
+    return sorted(found.values())
+
+
+def test_scan_walk_matches_the_pathlib_reference_walk(
+    scan_root: Path, monkeypatch
+) -> None:
+    """The scandir walk returns exactly what the pathlib walk did, per case."""
+    import os
+
+    # Depth bound: level 3 counts, level 4 is out of scope.
+    (scan_root / "depth1" / "depth2" / "depth3" / server.LANE_DIR_NAME).mkdir(parents=True)
+    (scan_root / "depth1" / "depth2" / "depth3" / "depth4" / server.LANE_DIR_NAME).mkdir(
+        parents=True
+    )
+    # Skipped names are never descended into.
+    (scan_root / "node_modules" / "dep" / server.LANE_DIR_NAME).mkdir(parents=True)
+    (scan_root / ".git" / "hooks" / server.LANE_DIR_NAME).mkdir(parents=True)
+    # A symlinked directory is never followed (nor duplicated).
+    (scan_root / "real-proj" / server.LANE_DIR_NAME).mkdir(parents=True)
+    (scan_root / "linked-proj").symlink_to(
+        scan_root / "real-proj", target_is_directory=True
+    )
+    # A symlinked .hermes-lane never counts.
+    (scan_root / "symlinked-lane").mkdir()
+    (scan_root / "symlinked-lane" / server.LANE_DIR_NAME).symlink_to(
+        scan_root / "real-proj" / server.LANE_DIR_NAME, target_is_directory=True
+    )
+    # An unreadable directory is skipped (simulated: chmod is a no-op for root).
+    unreadable = scan_root / "unreadable"
+    (unreadable / server.LANE_DIR_NAME).mkdir(parents=True)
+    real_scandir = os.scandir
+    real_listdir = os.listdir
+
+    def denying_scandir(path):
+        if Path(path) == unreadable:
+            raise PermissionError("denied")
+        return real_scandir(path)
+
+    def denying_listdir(path):
+        if Path(path) == unreadable:
+            raise PermissionError("denied")
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "scandir", denying_scandir)
+    monkeypatch.setattr(os, "listdir", denying_listdir)
+
+    expected = {
+        scan_root / "depth1" / "depth2" / "depth3",
+        scan_root / "real-proj",
+    }
+    found = server.find_lane_workdirs()
+    assert set(found) == expected
+    assert found == _reference_walk(scan_root)

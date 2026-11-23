@@ -147,43 +147,151 @@ def _registry_workdirs() -> list[Path]:
     return workdirs
 
 
-def find_lane_workdirs() -> list[Path]:
-    """Workdirs carrying a ``.hermes-lane`` dir, bounded depth, no symlinks.
+def _walk_scan_roots(roots: list[Path]) -> dict[str, Path]:
+    """Walk ``roots`` for workdirs carrying a ``.hermes-lane`` dir.
 
-    Discovery is registry-first: every workdir the lane launcher recorded
-    is in scope wherever it lives, and configured scan roots add bounded
-    walk-in discovery on top (for runs that predate the registry). A
-    workdir appearing under two sources is reported once.
+    Bounded depth, symlinked directories never followed, a symlinked
+    ``.hermes-lane`` never counted, unreadable directories skipped. One
+    ``os.scandir`` per directory: entry types come from the directory
+    stream itself (``follow_symlinks=False``), so the walk pays no
+    per-entry stat and no per-directory sort — callers sort the merged
+    result once.
     """
     found: dict[str, Path] = {}
-    for workdir in _registry_workdirs():
-        found.setdefault(str(workdir), workdir)
-    for root in _resolved_scan_roots():
+    for root in roots:
         stack: list[tuple[Path, int]] = [(root, 0)]
         while stack:
             current, depth = stack.pop()
             try:
-                entries = sorted(current.iterdir())
+                with os.scandir(current) as scan:
+                    entries = list(scan)
             except OSError:
                 continue
-            try:
-                lane = current / LANE_DIR_NAME
-                has_lane = lane.is_dir() and not lane.is_symlink()
-            except OSError:
-                has_lane = False
-            if has_lane:
-                found.setdefault(str(current), current)
-            if depth >= SCAN_MAX_DEPTH:
-                continue
+            has_lane = False
+            descend = depth < SCAN_MAX_DEPTH
             for entry in entries:
+                if entry.name == LANE_DIR_NAME:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            has_lane = True
+                    except OSError:
+                        pass
+                    continue
+                if not descend or entry.name in SKIP_DIR_NAMES:
+                    continue
                 try:
-                    if not entry.is_dir() or entry.is_symlink():
+                    if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
                         continue
                 except OSError:
                     continue
-                if entry.name in SKIP_DIR_NAMES:
-                    continue
-                stack.append((entry, depth + 1))
+                stack.append((Path(entry.path), depth + 1))
+            if has_lane:
+                found.setdefault(str(current), current)
+    return found
+
+
+# The scan-root walk is the viewer's one expensive discovery step (a big
+# tree costs seconds per pass), and its result only changes when workdirs
+# appear or disappear. It is cached per resolved-roots configuration: a
+# fresh result is served directly, a stale one is served immediately while
+# one background thread re-walks, and a cold configuration walks once in
+# the calling thread while concurrent callers wait for that same walk.
+SCAN_WALK_CACHE_TTL_SEC = 30.0
+
+
+def _walk_now() -> float:
+    """Aging clock for the walk cache — module-level so tests can pin it."""
+    return time.monotonic()
+
+
+class _ScanWalkState:
+    """Cache line for one resolved-roots configuration."""
+
+    __slots__ = ("cond", "result", "at", "walking")
+
+    def __init__(self) -> None:
+        self.cond = threading.Condition()
+        self.result: dict[str, Path] | None = None
+        self.at = 0.0
+        self.walking = False
+
+
+_scan_walk_states: dict[tuple[str, ...], _ScanWalkState] = {}
+_scan_walk_states_lock = threading.Lock()
+
+
+def _scan_walk_state(key: tuple[str, ...]) -> _ScanWalkState:
+    with _scan_walk_states_lock:
+        state = _scan_walk_states.get(key)
+        if state is None:
+            state = _ScanWalkState()
+            _scan_walk_states[key] = state
+        return state
+
+
+def _complete_walk(state: _ScanWalkState, result: dict[str, Path] | None) -> None:
+    """Publish a finished walk and release its waiters; failure keeps stale."""
+    with state.cond:
+        if result is not None:
+            state.result = result
+            state.at = _walk_now()
+        state.walking = False
+        state.cond.notify_all()
+
+
+def _refresh_walk(state: _ScanWalkState, roots: list[Path]) -> None:
+    """Background re-walk: a failure keeps the stale result serving."""
+    try:
+        result = _walk_scan_roots(roots)
+    except Exception:
+        result = None
+    _complete_walk(state, result)
+
+
+def _scan_workdirs_cached(roots: list[Path]) -> dict[str, Path]:
+    """Cached scan-root walk result, single-flight per configuration."""
+    state = _scan_walk_state(tuple(str(root) for root in roots))
+    with state.cond:
+        while True:
+            if state.result is not None:
+                if _walk_now() - state.at < SCAN_WALK_CACHE_TTL_SEC:
+                    return dict(state.result)
+                if not state.walking:
+                    state.walking = True
+                    threading.Thread(
+                        target=_refresh_walk, args=(state, roots), daemon=True
+                    ).start()
+                return dict(state.result)
+            if state.walking:
+                state.cond.wait()
+                continue
+            state.walking = True
+            break
+    # Cold configuration: this thread runs the one first walk; concurrent
+    # callers wait on the condition above for it.
+    try:
+        result = _walk_scan_roots(roots)
+    except Exception:
+        _complete_walk(state, None)
+        raise
+    _complete_walk(state, result)
+    return dict(result)
+
+
+def find_lane_workdirs() -> list[Path]:
+    """Workdirs carrying a ``.hermes-lane`` dir, bounded depth, no symlinks.
+
+    Discovery is registry-first: every workdir the lane launcher recorded
+    is in scope wherever it lives (re-read on every call), and configured
+    scan roots add bounded walk-in discovery on top (for runs that predate
+    the registry), cached for SCAN_WALK_CACHE_TTL_SEC. A workdir appearing
+    under two sources is reported once.
+    """
+    found: dict[str, Path] = {}
+    for workdir in _registry_workdirs():
+        found.setdefault(str(workdir), workdir)
+    for key, workdir in _scan_workdirs_cached(_resolved_scan_roots()).items():
+        found.setdefault(key, workdir)
     return sorted(found.values())
 
 
@@ -887,6 +995,13 @@ def main() -> None:
             if root.strip()
         ]
     LOG_FILE = default_log_file()
+
+    # Cold start: warm the scan-walk cache in the background, so the first
+    # /api/runs waits on this ONE in-flight walk instead of starting its own.
+    roots = _resolved_scan_roots()
+    if roots:
+        threading.Thread(target=_scan_workdirs_cached, args=(roots,), daemon=True).start()
+
 
     httpd = ThreadingHTTPServer((SERVER_BIND, SERVER_PORT), OmpViewerHandler)
     print(
