@@ -113,23 +113,54 @@ def _check_output_indicates_update_available(text: str) -> bool:
     return UPDATE_AVAILABLE_MARKER in lowered
 
 
-def run_subprocess(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+# Check/prepare subprocess budget. The activation child gets its own budget
+# derived from the gateway drain window — see _activation_timeout_seconds().
+SUBPROCESS_TIMEOUT = 3600.0
+
+
+def run_subprocess(
+    argv: Sequence[str], *, timeout: float = SUBPROCESS_TIMEOUT
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(argv),
         capture_output=True,
         text=True,
-        timeout=3600,
+        timeout=timeout,
         check=False,
     )
 
 
+def _activation_timeout_seconds() -> float:
+    """Activation budget = gateway drain budget + 300s headroom, clamped.
+
+    The activation child ends in ``hermes update --yes``, whose fleet restart
+    waits out the gateway's own drain window (default 24h) — so the old fixed
+    1h timeout killed the child mid-drain on every tick and one long-running
+    chat blocked every scheduled update. Resolve the drain timeout the same
+    way the gateway does (``hermes_cli.gateway._get_restart_drain_timeout``),
+    add 300s for unit stop/restart overhead (systemd's TimeoutStopSec only
+    gets drain+30s via ``resolve_systemd_timeout_stop_sec``), and clamp to
+    [SUBPROCESS_TIMEOUT, 86400] so a misconfigured drain can neither shrink
+    the budget below the old constant nor stall the tick past a day.
+    """
+    try:
+        from hermes_cli.gateway import _get_restart_drain_timeout
+
+        drain = float(_get_restart_drain_timeout())
+    except Exception:  # an unreadable config must not kill the tick
+        from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+        drain = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    return min(86400.0, max(SUBPROCESS_TIMEOUT, drain + 300.0))
+
+
 def _prepare_phase(
     settings: dict,
-    run_cmd: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+    run_cmd: Callable[..., subprocess.CompletedProcess[str]],
 ) -> RunOutcome:
     """Check for an update and stage it. Never restarts anything."""
     try:
-        check = run_cmd(build_stock_updater_argv("check"))
+        check = run_cmd(build_stock_updater_argv("check"), timeout=SUBPROCESS_TIMEOUT)
     except subprocess.TimeoutExpired:
         emit_notification(settings.get("notify_on_failure", ""))
         logger.warning("auto-update check timed out")
@@ -151,7 +182,7 @@ def _prepare_phase(
         return RunOutcome(0, "no_update")
 
     try:
-        prepare = run_cmd(build_stock_updater_argv("prepare"))
+        prepare = run_cmd(build_stock_updater_argv("prepare"), timeout=SUBPROCESS_TIMEOUT)
     except subprocess.TimeoutExpired:
         emit_notification(settings.get("notify_on_failure", ""))
         logger.warning("auto-update prepare timed out")
@@ -171,11 +202,13 @@ def _prepare_phase(
 
 def _activation_phase(
     settings: dict,
-    run_activation: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+    run_activation: Callable[..., subprocess.CompletedProcess[str]],
 ) -> RunOutcome:
     """Dispatch the fresh-process activation attempt."""
     try:
-        activation = run_activation(build_stock_updater_argv("activate"))
+        activation = run_activation(
+            build_stock_updater_argv("activate"), timeout=_activation_timeout_seconds()
+        )
     except subprocess.TimeoutExpired:
         logger.warning("auto-update activation timed out")
         return RunOutcome(1, "activation_timeout")
@@ -193,11 +226,9 @@ def _activation_phase(
 def run_scheduled_update(
     *,
     cfg: dict | None = None,
-    run_cmd: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+    run_cmd: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     read_live_update_fn: Callable | None = None,
-    run_activation: Callable[
-        [Sequence[str]], subprocess.CompletedProcess[str]
-    ] | None = None,
+    run_activation: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> RunOutcome:
     """Run one timer tick: prepare whatever is available, then try to activate.
 
@@ -206,7 +237,9 @@ def run_scheduled_update(
     own fresh process immediately before restarting anything.
 
     The subprocess defaults resolve at call time (not at import) so tests can
-    substitute them by patching this module's attributes.
+    substitute them by patching this module's attributes. Subprocess callables
+    receive a ``timeout`` keyword: the fixed SUBPROCESS_TIMEOUT for
+    check/prepare, the drain-derived budget for activation.
     """
     run_cmd = run_cmd or run_subprocess
     read_live_update_fn = read_live_update_fn or read_live_update

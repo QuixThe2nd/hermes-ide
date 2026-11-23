@@ -299,7 +299,7 @@ def test_oneshot_entrypoint_busy_tick_prepares_but_touches_nothing(home, monkeyp
     side_effects = {"reconcile": 0, "migrate": 0}
     dispatched: list[str] = []
 
-    def fake_run_subprocess(argv):
+    def fake_run_subprocess(argv, *, timeout=None):
         joined = " ".join(str(tok) for tok in argv)
         dispatched.append(joined)
         if "--check" in joined:
