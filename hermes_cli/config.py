@@ -1901,7 +1901,7 @@ def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
         ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
         (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
       - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
-        :data:`DEFAULT_MAX_TURNS` — 256 turns by default).
+        :data:`DEFAULT_MAX_TURNS` — 512 turns by default).
       - Anything unparseable — including values whose numeric magnitude has no
         finite int representation (``"1e309"``, ``"+inf"``, YAML ``.inf`` /
         ``.nan``) — → ``default`` (with a debug log), never an exception.
@@ -1914,7 +1914,7 @@ def resolve_turn_limit(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
     Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
     instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
     becomes a first-class supported spelling of "unlimited". max_turns
-    defaults to 256 turns unless the user sets an explicit cap or an
+    defaults to 512 turns unless the user sets an explicit cap or an
     "unlimited" spelling.
     """
     if raw is None:

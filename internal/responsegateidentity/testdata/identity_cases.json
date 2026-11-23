@@ -1,0 +1,95 @@
+{
+  "comment": "Shared Discord response-gate identity contract. Go tests in internal/responsegateidentity and Python tests in tests/plugins/platforms/test_discord_response_gate_identity.py both consume this table. A null configured override in the Python config selects automatic identity; Go represents that state with a nil *string. Production Python never executes or imports Go code.",
+  "automatic": [
+    {
+      "name": "display_name_preferred_and_trimmed",
+      "exercises": "display_name",
+      "user": {
+        "display_name": "  Winnie  ",
+        "username": "winnie-user",
+        "name": "winnie-internal"
+      },
+      "want": "Winnie"
+    },
+    {
+      "name": "username_used_when_display_name_is_blank",
+      "exercises": "username",
+      "user": {
+        "display_name": " \t ",
+        "username": "  username-fallback ",
+        "name": "internal-name"
+      },
+      "want": "username-fallback"
+    },
+    {
+      "name": "name_used_when_preferred_fields_are_blank",
+      "exercises": "name",
+      "user": {
+        "display_name": "",
+        "username": "",
+        "name": "  name-fallback "
+      },
+      "want": "name-fallback"
+    },
+    {
+      "name": "assistant_used_when_every_user_field_is_blank",
+      "exercises": "default",
+      "user": {
+        "display_name": " \t ",
+        "username": "\r\n",
+        "name": "  "
+      },
+      "want": "assistant"
+    },
+    {
+      "name": "unicode_whitespace_trimmed_from_display_name",
+      "exercises": "display_name",
+      "user": {
+        "display_name": " Huhn ",
+        "username": "ignored-user",
+        "name": "ignored-name"
+      },
+      "want": "Huhn"
+    }
+  ],
+  "configured": [
+    {
+      "name": "configured_override_wins_over_connected_user",
+      "configured": "  Huhn  ",
+      "user": {
+        "display_name": "Connected Display",
+        "username": "connected-user",
+        "name": "connected-name"
+      },
+      "want": "Huhn"
+    },
+    {
+      "name": "configured_override_unicode_whitespace_trimmed",
+      "configured": "   Gate Name  ",
+      "user": {
+        "display_name": "Another Display",
+        "username": "another-user",
+        "name": "another-name"
+      },
+      "want": "Gate Name"
+    }
+  ],
+  "invalid_overrides": [
+    "",
+    " \t\r\n ",
+    "  "
+  ],
+  "examples": {
+    "name": "Huhn",
+    "true": [
+      "hey Huhn whats up",
+      "Huhn can you check this",
+      "what do you think Huhn?"
+    ],
+    "false": [
+      "i saw Huhn in the other channel",
+      "the example greeting is 'hi Huhn whats up'",
+      "Huhn is down again lol"
+    ]
+  }
+}

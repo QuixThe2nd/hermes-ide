@@ -168,7 +168,9 @@ class GatewayGoalsMixin:
                 getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
+    async def _defer_goal_status_notice_after_delivery(
+        self, source: Any, message: str, *, non_conversational: bool = False
+    ) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The gateway message handler returns the agent response to the platform
@@ -185,7 +187,9 @@ class GatewayGoalsMixin:
 
         async def _deliver() -> None:
             try:
-                await self._send_goal_status_notice(source, message)
+                await self._send_goal_status_notice(
+                    source, message, non_conversational=non_conversational
+                )
             except Exception as exc:
                 logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
 
@@ -371,6 +375,17 @@ class GatewayGoalsMixin:
         # Empty interrupted/errored responses must not drive /goal, but an
         # in-flight /loop tick still needs to be released and rescheduled.
         if final_text.strip():
+            try:
+                auto_decision = await self._retrospective_auto_goal_decision(
+                    event=event,
+                    source=source,
+                    session_entry=session_entry,
+                    final_response=final_text,
+                    initial_decision=auto_decision,
+                    is_internal=is_internal,
+                )
+            except Exception as exc:
+                logger.debug("retrospective goal hook failed: %s", exc)
             try:
                 await self._post_turn_goal_continuation(
                     session_entry=session_entry,

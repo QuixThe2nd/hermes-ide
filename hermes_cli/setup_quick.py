@@ -89,8 +89,11 @@ def _blank_slate_minimal_toolsets(config: dict):
 
 
 def _blank_slate_minimize_config(config: dict):
-    """Turn OFF every optional config feature; all opt back in via ``hermes setup agent``."""
-    config.setdefault("agent", {})["max_turns"] = 90
+    """Turn OFF every optional config feature; all opt back in via ``hermes setup agent``.
+    The turn budget is not an optional feature: Blank Slate shares DEFAULT_MAX_TURNS
+    with every other construction path."""
+    from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
+    config.setdefault("agent", {})["max_turns"] = DEFAULT_MAX_TURNS
     config.setdefault("compression", {})["enabled"] = False
     mem = config.setdefault("memory", {})
     mem["memory_enabled"] = False

@@ -141,8 +141,8 @@ func TestSessionCardOpDerivesRealSha(t *testing.T) {
 		if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 			t.Fatalf("decode output %q: %v", stdout.String(), err)
 		}
-		content := "identity (soul)\ntimestamp\n" +
-			"session context (ephemeral, per-request)\n2 tool schemas"
+		content := "🪪 SOUL.md\n🕐 Timestamp\n" +
+			"🧵 Session context (ephemeral)\n🔧 2 tool schemas"
 		if out.Card.Content != content {
 			t.Errorf("content = %q, want %q", out.Card.Content, content)
 		}

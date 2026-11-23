@@ -3921,6 +3921,7 @@ from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_goal_intent import GatewayGoalIntentMixin
 from gateway.run_goal_auto import GatewayGoalAutoMixin
+from gateway.run_goal_retrospective import GatewayGoalRetrospectiveMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
@@ -5867,7 +5868,7 @@ class GatewayRunner(
     GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
+    GatewayGoalIntentMixin, GatewayGoalAutoMixin, GatewayGoalRetrospectiveMixin, GatewayAgentCacheMixin, GatewayProfileReconcileMixin,
     GatewayHygieneCompressionMixin, GatewayIncognitoMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
