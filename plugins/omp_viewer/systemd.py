@@ -147,7 +147,7 @@ def build_exec_start_argv(
         "--port",
         str(int(cfg.get("port") or 8790)),
     ]
-    scan_roots = cfg.get("scan_roots") or ["/root/work"]
+    scan_roots = cfg.get("scan_roots") or []
     if isinstance(scan_roots, str):
         scan_roots = [scan_roots]
     for root in scan_roots:
@@ -425,16 +425,17 @@ def format_status(result: ReconcileResult, *, cfg: Optional[Mapping[str, object]
     cfg = cfg if cfg is not None else load_omp_viewer_config()
     bind = str(cfg.get("bind") or "127.0.0.1")
     port = int(cfg.get("port") or 8790)
-    scan_roots = cfg.get("scan_roots") or ["/root/work"]
+    scan_roots = cfg.get("scan_roots") or []
     if isinstance(scan_roots, str):
         scan_roots = [scan_roots]
+    scan_display = ", ".join(str(r) for r in scan_roots) or "(run registry only)"
     lines = [
         f"Hermes OMP delegate-lane session viewer ({home})",
         f"  Unit: {SERVICE_NAME}",
         f"  Scope: {'system' if result.scope and result.scope.system else 'user'}",
         f"  Bind: {bind}:{port}",
         f"  Public URL: {public_base_url(cfg=dict(cfg))}",
-        f"  Scan roots: {', '.join(str(r) for r in scan_roots)}",
+        f"  Scan roots: {scan_display}",
         f"  Unit installed: {'yes' if result.unit_installed else 'no'}",
         f"  Enabled: {_format_yes_no(result.enabled, known=result.enabled_known)}",
         f"  Service active: {_format_yes_no(result.service_active, known=result.service_active_known)}",

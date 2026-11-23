@@ -30,7 +30,7 @@ CFG = {
     "port": 8790,
     "public_host": "",
     "extra_hosts": [],
-    "scan_roots": ["/root/work"],
+    "scan_roots": ["/srv/lane-work"],
 }
 
 
@@ -296,7 +296,7 @@ def test_exec_start_uses_bundled_server_and_scan_roots(hermes_home):
     assert Path(argv[1]).is_file()
     assert argv[argv.index("--bind") + 1] == "127.0.0.1"
     assert argv[argv.index("--port") + 1] == "8790"
-    assert argv[argv.index("--scan-root") + 1] == "/root/work"
+    assert argv[argv.index("--scan-root") + 1] == "/srv/lane-work"
 
 
 def test_unit_documented_coexistence_note():
@@ -369,4 +369,4 @@ def test_load_config_defaults(tmp_path, monkeypatch):
     cfg = load_omp_viewer_config()
     assert cfg["bind"] == "127.0.0.1"
     assert cfg["port"] == 8790
-    assert cfg["scan_roots"] == ["/root/work"]
+    assert cfg["scan_roots"] == []

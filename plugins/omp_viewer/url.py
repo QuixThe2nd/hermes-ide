@@ -16,17 +16,30 @@ import logging
 import socket
 import subprocess
 from typing import Callable, List, Mapping, Optional, Tuple
+from urllib.parse import quote, unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8790
-DEFAULT_SCAN_ROOTS = ("/root/work",)
+# Discovery is registry-first (plugins/omp_viewer/runs.py records every
+# run's workdir as it starts), so the defaults carry no path at all;
+# scan_roots stays an additive option for runs that predate the registry.
+DEFAULT_SCAN_ROOTS: Tuple[str, ...] = ()
 
 # A non-routable target: UDP connect() resolves the route locally, so this
 # works with the interface table alone and no packet ever leaves the box.
 _ROUTE_PROBE_TARGET = ("192.0.2.1", 9)  # TEST-NET-1, discard port
 _TAILSCALE_TIMEOUT_SEC = 5.0
+
+# Private networks a watch URL may point at. The viewer is unauthenticated,
+# so the embed gate is the only thing keeping it off the public internet:
+# loopback, RFC1918, and the Tailscale CGNAT range (100.64.0.0/10).
+_ALLOWED_V4_NETS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in ("10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+_ALLOWED_V6_NETS = (ipaddress.ip_network("::1/128"),)
 
 
 def load_omp_viewer_section() -> dict:
@@ -67,7 +80,12 @@ def viewer_port(cfg: Optional[Mapping] = None) -> int:
 
 
 def viewer_scan_roots(cfg: Optional[Mapping] = None) -> List[str]:
-    """Directories scanned (bounded depth) for ``.hermes-lane`` sessions."""
+    """ADDITIVE extra directories scanned for ``.hermes-lane`` sessions.
+
+    Empty by default: primary discovery is the per-home lane-run registry,
+    so the viewer works out of the box on any install; scan roots keep
+    pre-registry runs findable.
+    """
     raw = cfg if cfg is not None else load_omp_viewer_section()
     listed = raw.get("scan_roots") or list(DEFAULT_SCAN_ROOTS)
     if isinstance(listed, str):
@@ -203,3 +221,71 @@ def public_base_url(
     """Return ``http://<host>:<port>`` for this machine's viewer."""
     resolved = host if host is not None else detect_public_host(cfg=cfg)
     return f"http://{resolved}:{viewer_port(cfg)}"
+
+
+# ---------------------------------------------------------------------------
+# Watch URLs (lane progress links) + allowlist (Discord embed gate)
+# ---------------------------------------------------------------------------
+
+
+def watch_url(selector: str, *, cfg: Optional[Mapping] = None, host: Optional[str] = None) -> str:
+    """Live page selecting one lane session dir: ``http://<host>:<port>/#<dir>``."""
+    return f"{public_base_url(cfg=cfg, host=host)}/#{quote(str(selector), safe='/')}"
+
+
+def _selector_ok(fragment: str) -> bool:
+    """True when *fragment* decodes to an absolute, traversal-free directory.
+
+    Raw whitespace is already refused at the URL level; a percent-escaped
+    space (``%20``) is a legitimate directory byte the producer itself
+    emits, so the decoded check targets control characters, not spaces.
+    """
+    decoded = unquote(fragment)
+    if not decoded or "\x00" in decoded:
+        return False
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in decoded):
+        return False
+    if not decoded.startswith("/"):
+        return False
+    return ".." not in decoded.split("/")
+
+
+def _host_is_allowed(hostname: Optional[str], extras: Tuple[str, ...]) -> bool:
+    if not hostname:
+        return False
+    if hostname.lower() in extras:
+        return True
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False  # bare DNS names are not accepted without config
+    nets = _ALLOWED_V4_NETS if addr.version == 4 else _ALLOWED_V6_NETS
+    return any(addr in net for net in nets)
+
+
+def is_allowed_watch_url(url: str, *, cfg: Optional[Mapping] = None) -> bool:
+    """True when *url* is a viewer URL safe to render as a platform card.
+
+    Constraints: http/https, no userinfo, path ``/`` only, no query,
+    fragment empty or an absolute traversal-free session directory, and a
+    private-network host. The viewer is unauthenticated, so that host gate
+    is what keeps a rendered card from pointing off the LAN/tailnet.
+    """
+    if not url or any(ch.isspace() for ch in url):
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        return False
+    decoded_path = unquote(parsed.path)
+    if ".." in decoded_path or decoded_path != "/":
+        return False
+    if parsed.query:
+        return False
+    # urlparse drops a bare trailing "#", leaving fragment empty — test the
+    # raw URL so a present-but-empty fragment is rejected rather than
+    # slipping past the selector guard.
+    if "#" in url and not _selector_ok(parsed.fragment):
+        return False
+    return _host_is_allowed(parsed.hostname, extra_hosts(cfg))

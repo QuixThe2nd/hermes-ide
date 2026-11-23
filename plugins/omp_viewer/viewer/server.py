@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """omp-viewer — live web UI for Hermes OMP delegate-lane session transcripts.
 
-Serves ``<workdir>/.hermes-lane/<lane>/*.jsonl`` files discovered under
-bounded scan roots (default ``/root/work``). The transcripts are OMP session
+Serves ``<workdir>/.hermes-lane/<lane>/*.jsonl`` files discovered through
+the per-home lane-run registry (``<HERMES_HOME>/omp-lane-runs/``, written
+by the lane launcher as each run starts) plus any configured scan roots.
+The transcripts are OMP session
 JSONL: ``session`` / ``model_change`` / ``message`` (roles user, assistant,
 toolResult; content parts text, thinking, toolCall) / ``custom`` (lane
 bookkeeping such as ``date-cwd-reminder`` and ``tool_execution_start``) /
@@ -11,7 +13,8 @@ bookkeeping such as ``date-cwd-reminder`` and ``tool_execution_start``) /
 
 Unauthenticated by design: binds loopback unless the operator passes a LAN
 bind. Only paths shaped like a lane transcript and resolve-contained inside
-a configured scan root are ever served.
+a known workdir (registry entry or under a configured scan root) are ever
+served.
 """
 
 from __future__ import annotations
@@ -46,10 +49,15 @@ SKIP_DIR_NAMES = frozenset(
     {"node_modules", ".git", ".venv", "venv", "__pycache__", ".hermes-lane"}
 )
 LANE_DIR_NAME = ".hermes-lane"
+# Run registry written by the lane launcher (plugins/omp_viewer/runs.py);
+# this stdlib-only server re-reads it directly. One entry is a handful of
+# short paths — anything past this bound is refused without parsing.
+RUNS_DIR_NAME = "omp-lane-runs"
+MAX_RUN_ENTRY_BYTES = 4096
 # A run whose transcript changed within this window renders as active.
 ACTIVE_WINDOW_SEC = 15.0
 
-SCAN_ROOTS: list[str] = ["/root/work"]
+SCAN_ROOTS: list[str] = []
 LOG_FILE: str = ""
 SERVER_BIND = "127.0.0.1"
 SERVER_PORT = 8790
@@ -88,12 +96,68 @@ def _resolved_scan_roots() -> list[Path]:
     return roots
 
 
+def _lane_runs_dir() -> Path:
+    """The run-registry directory, resolved like ``default_log_file``."""
+    hermes_home = os.environ.get("HERMES_HOME")
+    base = hermes_home if hermes_home else os.path.expanduser("~/.hermes")
+    return Path(base) / RUNS_DIR_NAME
+
+
+def _registry_workdirs() -> list[Path]:
+    """Workdirs the lane launcher registered, fail-closed per entry.
+
+    An entry counts only with the registry's exact shape (schema version,
+    absolute traversal-free workdir) AND a live ``.hermes-lane`` directory
+    on disk — a stale, malformed, oversized, or pointing-nowhere entry is
+    skipped, never served.
+    """
+    workdirs: list[Path] = []
+    try:
+        entries = sorted(_lane_runs_dir().glob("*.json"))
+    except OSError:
+        return workdirs
+    for entry in entries:
+        try:
+            raw = entry.read_bytes()
+        except OSError:
+            continue
+        if len(raw) > MAX_RUN_ENTRY_BYTES:
+            continue
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            continue
+        workdir = payload.get("workdir")
+        if not isinstance(workdir, str) or not workdir or "\x00" in workdir:
+            continue
+        candidate = Path(workdir)
+        if not candidate.is_absolute() or ".." in candidate.parts:
+            continue
+        try:
+            resolved = candidate.resolve()
+            lane = resolved / LANE_DIR_NAME
+            if not resolved.is_dir() or not lane.is_dir() or lane.is_symlink():
+                continue
+        except OSError:
+            continue
+        if resolved not in workdirs:
+            workdirs.append(resolved)
+    return workdirs
+
+
 def find_lane_workdirs() -> list[Path]:
     """Workdirs carrying a ``.hermes-lane`` dir, bounded depth, no symlinks.
 
-    A workdir appearing under two overlapping scan roots is reported once.
+    Discovery is registry-first: every workdir the lane launcher recorded
+    is in scope wherever it lives, and configured scan roots add bounded
+    walk-in discovery on top (for runs that predate the registry). A
+    workdir appearing under two sources is reported once.
     """
     found: dict[str, Path] = {}
+    for workdir in _registry_workdirs():
+        found.setdefault(str(workdir), workdir)
     for root in _resolved_scan_roots():
         stack: list[tuple[Path, int]] = [(root, 0)]
         while stack:
@@ -209,7 +273,8 @@ def resolve_transcript(raw: str) -> Path | None:
 
     Servable means: absolute, no ``..`` parts, ``.jsonl`` suffix, shaped like
     ``<workdir>/.hermes-lane/<lane>/<file>.jsonl``, an existing regular file,
-    and — after symlink resolution — contained inside a configured scan root.
+    and — after symlink resolution — inside a KNOWN workdir: one the lane
+    launcher registered, or one contained in a configured scan root.
     """
     if not raw or "\x00" in raw:
         return None
@@ -236,6 +301,9 @@ def resolve_transcript(raw: str) -> Path | None:
         return None
     for root in _resolved_scan_roots():
         if workdir == root or root in workdir.parents:
+            return resolved
+    for known in _registry_workdirs():
+        if workdir == known:
             return resolved
     return None
 

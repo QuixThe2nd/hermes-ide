@@ -367,14 +367,14 @@ def test_metadata_reads_model_change_and_session(scan_root: Path) -> None:
     path = _make_session(
         scan_root, "proj-x", "backend_dev", "s.jsonl",
         [
-            _session_event("/root/work/proj-x"),
+            _session_event("/srv/lane/proj-x"),
             _model_change("litellm/backend_dev"),
             _user_event("hello"),
         ],
     )
     meta = server.extract_run_metadata(path)
     assert meta["model"] == "litellm/backend_dev"
-    assert meta["cwd"] == "/root/work/proj-x"
+    assert meta["cwd"] == "/srv/lane/proj-x"
 
 
 def test_metadata_tolerates_partial_and_garbage_prefix(scan_root: Path) -> None:
