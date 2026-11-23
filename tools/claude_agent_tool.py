@@ -85,6 +85,7 @@ from tools.agent_cli_runner import (
     run_agent_cli,
 )
 from tools.claude_run_receipts import write_spawn_receipt
+from tools.claude_stream_progress import summarize_claude_stream
 from tools.claude_viewer_url import watch_url
 from tools.delegate_evidence_gate import apply_evidence_gate
 from tools.delegate_tool_config import _cfg
@@ -445,6 +446,48 @@ def _make_result(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _error_with_blocker(token: Optional[str], blocker: Optional[str]) -> Optional[str]:
+    """Attach a stream-derived blocker to a failure error string.
+
+    ``f"{token}: {blocker}"`` when there is a token to prefix and the
+    blocker is not already in it, else the blocker alone. Used only on
+    failure paths — a blocker never turns a successful run into a failure.
+    """
+    if not blocker:
+        return token
+    if token and blocker not in token:
+        return f"{token}: {blocker}"
+    return blocker
+
+
+def _claude_abort_check() -> Callable[[Path], Optional[str]]:
+    """Build the per-run poll callback ``run_agent_cli`` consults mid-run.
+
+    Returns "tool_loop" once the stream log shows the run is stuck
+    retrying one rejected tool (see ``summarize_claude_stream``), so the
+    wrapper stops a doomed retry loop in seconds instead of burning the
+    full wall-clock budget. Re-parses only when the log grew, so a quiet
+    healthy run pays one stat per poll tick.
+    """
+    state = {"size": -1}
+
+    def _check(log_path: Path) -> Optional[str]:
+        try:
+            size = log_path.stat().st_size
+        except OSError:
+            return None
+        if size == state["size"]:
+            return None
+        state["size"] = size
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        return "tool_loop" if summarize_claude_stream(log_text)["abort"] else None
+
+    return _check
+
+
 def _run_and_stream(
     cmd: List[str],
     *,
@@ -472,6 +515,7 @@ def _run_and_stream(
         run_timestamp=run_timestamp,
         on_spawn=on_spawn,
         on_proc=on_proc,
+        abort_check=_claude_abort_check(),
     )
 
 
@@ -795,11 +839,26 @@ def _run_claude_agent_sync(
         )
 
     parsed = parse_claude_agent_log(log_text)
+    # A killed (timed-out / aborted) run never emits its type=result event,
+    # so num_turns is missing exactly when the run burned budget without
+    # finishing — derive the activity from the stream itself.
+    summary = summarize_claude_stream(log_text)
+    num_turns = parsed.get("num_turns")
+    api_calls = (
+        num_turns
+        if isinstance(num_turns, int) and num_turns > 0
+        else summary["api_calls"]
+    )
+    blocker = summary.get("blocker")
+    stream_fields: Dict[str, Any] = {"api_calls": api_calls}
+    if blocker:
+        stream_fields["blocker"] = blocker
+        stream_fields["last_tool"] = summary.get("last_tool")
     base_fields = {
         "final_report": _coerce_str(parsed.get("result")) or "",
         "session_id": parsed.get("session_id"),
         "duration_seconds": round(duration, 3),
-        "num_turns": parsed.get("num_turns"),
+        "num_turns": num_turns,
         "cost_usd": parsed.get("total_cost_usd"),
         "models_used": parsed.get("models_used") or [],
         "permission_denials": parsed.get("permission_denials") or [],
@@ -813,8 +872,9 @@ def _run_claude_agent_sync(
     if watchdog_error:
         return _make_result(
             success=False,
-            error=watchdog_error,
+            error=_error_with_blocker(watchdog_error, blocker),
             **base_fields,
+            **stream_fields,
         )
 
     if returncode != 0:
@@ -834,16 +894,20 @@ def _run_claude_agent_sync(
         )
         return _make_result(
             success=False,
-            error=error,
+            error=_error_with_blocker(error, blocker),
             **base_fields,
+            **stream_fields,
             **extra,
         )
 
     if not parsed:
         return _make_result(
             success=False,
-            error="no result event found in Claude Code output",
+            error=_error_with_blocker(
+                "no result event found in Claude Code output", blocker
+            ),
             **base_fields,
+            **stream_fields,
         )
 
     is_error = parsed.get("is_error")
@@ -890,8 +954,9 @@ def _run_claude_agent_sync(
 
     result_json = _make_result(
         success=success,
-        error=error,
+        error=None if success else _error_with_blocker(error, blocker),
         **base_fields,
+        **stream_fields,
         **extra,
     )
     if not success:
@@ -903,16 +968,37 @@ def _run_claude_agent_sync(
     return json.dumps(gated, ensure_ascii=False)
 
 
+def _watchdog_error_verdict(error: Any) -> Optional[str]:
+    """Map a watchdog error string to its status token, if it is one.
+
+    ``"timeout"`` and the enriched ``"timeout: repeated …"`` a
+    stream-derived blocker leaves on the error are timeouts;
+    ``"timeoutfoo"`` is an ordinary error string, not a verdict.
+    """
+    text = str(error or "")
+    for token in ("timeout", "interrupted"):
+        if (
+            text == token
+            or text.startswith(token + ":")
+            or text.startswith(token + " ")
+        ):
+            return token
+    return None
+
+
+
 def _claude_background_status(payload: Dict[str, Any]) -> str:
     """Collapse a finished sync payload into the shared delegation status.
 
     Success reads ``completed``, anything else ``error``; the run's own
-    ``interrupted``/``timeout`` verdict and the worker thread's interrupt
-    bit keep precedence over every other classification.
+    ``interrupted``/``timeout`` verdict — exact or as the ``"timeout: …"``
+    prefix a stream-derived blocker leaves on the error — and the worker
+    thread's interrupt bit keep precedence over every other classification.
     """
     status = "completed" if payload.get("success") else "error"
-    if payload.get("error") in ("interrupted", "timeout"):
-        status = payload["error"]
+    verdict = _watchdog_error_verdict(payload.get("error"))
+    if verdict:
+        status = verdict
     elif payload.get("terminal_status") == "api_error" and not payload.get("success"):
         # A named transport death beats the generic error; interrupted,
         # timeout, and the interrupt-bit override below still win over it.
@@ -1011,6 +1097,9 @@ def _dispatch_claude_background(
             "status": status,
             "summary": payload.get("final_report") or "",
             "error": payload.get("error"),
+            # Stream-derived activity so a killed run's receipt does not
+            # claim "API calls: 0" while the log is full of assistant work.
+            "api_calls": int(payload.get("api_calls") or 0),
             "duration_seconds": payload.get("duration_seconds"),
             "model": model_name or None,
             "log_path": payload.get("log_path"),

@@ -254,6 +254,7 @@ def run_agent_cli(
     env: Optional[Mapping[str, str]] = None,
     on_spawn: Optional[Callable[[Path], None]] = None,
     on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
+    abort_check: Optional[Callable[[Path], Optional[str]]] = None,
 ) -> Tuple[Optional[str], str, str, float, Optional[int]]:
     """Spawn the agent, stream stdout to a log file, enforce watchdogs.
 
@@ -282,6 +283,13 @@ def run_agent_cli(
     right after spawn. A background delegation uses it to keep a handle for
     ``interrupt_fn``, so an explicit stop can kill the process group even if
     the monitoring thread is briefly descheduled.
+
+    ``abort_check`` is consulted once per poll, after the timeout and stall
+    checks: a non-empty string return aborts the run with that error code
+    through the same terminate path a timeout takes. It must be cheap and
+    must never take the run down with it — an exception is debug-logged and
+    the run continues, because a broken check must not kill a healthy run.
+    ``None`` (the default) preserves the previous behavior exactly.
 
     Returns ``(error_code, log_path, log_text, duration_seconds, returncode)``.
     """
@@ -359,6 +367,15 @@ def run_agent_cli(
         if stall_watchdog_seconds > 0 and now - last_byte_mono >= stall_watchdog_seconds:
             error_code = "stalled"
             break
+        if abort_check is not None and log_path is not None:
+            try:
+                abort_reason = abort_check(log_path)
+            except Exception:
+                logger.debug("abort_check failed for %s", log_path, exc_info=True)
+                abort_reason = None
+            if abort_reason:
+                error_code = abort_reason
+                break
         time.sleep(_MONITOR_POLL_SECONDS)
 
     if error_code is not None:
