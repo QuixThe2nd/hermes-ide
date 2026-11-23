@@ -4981,7 +4981,8 @@ class GatewayTurnMixin:
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    "❌ The background task couldn't start because no AI model sign-in is "
+                    "configured. Use /login, or run `hermes setup` on the host.",
                     metadata=_thread_metadata,
                 )
                 return
