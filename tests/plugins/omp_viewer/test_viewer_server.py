@@ -968,11 +968,22 @@ def test_stale_scan_result_is_served_immediately_and_refreshed_in_background(
     def counting_walk(roots):
         result = real_walk(roots)
         walks["count"] += 1
-        if walks["count"] >= 2:
-            refreshed.set()
         return result
 
     monkeypatch.setattr(server, "_walk_scan_roots", counting_walk)
+
+    # The walk returning is not publication: _refresh_walk hands the result
+    # to _complete_walk, which stores it and releases waiters. Wait on the
+    # publication seam so the refreshed result is observable before we
+    # assert on it.
+    real_complete = server._complete_walk
+
+    def publishing_complete(state, result):
+        real_complete(state, result)
+        if walks["count"] >= 2:
+            refreshed.set()
+
+    monkeypatch.setattr(server, "_complete_walk", publishing_complete)
 
     first = server.find_lane_workdirs()
     assert walks["count"] == 1
