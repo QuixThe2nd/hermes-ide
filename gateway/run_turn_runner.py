@@ -66,6 +66,11 @@ class _TurnRunnerCore:
 
 class TurnRunner(_TurnRunnerCore):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
+    # Last-resort guard for a narration hold whose send never releases (dead
+    # consumer): the pump continues after this many seconds. Named so tests
+    # can shrink it; not user-facing config.
+    _PROGRESS_HOLD_TIMEOUT_S = 60.0
+
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -852,12 +857,62 @@ class TurnRunner(_TurnRunnerCore):
 
         async def _released():
             while not evt.is_set():
-                await asyncio.sleep(0.02)
+                # A context-card flush marker parked BEHIND this hold must not
+                # starve: the narration send that releases this hold is itself
+                # gated on that flush (cards land above the reply that used
+                # them), so parking here without servicing it deadlocks both
+                # sides until the timeout. Only the marker moves — queued rows
+                # keep strict FIFO order and still land below the narration.
+                if not await self._service_parked_flush_markers(st):
+                    await asyncio.sleep(0.02)
 
         try:
-            await asyncio.wait_for(_released(), timeout=60.0)
+            await asyncio.wait_for(_released(), timeout=self._PROGRESS_HOLD_TIMEOUT_S)
         except Exception:
             logger.warning("progress hold marker never released; continuing")
+
+    @staticmethod
+    def _partition_parked_flush_markers(items) -> tuple:
+        """Split a parked progress-queue snapshot into (flush markers, rest).
+
+        FIFO order is preserved inside both lists; only context-card flush
+        markers are extracted. Shared contract with the Go twin
+        (internal/progresshold, testdata/hold_scenarios.json): the marker
+        protocol and this partition rule must stay identical on both sides.
+        """
+        markers = [raw for raw in items if TurnRunner._is_flush_marker(raw)]
+        kept = [raw for raw in items if not TurnRunner._is_flush_marker(raw)]
+        return markers, kept
+
+    async def _service_parked_flush_markers(self, st) -> bool:
+        """Service every context-card flush marker parked in the queue.
+
+        Used while the pump holds for an in-flight narration send (see
+        _handle_hold_marker): that send is itself gated on the flush, so a
+        flush marker left queued behind the hold deadlocks both waits. The
+        flush contract is already satisfied at this point — the hold closed
+        the bubble carrying every card (cards precede the hold marker in
+        FIFO) — and rows are never reordered, only the signal marker is
+        serviced. Returns True when at least one marker was serviced.
+        """
+        q = self._ctx.progress_queue
+        mutex = getattr(q, "mutex", None)
+        items = getattr(q, "queue", None)
+        if mutex is None or items is None:
+            return False
+        with mutex:
+            markers, kept = self._partition_parked_flush_markers(list(items))
+            if not markers:
+                return False
+            items.clear()
+            items.extend(kept)
+            # Mirror Queue.get(): wake producers blocked on a bounded queue.
+            for _ in markers:
+                with suppress(Exception):
+                    q.not_full.notify()
+        for marker in markers:
+            await self._handle_flush_marker(st, marker)
+        return True
 
     @staticmethod
     def _is_flush_marker(raw) -> bool:

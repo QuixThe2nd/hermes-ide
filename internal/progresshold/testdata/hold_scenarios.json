@@ -1,0 +1,86 @@
+{
+  "contract": {
+    "gate_tag": "__gate__",
+    "hold_tag": "__hold__",
+    "flush_tag": "__flush__",
+    "reset_tag": "__reset__",
+    "marker_arity": 2
+  },
+  "scenarios": [
+    {
+      "name": "incident_flush_parked_behind_hold",
+      "queue": [
+        {"id": "card-1", "kind": "row"},
+        {"id": "hold-1", "kind": "hold", "tag": "__gate__"},
+        {"id": "row-a", "kind": "row"},
+        {"id": "flush-1", "kind": "flush"},
+        {"id": "row-b", "kind": "row"}
+      ],
+      "service": ["flush-1"],
+      "kept": ["card-1", "hold-1", "row-a", "row-b"],
+      "parkable": false
+    },
+    {
+      "name": "no_flush_park_is_safe",
+      "queue": [
+        {"id": "card-1", "kind": "row"},
+        {"id": "hold-1", "kind": "hold", "tag": "__hold__"},
+        {"id": "row-a", "kind": "row"}
+      ],
+      "service": [],
+      "kept": ["card-1", "hold-1", "row-a"],
+      "parkable": true
+    },
+    {
+      "name": "multiple_flushes_service_in_fifo_order",
+      "queue": [
+        {"id": "flush-1", "kind": "flush"},
+        {"id": "row-a", "kind": "row"},
+        {"id": "flush-2", "kind": "flush"},
+        {"id": "hold-1", "kind": "hold", "tag": "__gate__"},
+        {"id": "flush-3", "kind": "flush"}
+      ],
+      "service": ["flush-1", "flush-2", "flush-3"],
+      "kept": ["row-a", "hold-1"],
+      "parkable": false
+    },
+    {
+      "name": "marker_shaped_tuple_at_wrong_arity_is_a_row",
+      "queue": [
+        {"id": "weird-1", "kind": "tuple", "tag": "__flush__", "arity": 1},
+        {"id": "flush-1", "kind": "flush"},
+        {"id": "weird-2", "kind": "tuple", "tag": "__gate__", "arity": 3}
+      ],
+      "service": ["flush-1"],
+      "kept": ["weird-1", "weird-2"],
+      "parkable": false
+    },
+    {
+      "name": "reset_and_hold_markers_stay_put",
+      "queue": [
+        {"id": "reset-1", "kind": "reset"},
+        {"id": "hold-1", "kind": "hold", "tag": "__gate__"},
+        {"id": "flush-1", "kind": "flush"}
+      ],
+      "service": ["flush-1"],
+      "kept": ["reset-1", "hold-1"],
+      "parkable": false
+    },
+    {
+      "name": "empty_queue",
+      "queue": [],
+      "service": [],
+      "kept": [],
+      "parkable": true
+    },
+    {
+      "name": "flush_only",
+      "queue": [
+        {"id": "flush-1", "kind": "flush"}
+      ],
+      "service": ["flush-1"],
+      "kept": [],
+      "parkable": false
+    }
+  ]
+}
