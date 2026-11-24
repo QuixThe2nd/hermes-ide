@@ -1328,6 +1328,14 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     return new_system_prompt
 
 
+# 4 MB leaves headroom under Anthropic's 5 MB; shrinking loses quality but only
+# runs after a confirmed provider rejection, so the alternative is failure.
+_IMAGE_SHRINK_TARGET_BYTES = 4 * 1024 * 1024
+_IMAGE_SUFFIX_BY_MIME = {
+    "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
+    "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/bmp": ".bmp",
+}
+
 def _data_url_mime(header: str, default: str = "image/jpeg") -> str:
     """``image/*`` mime from a ``data:`` URL header, else ``default``."""
     if header.startswith("data:"):
