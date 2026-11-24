@@ -82,7 +82,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS, failed_turn_notice, site_copy
+from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS, failed_turn_notice, site_copy, stamp_failure
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -5464,7 +5464,7 @@ def _run_conversation_inlined(
                         "(compression.enabled: false). Run /compress to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
-                    return {
+                    return stamp_failure({
                         "final_response": _final_response,
                         "messages": messages,
                         "completed": False,
@@ -5473,7 +5473,7 @@ def _run_conversation_inlined(
                         "partial": True,
                         "failed": True,
                         "compaction_disabled": True,
-                    }
+                    }, "context_overflow", False)
 
                 # ── Anthropic Sonnet long-context tier gate ───────────
                 # Anthropic returns HTTP 429 "Extra usage is required for
