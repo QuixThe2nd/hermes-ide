@@ -217,6 +217,7 @@ class TestRegister:
         assert mgr.has_hook("pre_turn_end")
 
 
+@pytest.mark.real_turn_continuation_gates
 class TestPreTurnEndDispatcher:
     """``hermes_cli.plugins.get_pre_turn_end_continue_message`` — mirrors the
     pre_verify aggregation tests in tests/hermes_cli/test_plugins.py."""

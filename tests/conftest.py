@@ -656,6 +656,40 @@ def _state_db_write_guard(request, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_turn_continuation_nudges(request, monkeypatch):
+    """Neutralize plugin-driven turn-continuation gates for loop tests.
+
+    The bundled ``inbox_sparks`` plugin (``default_enabled: true``) hooks the
+    end-of-turn ``pre_turn_end`` gate and injects exactly one extra
+    continuation iteration into every turn when its cooldown state file is
+    absent — which it always is under the per-test temp HERMES_HOME. Any
+    ``run_conversation`` test whose API mock uses a bounded ``side_effect``
+    list, or which asserts an exact API-call count / turn-exit reason, then
+    fails on an iteration it never staged. The ``pre_verify`` gate is the
+    same shape.
+
+    Loop tests need hermetic turns, so the two ``get_*_continue_message``
+    lookups the gates call resolve to "no nudge" here. Tests that re-patch
+    these attributes inside the test body run after every autouse fixture,
+    so their patch wins; direct-import callers (``tests/hermes_cli/
+    test_plugins.py``) are unaffected by module-attribute patching. Tests of
+    the real dispatcher opt out with ``@pytest.mark.real_turn_continuation_gates``.
+    """
+    if request.node.get_closest_marker("real_turn_continuation_gates") is not None:
+        yield
+        return
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_pre_turn_end_continue_message",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_pre_verify_continue_message",
+        lambda **kwargs: None,
+    )
+    yield
+
+
 # ── Module-level state reset — replaced by per-file process isolation ───────
 #
 # ``scripts/run_tests_parallel.py`` runs each test FILE in its own freshly
