@@ -64,9 +64,8 @@ class TestNtNamespaceGuard(unittest.TestCase):
         from agent import context_references, copilot_acp_client, tool_executor
         from tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
         bad = "\\??\\UNC\\attacker.example\\share\\x"
-        # Tripwire on resolving the MODEL-SUPPLIED string only. A blanket
-        # Path.resolve patch also trips unrelated infra resolution
-        # (hermes_home_key() inside normalize_read_pagination), which is not
+        # Tripwire on resolving the MODEL-SUPPLIED string only: a blanket
+        # patch also trips infra resolution (hermes_home_key), which is not
         # the leak vector this guard exists for.
         def _is_nt_namespace(value) -> bool:
             return str(value).replace("/", "\\").startswith(("\\??\\", "\\\\.\\", "\\\\?\\"))
