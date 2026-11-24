@@ -1690,33 +1690,6 @@ class GatewayTurnMixin:
         effort = cfg.get("effort")
         return effort if isinstance(effort, str) and effort else None
 
-    def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
-        """Runtime-metadata footer for the FINAL message of the turn; always on."""
-        from gateway.run import logger
-
-        from gateway.run import _terminal_scope_cwd
-        try:
-            from gateway.runtime_footer import build_footer_line as _bfl
-            from gateway.runtime_footer import footer_phase_times as _ftp
-            return _bfl(
-                model=agent_result.get("model"),
-                context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
-                context_length=agent_result.get("context_length") or None,
-                cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
-                turn_time=_turn_seconds,
-                api_time=agent_result.get("api_time"),
-                tool_time=agent_result.get("tool_time"),
-                api_calls=agent_result.get("api_calls"),
-                tool_calls=agent_result.get("tool_calls"),
-                phase_times=_ftp(agent_result),
-                requested_model=agent_result.get("requested_model"),
-                served_model=agent_result.get("served_model"),
-                reasoning_effort=self._footer_reasoning_effort(
-                    self._session_key_for_source(source)),
-            )
-        except Exception as _footer_err:
-            logger.debug("runtime_footer build failed: %s", _footer_err)
-            return ""
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
