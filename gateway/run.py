@@ -8051,8 +8051,12 @@ class GatewayRunner(
         # transport sleep on this path froze every platform for the full
         # penalty (#91969). Bound them the same way _finish_startup_restore
         # bounds resume turns.
+        # Boot-path sends must never hold READY: run them off the readiness path.
+        # The ledger claim still runs inline (inside the call) before the send
+        # task exists.
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=planned_restart_notification_pending,
+            await_completion=False,
         )
 
         # Automatically continue fresh sessions that were interrupted by the
@@ -11515,15 +11519,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not runner._overlap_successor_pending:
         _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
 
-    # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
-    try:
-        # MCP tool discovery — run in an executor so the asyncio event loop stays responsive even when a
-        # configured MCP server is slow or unreachable.  discover_mcp_tools() uses a blocking 120s wait
-        # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
-        # platform polling) until it returned. See #16856.
-        await _discover_gateway_mcp_tools(runner.config)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+    # MCP tool discovery is OPTIONAL boot work: it must never gate READY or
+    # delay the service. Run it as a tracked background task; exceptions are
+    # logged, not swallowed silently. See internal/readygates.
+    async def _run_mcp_discovery() -> None:
+        try:
+            await _discover_gateway_mcp_tools(runner.config)
+        except Exception as e:
+            logger.warning("MCP tool discovery failed: %s", e, exc_info=True)
+
+    _mcp_discovery_task = asyncio.create_task(_run_mcp_discovery(), name="gateway-mcp-discovery")
+    runner._mcp_discovery_task = _mcp_discovery_task
 
     try:
         success = await runner.start()

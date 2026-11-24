@@ -323,7 +323,8 @@ class GatewayStartupMixin:
                 logger.log(level, message, exc_info=(type(exc), exc, exc.__traceback__))
         return _report
 
-    async def _await_startup_boot_sends(self, *, planned_restart_notification_pending: bool) -> None:
+    async def _await_startup_boot_sends(self, *, planned_restart_notification_pending: bool,
+                                      await_completion: bool = True) -> None:
         """Run boot-path sends without letting them pin the inbound restore gate (a slow
         flood-control sleep must not freeze inbound on every platform): same bounded wait as the
         resume gate, sends finish in the background on timeout. The ledger claim + ``resume_pending``
@@ -362,6 +363,14 @@ class GatewayStartupMixin:
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())
+        if not await_completion:
+            background = getattr(self, "_background_tasks", None)
+            if background is not None:
+                background.add(boot_task)
+                boot_task.add_done_callback(background.discard)
+            boot_task.add_done_callback(self._late_failure_callback(
+                "background boot-path send failed after gate release: see traceback"))
+            return
         timeout = _startup_restore_drain_timeout_secs()
         if timeout <= 0:
             await boot_task  # unbounded: a failing send surfaces here (unlike the gate path)
