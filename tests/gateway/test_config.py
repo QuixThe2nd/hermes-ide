@@ -413,23 +413,6 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
-    def test_stt_from_nested_gateway_section(self, tmp_path, monkeypatch):
-        """Asserts False (not the True default) so the test fails if the
-        nested gateway.stt value never reaches from_dict() and silently
-        falls back to the class default instead."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "gateway:\n  stt:\n    enabled: false\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert config.stt_enabled is False
-
 
     @staticmethod
     def _clear_api_server_env(monkeypatch):

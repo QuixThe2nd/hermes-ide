@@ -31,7 +31,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
         _supports_active_turn_redirect = True
         payload = None
 
-        def steer(self, text):
+        def steer(self, text, on_accept=None):
             self.payload = text
             return True
 
