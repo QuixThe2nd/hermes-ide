@@ -134,20 +134,24 @@ from hermes_state_dbfile import (
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
+    collect_state_db_stats, count_db_holders, iter_deleted_sqlite_sidecar_holders,
 )
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _apply_wal_size_limit, _on_disk_journal_mode,
     apply_database_pragmas, apply_wal_with_fallback,
+    WalUnsupportedError, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
+    resolve_synchronous_level, sqlite_source_id,
 )
 from hermes_state_repair import (
     _bump_schema_cookie, _claim_repair_attempt, _existing_malformed_backups,
     _mask_volatile_header, preflight_db_writability, repair_state_db_schema,
+    apply_durability_barriers,
 )
 from hermes_state_search import SessionSearchMixin
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause
-from hermes_state_fts import SessionFtsSetupMixin
+from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause, classify_session_status, workspace_key
+from hermes_state_fts import SessionFtsSetupMixin, fts5_cjk_so_path
 from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -302,23 +306,6 @@ def _scrub_surrogates(value: Any) -> Any:
     well-formed text.
     """
     return _sanitize_surrogates(value) if isinstance(value, str) else value
-
-
-def workspace_key(row: Dict[str, Any]) -> Optional[str]:
-    """A session's workspace grouping key: its git repo root when known, else
-    its cwd.
-
-    Branch is deliberately excluded so checking out a new branch doesn't
-    fragment a workspace's session history. Returns None for cwd-less (unbound)
-    sessions. Both fields are already recorded on ``sessions`` — this just picks
-    the coarser identity for grouping/filtering.
-    """
-    root = (row.get("git_repo_root") or "").strip()
-    if root:
-        return root
-
-    cwd = (row.get("cwd") or "").strip()
-    return cwd or None
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
@@ -1483,36 +1470,6 @@ def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
         pass
 
 
-def is_sqlite_wal_reset_vulnerable(
-    version_info: Optional[tuple] = None,
-) -> bool:
-    """Return True when the linked SQLite library has the WAL-reset bug.
-
-    Upstream documents the bug in versions 3.7.0 through 3.51.2, fixed in
-    3.51.3+, with backports 3.50.7 and 3.44.6:
-    https://sqlite.org/wal.html#walresetbug
-
-    Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
-    """
-    info = version_info if version_info is not None else sqlite3.sqlite_version_info
-    return _is_sqlite_wal_reset_vulnerable(info)
-
-
-def sqlite_source_id() -> str:
-    """Return ``sqlite_source_id()``, or an empty string when unavailable."""
-    try:
-        conn = sqlite3.connect(":memory:")
-        try:
-            row = conn.execute("SELECT sqlite_source_id()").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return ""
-    if not row or row[0] is None:
-        return ""
-    return str(row[0])
-
-
 def _database_has_content(conn: sqlite3.Connection) -> bool:
     """Return whether the database file already holds pages.
 
@@ -1536,46 +1493,6 @@ def _database_has_content(conn: sqlite3.Connection) -> bool:
         return int(row[0]) > 0
     except (TypeError, ValueError):
         return False
-
-
-def resolve_journal_mode() -> str:
-    """Return the configured journal mode (``wal`` or ``delete``).
-
-    ``database.journal_mode`` in config.yaml is the canonical operator
-    setting. ``wal`` remains the default; use ``delete`` when the backing
-    filesystem does not provide WAL-safe durability (for example macOS
-    virtiofs, NFS, or SMB). Invalid or malformed values fail safely to the
-    existing default.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        config = load_config_readonly() or {}
-        database = config.get("database", {})
-        if not isinstance(database, dict):
-            return "wal"
-        raw = database.get("journal_mode", "wal")
-    except Exception:
-        return "wal"
-
-    if not isinstance(raw, str):
-        return "wal"
-    mode = raw.strip().lower()
-    return mode if mode in ("wal", "delete") else "wal"
-
-
-class WalUnsupportedError(sqlite3.OperationalError):
-    """Raised by :func:`apply_wal_with_fallback` when ``require_wal=True`` and
-    the filesystem cannot provide WAL journal mode.
-
-    Covers both shapes of WAL refusal on network filesystems (NFS / SMB / FUSE
-    / the AgentFS NFS overlay): SQLite *raising* ``SQLITE_PROTOCOL`` ("locking
-    protocol"), and the quieter macOS-NFS case where ``PRAGMA journal_mode=WAL``
-    silently returns the still-effective mode without raising.  Subclasses
-    ``sqlite3.OperationalError`` so existing ``except sqlite3.OperationalError``
-    DB-init handling still catches it, while callers that specifically mandate
-    WAL can catch this narrower type.
-    """
 
 
 def apply_wal_with_fallback(
@@ -2079,33 +1996,6 @@ _SYNCHRONOUS_LEVELS: Dict[str, int] = {
 }
 _SYNCHRONOUS_NAMES: Dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
 _SYNCHRONOUS_FULL = 2
-
-
-def resolve_synchronous_level(raw_value: Any) -> Optional[int]:
-    """Map a configured ``database.synchronous`` value to its PRAGMA integer.
-
-    Accepts the symbolic names SQLite documents (``OFF``/``NORMAL``/``FULL``/
-    ``EXTRA``, any case) and the equivalent integers ``0``-``3``. Returns None
-    for anything else so the caller can warn and leave the level untouched —
-    guessing at a malformed durability setting is worse than ignoring it.
-    """
-    if isinstance(raw_value, bool):
-        # bool is an int subclass, and YAML turns a bare `on`/`off` into one.
-        # "off" as a durability level is a real choice; True is meaningless.
-        return 0 if raw_value is False else None
-    if isinstance(raw_value, int):
-        return raw_value if raw_value in _SYNCHRONOUS_NAMES else None
-    text = str(raw_value).strip()
-    if not text:
-        return None
-    upper = text.upper()
-    if upper in _SYNCHRONOUS_LEVELS:
-        return _SYNCHRONOUS_LEVELS[upper]
-    try:
-        value = int(text)
-    except (TypeError, ValueError):
-        return None
-    return value if value in _SYNCHRONOUS_NAMES else None
 
 
 def _apply_synchronous_pragma(
@@ -3223,31 +3113,6 @@ def _reapply_durability_barriers(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def apply_durability_barriers(conn: sqlite3.Connection) -> bool:
-    """Apply state-store durability barriers without changing journal mode.
-
-    This is the public entry point for secondary users of ``state.db`` that
-    must inherit its owner's journal mode while retaining per-connection
-    durability settings. Also applies the configured ``database.synchronous``
-    level (a per-connection pragma that would otherwise only ride on the
-    journal-mode setup path guest connections must not run).
-    """
-    ok = _reapply_durability_barriers(conn)
-    try:
-        # Local import avoids a circular import with hermes_cli.config.
-        from hermes_cli.config import cfg_get, load_config_readonly
-
-        cfg = load_config_readonly()
-        raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
-        if raw_synchronous is not None:
-            _apply_synchronous_pragma(
-                conn, raw_synchronous, db_label="state.db (guest)"
-            )
-    except Exception:
-        pass
-    return ok
-
-
 @contextmanager
 def _exclusive_repair_db_guard(db_path: Path):
     """Yield one live connection that excludes writers for repair surgery.
@@ -4137,14 +4002,6 @@ BEGIN
 END;
 """
 
-def fts5_cjk_so_path() -> Path:
-    """Location of the cjk_unicode61 loadable extension."""
-    env = os.getenv("HERMES_FTS5_CJK_SO")
-    if env:
-        return Path(env).expanduser()
-    return get_hermes_home() / "lib" / "libfts5_cjk.so"
-
-
 def _cjk_fts_config_enabled() -> bool:
     """config.yaml ``sessions.cjk_fts`` (default on), via its env bridge."""
     return os.getenv("HERMES_CJK_FTS", "1").strip().lower() not in (
@@ -4346,49 +4203,6 @@ def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
         _state_holders.canonical_sqlite_path(base + "-wal"),
         _state_holders.canonical_sqlite_path(base + "-shm"),
     }
-
-
-def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
-    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.
-
-    Linux-only (``/proc/<pid>/fd`` readlink). Windows and other hosts
-    return ``[]`` — Windows cannot unlink a sidecar another process still
-    holds, and macOS does not use the `` (deleted)`` suffix.
-
-    The scan includes this process: on the SessionDB open/write refuse
-    path, the in-process writer that still holds the orphan inode is the
-    one that must not mint a replacement WAL (and must stop committing).
-    ``_foreign_state_db_holders`` keeps skipping this PID for FTS
-    maintenance so a process does not block its own optional repair.
-    """
-    if not sys.platform.startswith("linux"):
-        return []
-
-    holders: List[Tuple[int, str]] = []
-    watched = _watched_sqlite_sidecar_paths(db_path)
-    try:
-        for pid_str in os.listdir("/proc"):
-            if not pid_str.isdigit():
-                continue
-            pid = int(pid_str)
-            fd_dir = f"/proc/{pid}/fd"
-            try:
-                fds = os.listdir(fd_dir)
-            except OSError:
-                continue
-            for fd in fds:
-                try:
-                    target = os.readlink(f"{fd_dir}/{fd}")
-                except OSError:
-                    continue
-                if " (deleted)" not in target:
-                    continue
-                if _state_holders.canonical_sqlite_path(target) in watched:
-                    holders.append((pid, target))
-    except Exception as exc:
-        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
-        return holders
-    return holders
 
 
 def refuse_deleted_wal_generation(db_path) -> None:
@@ -4620,194 +4434,6 @@ def quarantine_zeroed_state_db(
 # ── Read-only health/stats probes (hermes doctor, dashboards) ──────────
 
 
-def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
-    """Best-effort, strictly read-only stats snapshot of a state.db file.
-
-    Opens the database with ``mode=ro`` (URI) and a short timeout so it can
-    run against a *live* database held by a gateway without ever taking a
-    write lock or mutating the file. Every field is collected independently:
-    a failed pragma/SELECT yields ``None`` for that field, and the helper
-    itself never raises.
-
-    Deliberately does NOT instantiate :class:`SessionDB` — its constructor
-    runs schema DDL (migrations, FTS table creation), which is exactly the
-    kind of write a diagnostics probe must never perform.
-
-    Returned keys (all present, any may be None on failure):
-
-    - ``page_count``, ``page_size``, ``freelist_count`` — PRAGMA values
-    - ``logical_size_bytes`` — page_count * page_size (post-checkpoint size)
-    - ``wal_size_bytes`` — stat() of ``<db>-wal`` (0 when absent)
-    - ``journal_mode`` — PRAGMA journal_mode string
-    - ``messages`` / ``sessions`` — row counts
-    - ``fts_tables`` — dict of {table_name: bool} presence for
-      messages_fts / messages_fts_trigram / messages_fts_cjk
-    - ``fts_storage_version`` — int from state_meta, None when the marker is
-      absent (legacy pre-v23 inline layout)
-    - ``fts_rebuild_pending`` — True when the deferred v23 backfill has not
-      finished (high_water present and progress < high_water)
-    - ``fts_rebuild_high_water`` / ``fts_rebuild_progress`` — raw ints
-    - ``fts_rebuild_deferral`` — durable blocked-repair diagnostic, when present
-    """
-    stats: Dict[str, Any] = {
-        "page_count": None,
-        "page_size": None,
-        "freelist_count": None,
-        "logical_size_bytes": None,
-        "wal_size_bytes": None,
-        "journal_mode": None,
-        "messages": None,
-        "sessions": None,
-        "fts_tables": None,
-        "fts_storage_version": None,
-        "fts_rebuild_pending": None,
-        "fts_rebuild_high_water": None,
-        "fts_rebuild_progress": None,
-        "fts_rebuild_deferral": None,
-    }
-
-    # WAL sidecar size needs no connection at all.
-    try:
-        wal_path = Path(str(db_path) + "-wal")
-        stats["wal_size_bytes"] = wal_path.stat().st_size if wal_path.exists() else 0
-    except OSError:
-        pass
-
-    conn = None
-    try:
-        # mode=ro refuses to create the file and refuses every write; a
-        # short timeout keeps doctor snappy when a writer holds the lock.
-        # Route through the tracked connect so byte-probe helpers
-        # (read_header_bytes_preopen) see this connection and refuse raw
-        # opens that could cancel our POSIX locks mid-read.
-        conn = _connect_tracked_db(
-            f"file:{Path(db_path)}?mode=ro",
-            tracking_path=Path(db_path),
-            uri=True,
-            timeout=2.0,
-        )
-    except Exception as exc:
-        logger.debug("collect_state_db_stats: cannot open %s read-only: %s",
-                     db_path, exc)
-        return stats
-
-    def _scalar(sql: str) -> Any:
-        try:
-            row = conn.execute(sql).fetchone()
-            return row[0] if row else None
-        except Exception:
-            return None
-
-    try:
-        pc = _scalar("PRAGMA page_count")
-        ps = _scalar("PRAGMA page_size")
-        stats["page_count"] = int(pc) if pc is not None else None
-        stats["page_size"] = int(ps) if ps is not None else None
-        if stats["page_count"] is not None and stats["page_size"] is not None:
-            stats["logical_size_bytes"] = stats["page_count"] * stats["page_size"]
-
-        fl = _scalar("PRAGMA freelist_count")
-        stats["freelist_count"] = int(fl) if fl is not None else None
-
-        jm = _scalar("PRAGMA journal_mode")
-        stats["journal_mode"] = str(jm) if jm is not None else None
-
-        msgs = _scalar("SELECT COUNT(*) FROM messages")
-        stats["messages"] = int(msgs) if msgs is not None else None
-        sess = _scalar("SELECT COUNT(*) FROM sessions")
-        stats["sessions"] = int(sess) if sess is not None else None
-
-        # FTS table presence via sqlite_master (never SELECTs from the
-        # virtual tables themselves — a corrupt index must not fail stats).
-        try:
-            names = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' "
-                    "AND name IN (?, ?, ?)",
-                    ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
-                ).fetchall()
-            }
-            stats["fts_tables"] = {
-                t: (t in names)
-                for t in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
-            }
-        except Exception:
-            pass
-
-        # Raw state_meta reads — cheap, and independent of SessionDB.
-        def _meta_int(key: str) -> Optional[int]:
-            try:
-                row = conn.execute(
-                    "SELECT value FROM state_meta WHERE key = ?", (key,)
-                ).fetchone()
-                return int(row[0]) if row and row[0] is not None else None
-            except Exception:
-                return None
-
-        stats["fts_storage_version"] = _meta_int("fts_storage_version")
-        high_water = _meta_int("fts_rebuild_high_water")
-        progress = _meta_int("fts_rebuild_progress")
-        stats["fts_rebuild_high_water"] = high_water
-        stats["fts_rebuild_progress"] = progress
-        if high_water is None:
-            stats["fts_rebuild_pending"] = False
-        else:
-            stats["fts_rebuild_pending"] = (progress or 0) < high_water
-        try:
-            row = conn.execute(
-                "SELECT value FROM state_meta WHERE key = ? LIMIT 1",
-                (FTS_REBUILD_DEFERRAL_KEY,),
-            ).fetchone()
-            if row:
-                parsed = json.loads(row[0])
-                if isinstance(parsed, dict):
-                    stats["fts_rebuild_deferral"] = parsed
-        except Exception:
-            pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    return stats
-
-
-def count_db_holders(db_path: Path) -> Optional[int]:
-    """Best-effort count of processes holding ``db_path`` open (Linux only).
-
-    Scans ``/proc/*/fd`` symlinks for the resolved database path. Returns
-    the number of distinct PIDs with the file open, or ``None`` on any
-    error or on non-Linux platforms. Never raises; no lsof dependency.
-    Unreadable per-process fd dirs (other users' processes without root)
-    are silently skipped, so the count is a lower bound.
-    """
-    try:
-        if not sys.platform.startswith("linux"):
-            return None
-        target = os.path.realpath(str(db_path))
-        holders = 0
-        for pid in os.listdir("/proc"):
-            if not pid.isdigit():
-                continue
-            fd_dir = f"/proc/{pid}/fd"
-            try:
-                fds = os.listdir(fd_dir)
-            except OSError:
-                continue  # process gone or not ours
-            for fd in fds:
-                try:
-                    if os.readlink(f"{fd_dir}/{fd}") == target:
-                        holders += 1
-                        break  # one hit per PID
-                except OSError:
-                    continue
-        return holders
-    except Exception:
-        return None
-
-
 def _is_inactive_orphan_desktop_holder(
     *,
     ppid: int,
@@ -4860,34 +4486,6 @@ SESSION_STATUS_EMPTY = "empty"
 # finish_reason values that mark the turn as having ended in a provider or
 # agent error (vs. a normal 'stop'/'length'/'tool_calls' completion).
 _ERROR_FINISH_REASONS = frozenset({"error", "agent_error", "content_filter"})
-
-
-def classify_session_status(
-    role: Optional[str],
-    has_tool_calls: bool,
-    finish_reason: Optional[str],
-) -> str:
-    """Classify a session's lifecycle from the shape of its final message.
-
-    - assistant with a normal finish → ``complete``
-    - assistant that still has pending tool_calls (no tool result row ever
-      followed, or it would be the last row instead) → ``interrupted``
-    - user or tool as the last row → ``interrupted`` (the agent never got to
-      answer / never consumed the tool result)
-    - an error finish_reason on the last row → ``error``
-    - anything unrecognized → ``complete`` (benign default; pickers must not
-      alarm on unknown shapes)
-    """
-    if (finish_reason or "").strip().lower() in _ERROR_FINISH_REASONS:
-        return SESSION_STATUS_ERROR
-    r = (role or "").strip().lower()
-    if r == "assistant":
-        # The last row being an assistant message WITH tool_calls means the
-        # matching tool result never landed — an interrupted tool turn.
-        return SESSION_STATUS_INTERRUPTED if has_tool_calls else SESSION_STATUS_COMPLETE
-    if r in {"user", "tool"}:
-        return SESSION_STATUS_INTERRUPTED
-    return SESSION_STATUS_COMPLETE
 
 
 def forced_recovery_tail_digest(row: Optional[Dict[str, Any]]) -> str:
