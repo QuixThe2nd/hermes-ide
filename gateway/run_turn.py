@@ -3837,6 +3837,7 @@ class GatewayTurnMixin:
                                             # reaches gateway users directly.
                                             from agent.redact import redact_sensitive_text
                                             _err = redact_sensitive_text(_err, force=True)
+                                            logger.warning("Session hygiene compression aborted: %s", _err)
                                             _warn_msg = (
                                                 "⚠️ Context compression aborted "
                                                 f"({_err}). No messages were dropped — "
@@ -3848,7 +3849,11 @@ class GatewayTurnMixin:
                                             try:
                                                 _adapter = self._adapter_for_source(source)
                                                 if _adapter and source.chat_id:
-                                                    await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
+                                                    await _adapter.emit_warning(
+                                                        source.chat_id, _warn_msg,
+                                                        metadata=_hyg_meta,
+                                                        logical_platform=source.platform,
+                                                    )
                                             except Exception as _werr:
                                                 logger.warning(
                                                     "Failed to deliver compression-failure warning to user: %s",
@@ -3872,7 +3877,12 @@ class GatewayTurnMixin:
                                         try:
                                             _adapter = self._adapter_for_source(source)
                                             if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
+                                                await _adapter.emit_warning(
+                                                    source.chat_id, _aux_msg,
+                                                    metadata=_hyg_meta,
+                                                    logical_platform=source.platform,
+                                                )
+
                                         except Exception as _werr:
                                             logger.warning(
                                                 "Failed to deliver aux-model-fallback notice to user: %s",
