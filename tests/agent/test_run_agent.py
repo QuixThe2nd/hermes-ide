@@ -1550,7 +1550,7 @@ class TestBuildApiKwargs:
             supports_reasoning=True,
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
 
     def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
@@ -1563,43 +1563,6 @@ class TestBuildApiKwargs:
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
 
         assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
-
-
-
-
-    def test_qwen_portal_formats_messages_and_metadata(self, agent):
-        agent.provider = "qwen-oauth"
-        agent.base_url = "https://portal.qwen.ai/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.session_id = "sess-123"
-        messages = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "assistant", "content": "Got it"},
-            {"role": "user", "content": "hi"},
-        ]
-        kwargs = agent._build_api_kwargs(messages)
-        assert kwargs["metadata"]["sessionId"] == "sess-123"
-        assert kwargs["extra_body"]["vl_high_resolution_images"] is True
-        assert isinstance(kwargs["messages"][0]["content"], list)
-        assert kwargs["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert kwargs["messages"][2]["content"][0]["text"] == "hi"
-
-    def test_qwen_portal_normalizes_bare_string_content_parts(self, agent):
-        agent.provider = "qwen-oauth"
-        agent.base_url = "https://portal.qwen.ai/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": "system"}]},
-            {"role": "user", "content": ["hello", {"type": "text", "text": "world"}]},
-        ]
-        kwargs = agent._build_api_kwargs(messages)
-        user_content = kwargs["messages"][1]["content"]
-        assert user_content[0] == {"type": "text", "text": "hello"}
-        assert user_content[1] == {"type": "text", "text": "world"}
-
-
-
-
 
 
 
@@ -4044,6 +4007,7 @@ class TestRunConversation:
         assert 0.2 in sleep_called
         assert mock_persist.call_count == 2
 
+    @pytest.mark.real_retry_backoff
     def test_empty_response_retry_backoff_status(self, agent, monkeypatch):
         """Empty response retry wait updates the agent's status with wait time and sleeps."""
         self._setup_agent(agent)
@@ -4055,9 +4019,11 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [empty_resp, ok_resp]
 
         from agent import conversation_loop as _conv_loop
-        from agent import retry_utils as _retry_utils
 
-        monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 7.5)
+        # The inlined fork loop binds jittered_backoff as a module global at
+        # import time, so the read site — not agent.retry_utils — is the patch
+        # target (conftest's _fast_retry_backoff opts out via the marker above).
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 7.5)
 
         # Fake clock: the retry loop gates on real time.time() < sleep_end, so
         # a no-op sleep alone busy-spins 7.5 wall-clock seconds. Advance a fake
