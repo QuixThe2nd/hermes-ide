@@ -6124,6 +6124,7 @@ class SessionDB(
         display_name: str = None,
         origin_json: str = None,
         include_compression_ancestors: bool = False,
+        transport_profile: Optional[str] = None,
     ) -> None:
         """Persist the gateway routing peer for an existing session row.
 
@@ -6187,6 +6188,7 @@ class SessionDB(
                     thread_id,
                     display_name,
                     origin_json,
+                    transport_profile,
                 )
             )
             if not include_compression_ancestors:
@@ -6197,7 +6199,8 @@ class SessionDB(
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
                        chat_type = ?, thread_id = ?,
                        display_name = COALESCE(?, display_name),
-                       origin_json = COALESCE(?, origin_json)
+                       origin_json = COALESCE(?, origin_json),
+                       transport_profile = COALESCE(?, transport_profile)
                    {target_clause}""",
                 query_params,
             )
@@ -6215,16 +6218,17 @@ class SessionDB(
                         """INSERT INTO sessions (
                                id, source, user_id, session_key, chat_id,
                                chat_type, thread_id, display_name, origin_json,
-                               profile_name, started_at
+                               transport_profile, profile_name, started_at
                            )
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
                                session_key = COALESCE(sessions.session_key, excluded.session_key),
                                chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
                                chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                                thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                                display_name = COALESCE(sessions.display_name, excluded.display_name),
-                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
+                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
+                               transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile)""",
                         (
                             session_id,
                             source,
@@ -6235,6 +6239,7 @@ class SessionDB(
                             thread_id,
                             display_name,
                             origin_json,
+                            transport_profile,
                             # Same ownership stamp as _insert_session_row: a
                             # self-healed row is a first creation too, and an
                             # unowned (NULL) row vanishes from profile-keyed

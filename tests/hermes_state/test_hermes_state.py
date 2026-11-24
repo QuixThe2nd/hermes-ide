@@ -3273,6 +3273,37 @@ class TestCompressionChainProjection:
         assert db.get_session("reset")["session_key"] == "cli:reset-chat"
         assert all(db.get_session(s)["session_key"] != "cli:reset-chat" for s in ("root", "mid1", "mid2", "tip"))
 
+    def test_record_peer_transport_profile_stamps_and_keeps(self, db):
+        """``record_gateway_session_peer`` must accept ``transport_profile`` (the
+        gateway wrapper passes it on every per-turn refresh). A None leaves the
+        column untouched; a value stamps it, including on the self-healed insert
+        of a row the gateway never created."""
+        db.create_session("live", "discord")
+        db._conn.execute(
+            "UPDATE sessions SET transport_profile='beta' WHERE id='live'"
+        )
+        db._conn.commit()
+
+        db.record_gateway_session_peer(
+            "live", source="discord", session_key="agent:main:discord:dm:c1",
+            transport_profile=None,
+        )
+        assert db.get_session("live")["transport_profile"] == "beta"
+
+        db.record_gateway_session_peer(
+            "live", source="discord", session_key="agent:main:discord:dm:c1",
+            transport_profile="gamma",
+        )
+        assert db.get_session("live")["transport_profile"] == "gamma"
+
+        # Self-heal path: the row is absent, the recorder inserts it carrying
+        # the profile instead of dropping it.
+        db.record_gateway_session_peer(
+            "healed", source="discord", session_key="agent:main:discord:dm:c2",
+            transport_profile="delta",
+        )
+        assert db.get_session("healed")["transport_profile"] == "delta"
+
     def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
         """The projected tip row must carry every chain id. Root and tip
         alone are not enough client-side: a persisted tile or route can hold
