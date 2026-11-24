@@ -49,16 +49,7 @@ from agent.message_sanitization import (
 # DEFAULT_DB_PATH = get_hermes_home() / "state.db" breaks tests that
 # monkeypatch get_hermes_home to return a str).
 _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH,
-    _estimate_tools_tokens_rough,
-    estimate_messages_tokens_rough,
-    estimate_request_tokens_rough,
-    get_context_length_from_provider_error,
-    is_output_cap_error,
-    parse_available_output_tokens_from_error,
-    save_context_length,
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 # Upstream moved the usage-anchor helpers out of model_metadata into their own
 # module; the fork loop keeps using them, so import them from the new home.
 from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
@@ -158,6 +149,11 @@ def _midturn_request_pressure_tokens(
     by orders of magnitude on a compacted session and fires a 600s local compression the main request never
     needed (#96995).
     """
+    # Function-local so tests can patch the defining module (facade-sibling seam
+    # convention); a top-level from-import would bind whatever was patched when
+    # run_agent.py:3979 first lazy-imported this module in the worker process.
+    from agent.model_metadata import _estimate_tools_tokens_rough
+
     try:
         from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
         native = estimate_native_responses_preflight_tokens(
@@ -1698,6 +1694,17 @@ def _run_conversation_inlined(
     resets it in its ``finally``). The trailing boundary export stays inside the inlined
     body; it never embeds images, so the slightly longer scope is behavior-neutral.
     """
+    # Function-local for the same patch-seam reason as _midturn_request_pressure_tokens:
+    # tests monkeypatch agent.model_metadata.* on the defining module, which a top-level
+    # from-import would capture or miss depending on worker test order.
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_request_tokens_rough,
+        get_context_length_from_provider_error,
+        is_output_cap_error,
+        parse_available_output_tokens_from_error,
+        save_context_length,
+    )
     from agent.turn_context import export_current_turn_boundary
 
     if moa_config is None:
