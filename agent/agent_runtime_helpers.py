@@ -3462,6 +3462,11 @@ __all__ = [
 
 def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     """Return True when an agent-level tool path emits its own post hook."""
+    # The ownership set holds canonical names only; legacy aliases (todo →
+    # todo_list, tour → gui_tour) resolve to the same inline tool. Lazy import:
+    # model_tools sits above this module in the dependency chain.
+    from model_tools import _LEGACY_TOOL_ALIASES
+    function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
         return True
     if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
