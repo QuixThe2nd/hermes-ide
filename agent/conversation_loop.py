@@ -4575,6 +4575,16 @@ def _run_conversation_inlined(
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
                 else:
+                    # Usage-less provider: the rough estimate becomes the only
+                    # pressure signal — mirror turn_usage.record_response_usage so
+                    # the pre-API defer gate (#2153) stops waiting for a real
+                    # reading that will never arrive.
+                    _comp = agent.context_compressor
+                    if getattr(_comp, "awaiting_real_usage_after_compression", False):
+                        _comp.update_from_response({})
+                    _note_usage_less = getattr(_comp, "note_usage_less_response", None)
+                    if callable(_note_usage_less):
+                        _note_usage_less()
                     logger.info(
                         "API call #%d: model=%s provider=%s in=? out=? total=? "
                         "latency=%.1fs usage=unavailable",
