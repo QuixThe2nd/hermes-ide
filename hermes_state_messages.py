@@ -351,7 +351,10 @@ class SessionMessagesMixin:
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
-        return (row["role"], dedupe_content, row["timestamp"],
+        # ``+ 0.0`` folds IEEE ``-0.0`` onto ``+0.0``: SQLite stores both REALs as one
+        # value, so the durable identity must not distinguish them (insert-time keys
+        # are built from in-memory floats, backfill keys from the stored column).
+        return (row["role"], dedupe_content, row["timestamp"] + 0.0,
                 row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
     @staticmethod
