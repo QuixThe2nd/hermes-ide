@@ -4330,6 +4330,12 @@ class GatewayTurnMixin:
                 ))
                 or ("400" in _err_str_for_classify and len(history) > 50)
             )
+            if agent_failed_early and not is_context_overflow_failure and not _forced_recovery_control:
+                # Make the failed delivery explicit without replacing the
+                # provider-specific guidance already in the response.
+                response = self._hmwa_add_failed_turn_notice(
+                    response, self._hmwa_failed_turn_notice(agent_result)
+                )
             if is_context_overflow_failure:
                 logger.info(
                     "Skipping transcript persistence for context-overflow "
@@ -4501,6 +4507,13 @@ class GatewayTurnMixin:
                         _user_entry,
                         skip_db=agent_persisted,
                     )
+                # Close the failed turn: a user-only tail lets alternation repair
+                # merge this request into an unrelated future message and replay
+                # stale side effects (#107070). The tail check inside the close
+                # keeps a platform redelivery from stacking a second boundary row.
+                await self._hmwa_close_failed_turn(
+                    session_entry.session_id, self._hmwa_failed_turn_notice(agent_result)
+                )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
