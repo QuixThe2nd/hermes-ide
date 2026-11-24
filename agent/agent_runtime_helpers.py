@@ -82,7 +82,11 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "tour", "gui_tour", "delegate_agent", "delegate_task"}
+    # Canonical names only: the loop canonicalizes legacy aliases (todo →
+    # todo_list, tour → gui_tour) at parse time, so holding the old names here
+    # double-emits the post hook for the canonical tool via the bridge path
+    # (c1762ff11c7).
+    {"todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour", "delegate_agent", "delegate_task"}
 )
 
 _TRAJECTORY_SYSTEM_PROMPT = load("trajectory_system")
