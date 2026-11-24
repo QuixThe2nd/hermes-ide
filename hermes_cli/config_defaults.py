@@ -1779,6 +1779,10 @@ DEFAULT_CONFIG = {
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset
         # --hard + clean -fd, so ignored paths like node_modules/venv are never touched).
         "non_interactive_local_changes": "stash",
+        # A conflicted pre-update stash re-apply is handed to a fresh one-shot agent session
+        # (`hermes -z`) that resolves it. A failed or partial resolution still resets the tree
+        # and keeps the stash, exactly as before.
+        "auto_resolve_conflicts": True,
         # If the checkout is parked on a feature branch and the tree is clean, switch to the update
         # target (commits stay on the branch; a loud notice names it) so non-interactive updates
         # keep working. A DIRTY tree blocks the switch and the code update is SKIPPED with a loud
