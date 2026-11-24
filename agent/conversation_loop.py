@@ -73,7 +73,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS, failed_turn_notice, site_copy, stamp_failure
+from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS, failed_turn_notice, provider_label_for, site_copy, stamp_failure
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -4199,25 +4199,28 @@ def _run_conversation_inlined(
                                     force=True,
                                 )
                             agent._cleanup_task_resources(effective_task_id)
-                            _final_response = (
-                                "Stream repeatedly dropped mid tool-call (network); "
-                                "the tool was not executed"
-                                if _is_stub_stall
-                                else "Response truncated due to output length limit"
-                            )
+                            if _is_stub_stall:
+                                _final_response = site_copy(
+                                    "stream_dropped_tool_call",
+                                    label=provider_label_for(agent.provider),
+                                )
+                                _failure = (FailoverReason.timeout.value, True)
+                            else:
+                                _final_response = site_copy("truncated")
+                                _failure = ("truncated", True)
                             # Prior successful tool batches (or injected tool
                             # errors) can leave a tool-result tail; this path
                             # never reaches finalize_turn (#48879 class).
                             close_interrupted_tool_sequence(messages, _final_response)
                             agent._persist_session(messages, conversation_history)
-                            return {
+                            return stamp_failure({
                                 "final_response": _final_response,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": _final_response,
-                            }
+                            }, *_failure)
 
                     # If we have prior messages, roll back to last complete state
                     if len(messages) > 1:
@@ -7369,19 +7372,19 @@ def _run_conversation_inlined(
                         )
                         agent._invalid_json_retries = 0
                         agent._cleanup_task_resources(effective_task_id)
-                        _final_response = "Response truncated due to output length limit"
+                        _final_response = site_copy("truncated")
                         # Same tool-tail close as interrupt / invalid-tool
                         # exhaustion — this path never reaches finalize_turn.
                         close_interrupted_tool_sequence(messages, _final_response)
                         agent._persist_session(messages, conversation_history)
-                        return {
+                        return stamp_failure({
                             "final_response": _final_response,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": _final_response,
-                        }
+                        }, "truncated", True)
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
