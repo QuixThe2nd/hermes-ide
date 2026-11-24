@@ -128,11 +128,15 @@ class TestDrainOrSignalTriage:
         monkeypatch.setattr(
             gw, "_escalate_wedged_gateway", lambda pid: calls["escalate"].append(pid)
         )
+        from types import SimpleNamespace
+
+        from hermes_cli import gateway_restart_progress
+
         monkeypatch.setattr(
-            gw,
-            "_graceful_restart_via_sigusr1",
-            lambda pid, drain_timeout, **_: calls["drain"].append((pid, drain_timeout))
-            or True,
+            gateway_restart_progress,
+            "restart_gateway_with_progress",
+            lambda pid, **kw: calls["drain"].append((pid, kw))
+            or SimpleNamespace(accepted=True),
         )
         return calls
 
@@ -157,11 +161,13 @@ class TestDrainOrSignalTriage:
         assert calls["self_restart"] == []
 
     def test_live_out_of_tree_gateway_still_drain_waits(self, monkeypatch):
-        """Normal out-of-tree update keeps the full graceful drain semantics."""
+        """Normal out-of-tree update hands off via the supervised restart path."""
         from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
 
         calls = self._patched(monkeypatch, ancestor=False, wedged=False)
         assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
-        assert calls["drain"] == [(1234, 900.0)]
+        assert [pid for pid, _ in calls["drain"]] == [1234]
+        assert calls["drain"][0][1]["via_service"] is True
+        assert calls["drain"][0][1]["from_update"] is True
         assert calls["self_restart"] == []
         assert calls["escalate"] == []
