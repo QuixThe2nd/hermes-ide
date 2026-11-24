@@ -1,0 +1,23 @@
+{
+  "comment": "Shared classification table for Discord auto-thread creation errors. internal/autothread Go tests, the cmd/autothread CLI tests, and the Python bridge test (tests/gateway/test_discord_auto_thread_adopt.py) all consume these cases: Classify must answer the stated decision for the (status, code, message) triple, and the Python bridge must return the same decision through the real binary. The adapter acts on \"adopt\" only; rate_limited/retry/fail all fall through to the historical retry-and-seed-fallback path, so the table must never move an existing non-adopt row to adopt.",
+  "cases": [
+    {"name": "160004 with status and canonical text", "status": 400, "code": 160004, "message": "A thread has already been created for this message (error code: 160004)", "decision": "adopt"},
+    {"name": "160004 code alone adopts", "status": 400, "code": 160004, "message": "Bad Request", "decision": "adopt"},
+    {"name": "duck-typed error that lost the code still adopts via text", "status": 0, "code": 0, "message": "A thread has already been created for this message", "decision": "adopt"},
+    {"name": "already-created text is case-insensitive", "status": 0, "code": 0, "message": "A Thread Has Already Been Created For This Message", "decision": "adopt"},
+    {"name": "160004 beats a 429-looking substring", "status": 400, "code": 160004, "message": "retry bucket 42931 already has a thread", "decision": "adopt"},
+    {"name": "rate limit by status", "status": 429, "code": 0, "message": "Too Many Requests", "decision": "rate_limited"},
+    {"name": "rate limit by discord.py rendering", "status": 0, "code": 0, "message": "Too many requests. Retry in 1.24 seconds.", "decision": "rate_limited"},
+    {"name": "rate limit by bare 429 in text", "status": 0, "code": 0, "message": "429 Too Many Requests (error code: 0)", "decision": "rate_limited"},
+    {"name": "cannot connect is transient", "status": 0, "code": 0, "message": "Cannot connect to host discord.com:443 ssl:default", "decision": "retry"},
+    {"name": "connection reset is transient", "status": 0, "code": 0, "message": "Connection reset by peer", "decision": "retry"},
+    {"name": "timeout is transient", "status": 0, "code": 0, "message": "The read operation timed out", "decision": "retry"},
+    {"name": "503 status is transient", "status": 503, "code": 0, "message": "Service Unavailable", "decision": "retry"},
+    {"name": "502 bad gateway is transient", "status": 502, "code": 0, "message": "502 Bad Gateway", "decision": "retry"},
+    {"name": "missing access is a durable failure", "status": 403, "code": 50001, "message": "Missing Access", "decision": "fail"},
+    {"name": "invalid form body is a durable failure", "status": 400, "code": 50035, "message": "Invalid Form Body", "decision": "fail"},
+    {"name": "unknown error fails", "status": 0, "code": 0, "message": "boom", "decision": "fail"},
+    {"name": "empty envelope fails", "status": 0, "code": 0, "message": "", "decision": "fail"},
+    {"name": "unrelated 400 does not adopt", "status": 400, "code": 10008, "message": "Unknown Message", "decision": "fail"}
+  ]
+}

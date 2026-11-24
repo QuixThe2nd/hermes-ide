@@ -1088,6 +1088,7 @@ from plugins.platforms.discord.reaction_gate import (
 from plugins.platforms.discord.reaction_gate_reload import (
     start_reaction_gate_reload_watcher,
 )
+from gateway import auto_thread_errors
 from gateway import bot_allowlist
 from plugins.platforms.discord import mention_render
 from gateway.jev_notice import (
@@ -1203,6 +1204,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._bot_tag_debounce_until: Dict[str, float] = {}
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Thread ids this adapter ADOPTED after losing the one-thread-per-message
+        # race (Discord 160004): named by the client that created them, so the
+        # semantic auto-title rename lane must stay off them. Recorded here, not
+        # on the thread object — a real discord.Thread is fully slotted (no
+        # __dict__), so attribute markers never stick. Bounded like the other
+        # per-message id sets above.
+        self._adopted_auto_thread_ids: "OrderedDict[str, None]" = OrderedDict()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._typing_deadlines: Dict[str, float] = {}
@@ -6788,6 +6796,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         cleared once the thread exists. Non-rate-limit failures keep the
         original two-attempt contract.
         One placeholder is posted, reused across retries, and deleted before return.
+        When another client already created this message's thread (Discord
+        error 160004 — one thread per message, e.g. two bots mentioned in the
+        same message), the existing thread is ADOPTED instead: no seed
+        placeholder, no second thread, the bot answers in the shared thread.
 
         """
         # Titles derive from the message's ORIGINAL text (mention_source),
@@ -6820,6 +6832,29 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     return thread
                 except Exception as direct_error:
                     last_direct_error = direct_error
+                    try:
+                        # The classifier shells out to the Go helper (a
+                        # subprocess spawn, or a cold `go build` on first
+                        # use); run it off the event loop that owns every
+                        # bot's Discord websocket.
+                        decision = await asyncio.to_thread(
+                            auto_thread_errors.classify_thread_create_error,
+                            direct_error,
+                        )
+                    except Exception:
+                        decision = None
+                    if decision == "adopt":
+                        # 160004: another client (e.g. a second bot mentioned in the
+                        # same message) already created the thread. Adopt it and
+                        # answer there — never seed a placeholder or re-create.
+                        adopted = await self._adopt_existing_auto_thread(message)
+                        if adopted is not None:
+                            if waiting_reaction:
+                                await self._remove_reaction(message, "⏳")
+                            return adopted
+                        # The thread provably exists but cannot be resolved: take
+                        # the normal failure path rather than seed a second thread.
+                        break
                     try:
                         if seed_msg is None:
                             seed_msg = await message.channel.send(
@@ -6888,6 +6923,49 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self.name, last_direct_error, last_fallback_error,
         )
         return None
+
+    async def _adopt_existing_auto_thread(self, message: 'DiscordMessage') -> Optional[Any]:
+        """Resolve the thread another client already created from *message*.
+
+        Discord allows exactly one thread per message and the thread id equals
+        the source message id, so the race loser resolves the winner's thread
+        directly: ``message.thread``, the client's channel cache, then one
+        ``fetch_channel`` with a single short retry for transient errors. The
+        thread is recorded in ``self._adopted_auto_thread_ids`` (bounded) so the
+        auto-title rename lane skips it; returns None (caller takes the normal
+        failure path) when it cannot be resolved.
+        """
+        thread = getattr(message, "thread", None)
+        if thread is None and self._client:
+            try:
+                message_id = int(message.id)
+            except (TypeError, ValueError):
+                message_id = None
+            if message_id is not None:
+                try:
+                    thread = self._client.get_channel(message_id)
+                except Exception:
+                    thread = None
+                if thread is None:
+                    fetch = getattr(self._client, "fetch_channel", None)
+                    if fetch is not None:
+                        for fetch_attempt in range(2):
+                            try:
+                                thread = await fetch(message_id)
+                                break
+                            except Exception:
+                                if fetch_attempt == 0:
+                                    await asyncio.sleep(0.5)
+        if thread is None:
+            return None
+        while len(self._adopted_auto_thread_ids) >= 256:
+            self._adopted_auto_thread_ids.popitem(last=False)
+        self._adopted_auto_thread_ids[str(thread.id)] = None
+        logger.info(
+            "[Discord] Adopted existing thread %s for message %s (created by another client)",
+            getattr(thread, "id", None) or message.id, message.id,
+        )
+        return thread
 
     async def rename_thread(
         self, thread_id: str, name: str, *, only_if_current_name: Optional[str] = None,
@@ -7764,8 +7842,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         auto_thread_initial_name = None
         if auto_threaded_channel is not None:
             auto_thread_initial_name = (
-                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
-                or await self._auto_thread_name_for_message(message, raw_content)
+                # Adopted threads were named by the client that created them; a
+                # falsy initial name keeps this bot's semantic auto-title rename
+                # lane (_is_discord_auto_thread_lane) off the other bot's thread.
+                None
+                if str(auto_threaded_channel.id) in self._adopted_auto_thread_ids
+                else (
+                    getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
+                    or await self._auto_thread_name_for_message(message, raw_content)
+                )
             )
         source = self.build_source(
             chat_id=str(effective_channel.id),
