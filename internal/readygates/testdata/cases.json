@@ -1,0 +1,82 @@
+{
+  "cases": [
+    {
+      "name": "all_optional_pending_ready",
+      "platforms": [
+        {"enabled": true, "connected": true}
+      ],
+      "cron_started": true,
+      "housekeeping_started": true,
+      "mcp_discovery_state": "pending",
+      "boot_path_sends_state": "running",
+      "expect": {"ready": true, "blocked_by": []}
+    },
+    {
+      "name": "one_platform_still_connecting_not_ready",
+      "platforms": [
+        {"enabled": true, "connected": true},
+        {"enabled": true, "connected": false}
+      ],
+      "cron_started": true,
+      "housekeeping_started": true,
+      "mcp_discovery_state": "done",
+      "boot_path_sends_state": "done",
+      "expect": {"ready": false, "blocked_by": ["platforms"]}
+    },
+    {
+      "name": "cron_not_started_not_ready",
+      "platforms": [
+        {"enabled": true, "connected": true}
+      ],
+      "cron_started": false,
+      "housekeeping_started": true,
+      "mcp_discovery_state": "done",
+      "boot_path_sends_state": "done",
+      "expect": {"ready": false, "blocked_by": ["cron"]}
+    },
+    {
+      "name": "housekeeping_not_started_not_ready",
+      "platforms": [
+        {"enabled": true, "connected": true}
+      ],
+      "cron_started": true,
+      "housekeeping_started": false,
+      "mcp_discovery_state": "done",
+      "boot_path_sends_state": "done",
+      "expect": {"ready": false, "blocked_by": ["housekeeping"]}
+    },
+    {
+      "name": "discovery_failed_ready_no_blockers",
+      "platforms": [
+        {"enabled": true, "connected": true}
+      ],
+      "cron_started": true,
+      "housekeeping_started": true,
+      "mcp_discovery_state": "failed",
+      "boot_path_sends_state": "done",
+      "expect": {"ready": true, "blocked_by": []}
+    },
+    {
+      "name": "sends_still_running_ready",
+      "platforms": [
+        {"enabled": true, "connected": true}
+      ],
+      "cron_started": true,
+      "housekeeping_started": true,
+      "mcp_discovery_state": "done",
+      "boot_path_sends_state": "running",
+      "expect": {"ready": true, "blocked_by": []}
+    },
+    {
+      "name": "disabled_platform_does_not_block",
+      "platforms": [
+        {"enabled": false, "connected": false}
+      ],
+      "cron_started": true,
+      "housekeeping_started": true,
+      "mcp_discovery_state": "pending",
+      "boot_path_sends_state": "pending",
+      "expect": {"ready": true, "blocked_by": []}
+    }
+  ]
+}
