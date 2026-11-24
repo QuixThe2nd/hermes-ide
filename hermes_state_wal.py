@@ -618,14 +618,20 @@ def _apply_synchronous_pragma(conn: sqlite3.Connection, raw_value: Any, *, db_la
         conn.execute(f"PRAGMA synchronous={level}")
 
 
-def apply_database_pragmas(conn: sqlite3.Connection, *, db_label: str = "state.db") -> None:
+def apply_database_pragmas(conn: sqlite3.Connection, *, db_label: str = "state.db", tuning_config: bool = True) -> None:
     """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml``.
 
     Journal mode is NOT handled here (owned by :func:`apply_wal_with_fallback`). ``database:`` keys: ``cache_size``
     (negative = KiB, positive = pages), ``mmap_size`` (bytes, 0 = off), ``temp_store`` (0-3), ``wal_autocheckpoint``
     (pages), ``journal_size_limit`` (bytes), ``synchronous`` (unset leaves the compile-time default, which differs
     between bundled/distro/Homebrew builds). Best-effort: failures are ignored so DB init never breaks on a
-    malformed section. Applied to ALL connection types: writer, read_only, WAL readers."""
+    malformed section. Applied to ALL connection types: writer, read_only, WAL readers.
+
+    ``tuning_config=False`` skips the config read entirely, so callers that serve explicit database paths they do not
+    own (Mission Control's read-only listing of the main and profile DBs) get the plain-SQLite defaults without the
+    config load's side effects on the ambient ``HERMES_HOME``."""
+    if not tuning_config:
+        return
     try:
         from hermes_cli.config import cfg_get, load_config_readonly  # local: avoids a circular import
         cfg = load_config_readonly()
