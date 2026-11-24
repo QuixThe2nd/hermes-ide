@@ -159,6 +159,9 @@ def test_turn_runner_sets_and_resets_agent_incognito_from_session_metadata(tmp_p
         moa_config=None,
         inbound_message_id=None,
         mute_notification_reply=False,
+        _loop_for_step=None,
+        _status_chat_id=None,
+        _status_thread_metadata=None,
     )
     turn = object.__new__(TurnRunner)
     turn._runner = runner
@@ -175,9 +178,9 @@ def test_turn_runner_sets_and_resets_agent_incognito_from_session_metadata(tmp_p
 
     agent = Agent()
     store.set_session_metadata(entry.session_key, "incognito", True)
-    turn._run_conversation_with_approval(agent, [], None, None, None)
+    turn._run_conversation_with_session(agent, [], None, None, None)
     store.set_session_metadata(entry.session_key, "incognito", False)
-    turn._run_conversation_with_approval(agent, [], None, None, None)
+    turn._run_conversation_with_session(agent, [], None, None, None)
 
     assert agent.seen == [True, False]
 
