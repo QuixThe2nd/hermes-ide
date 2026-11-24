@@ -86,3 +86,10 @@ func TestDecideOptionalStatesIgnored(t *testing.T) {
 		t.Fatalf("got %+v", res)
 	}
 }
+
+func TestDecideEmptyPlatformsReadyWhenCronAndHousekeepingStarted(t *testing.T) {
+	res := Decide(Input{CronStarted: true, HousekeepingStarted: true})
+	if !res.Ready {
+		t.Fatalf("expected ready, got %+v", res)
+	}
+}
