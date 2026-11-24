@@ -3975,10 +3975,13 @@ class TestRunConversation:
         empty_resp = _mock_response(content=None, finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
 
-        from agent import retry_utils as _retry_utils
+        from agent import conversation_loop as _conv_loop
 
-        # Make backoff return 10.0 seconds
-        monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 10.0)
+        # Make backoff return 10.0 seconds. Patch the loop's own global:
+        # conversation_loop binds jittered_backoff at its (lazy) first import,
+        # so patching agent.retry_utils only works when this test happens to be
+        # the module's first importer (order-dependent).
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 10.0)
 
         # Trigger the interrupt on the first sleep call inside the wait loop
         original_sleep = time.sleep
