@@ -487,7 +487,8 @@ class DiscordHubServer:
                               profile_routes: Optional[list] = None,
                               gate_credential: Optional[str] = None,
                               reaction_gate_reload: Optional[Dict[str, Any]] = None,
-                              hermes_home: Optional[str] = None) -> None:
+                              hermes_home: Optional[str] = None,
+                              gate_env: Optional[Dict[str, Any]] = None) -> None:
         from gateway.config import PlatformConfig
         from gateway.platforms.helpers import ThreadParticipationTracker
         from gateway.profile_routing import parse_profile_routes
@@ -566,6 +567,18 @@ class DiscordHubServer:
             # adapter never falls back to this hub process's (unscoped, possibly
             # default-profile) env. "" pins "no key" — fail closed, not env fallback.
             adapter._hub_gate_credential = str(gate_credential or "")
+            if gate_env is not None:
+                # The attaching gateway snapshot the gate env vars under ITS profile's
+                # runtime scope (hub_client connect()); pin them before connect() so the
+                # hub-side adapter's gate snapshot never falls back to this hub process's
+                # (unscoped, possibly default-profile) env. Only known gate keys with
+                # string values cross the wire; anything else is dropped, and missing
+                # keys stay unset so gate readers fall through to config.extra.
+                from plugins.platforms.discord.adapter import _GATE_ENV_KEYS
+                adapter._hub_gate_env = {
+                    key: gate_env[key] for key in _GATE_ENV_KEYS
+                    if isinstance(gate_env.get(key), str)
+                }
             if reaction_gate_reload is not None:
                 # The owning gateway captured these under its profile scope. Once
                 # supplied, never substitute the hub process's default-profile home.
@@ -709,7 +722,8 @@ class DiscordHubServer:
                                 params.get("profile_routes") or [],
                                 params.get("gate_credential"),
                                 reaction_gate_reload=params.get("reaction_gate_reload"),
-                                hermes_home=params.get("hermes_home"))
+                                hermes_home=params.get("hermes_home"),
+                                gate_env=params.get("gate_env"))
                             router = self._router_for(token_key)
                         else:
                             raise ValueError(f"unknown hub platform: {platform_name}")

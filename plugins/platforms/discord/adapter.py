@@ -1157,6 +1157,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # (capture from the live profile scope in connect()); "" ⇒ hub attach with no
         # key — fail closed instead of trusting the hub process's env.
         self._hub_gate_credential: Optional[str] = None
+        # Set by the Discord hub before connect() when this adapter is hub-attached:
+        # the attaching gateway snapshot the gate env vars (_GATE_ENV_KEYS) under
+        # ITS profile's runtime scope and passed them in the attach payload. None ⇒
+        # in-process adapter (snapshot from the live profile scope in connect()); a
+        # dict ⇒ hub attach — the hub process has no profile scope and its env may
+        # hold another profile's first-writer-wins values, so the payload is
+        # authoritative and os.environ is never consulted (#86905 class).
+        self._hub_gate_env: Optional[Dict[str, str]] = None
         self._response_gate_buffer: Optional[ChannelContextBuffer] = None
         # Message ids this adapter's gate enforce-approved, waiting for _handle_message's own
         # mention check. One-shot entries, bounded: approval never outlives the dispatch.
@@ -6031,13 +6039,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # ── per-adapter authorization gates (issue #72348) ─────────────────── Under gateway.multiplex_profiles
     # every Discord adapter must enforce ITS OWN profile's allow/deny lists. os.environ is process-global
     # and the YAML→env bridge is first-writer-wins, so raw os.getenv reads here would leak profile A's gates
-    # into profile B. Each accessor reads, in order: the per-adapter env snapshot taken inside the owning
-    # profile's runtime scope at connect() (authoritative under multiplex), then this adapter's
+    # into profile B. Each accessor reads, in order: the per-adapter env snapshot (taken inside the
+    # owning profile's runtime scope at connect(), or received from the attaching gateway in the
+    # hub attach payload — authoritative under multiplex either way), then this adapter's
     # PlatformConfig.extra (per-profile YAML), with the live scope-aware env read as the pre-connect
     # fallback. Single-profile deployments resolve to plain os.getenv, unchanged.
     def _snapshot_gate_env(self) -> None:
         """Snapshot gate env vars; must run inside the owning profile's runtime scope
-        (connect() does under multiplex) to capture that profile's values."""
+        (connect() does under multiplex) to capture that profile's values.
+
+        Hub-attached adapters have no profile scope at all: the attaching gateway
+        took the snapshot under ITS scope and passed it in the attach payload, so
+        the payload is authoritative — this hub process's env may hold another
+        profile's (first-writer-wins) values and is never consulted. Missing keys
+        stay empty so gate readers fall through to ``config.extra`` (per-profile
+        YAML), exactly like an unset env var on the direct-connect path."""
+        if self._hub_gate_env is not None:
+            self._gate_env_snapshot = {
+                key: self._hub_gate_env.get(key) or "" for key in _GATE_ENV_KEYS
+            }
+            return
         self._gate_env_snapshot = {key: _scoped_gate_env(key) for key in _GATE_ENV_KEYS}
 
     def _gate_env(self, name: str, default: str = "") -> str:

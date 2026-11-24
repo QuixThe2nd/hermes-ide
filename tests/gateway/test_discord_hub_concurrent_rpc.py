@@ -21,7 +21,8 @@ def test_slow_adapter_rpc_does_not_block_router_calls():
                 pass
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
 
         release = asyncio.Event()

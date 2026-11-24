@@ -441,7 +441,8 @@ def test_unix_hub_supports_two_clients_rpc_and_detach(short_af_unix_path):
         connection = FakeDiscordConnection()
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -503,7 +504,8 @@ def test_overlap_admission_opens_only_after_successor_attaches(short_af_unix_pat
                 pass
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
 
         server._attach_adapter = fake_attach
@@ -784,7 +786,8 @@ def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path, sh
                 pass
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
 
         server._attach_adapter = fake_attach
@@ -1513,7 +1516,8 @@ def test_picker_callbacks_round_trip_to_the_attached_gateway(short_af_unix_path)
         connection = FakeDiscordConnection()
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -1602,7 +1606,8 @@ def test_sync_queries_use_the_hub(short_af_unix_path):
         connection = FakeDiscordConnection()
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
