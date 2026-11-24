@@ -11686,6 +11686,30 @@ class SessionDB(
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
+        msg = {
+            "content": content,
+            "tool_call_id": tool_call_id,
+            "tool_calls": tool_calls,
+            "tool_name": tool_name,
+            "effect_disposition": effect_disposition,
+            "token_count": token_count,
+            "finish_reason": finish_reason,
+            "reasoning": reasoning,
+            "reasoning_content": reasoning_content,
+            "reasoning_details": reasoning_details,
+            "codex_reasoning_items": codex_reasoning_items,
+            "codex_message_items": codex_message_items,
+            "platform_message_id": platform_message_id,
+            "observed": observed,
+            "_compressed_summary": _compressed_summary,
+            "api_content": api_content,
+            "display_kind": display_kind,
+            "display_metadata": display_metadata,
+        }
+        params = self._message_row_params(
+            session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True
+        )
+
         def _do(conn):
             self._check_transcript_write_guards(
                 conn,
@@ -12616,115 +12640,52 @@ class SessionDB(
                 seen[key] = row
         return sorted(seen.values(), key=lambda r: r["id"])
 
-    def get_messages(
-        self,
-        session_id: str,
-        include_inactive: bool = False,
-        include_compacted: bool = False,
-        limit: Optional[int] = None,
-        offset: int = 0,
-        latest: bool = False,
-        after_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """Load messages for a session in insertion order.
-
-        By default only active messages are returned. Pass
-        ``include_inactive=True`` to load soft-deleted rows (e.g. for
-        audit / debug views of rewound history). See
-        :meth:`rewind_to_message` for the soft-delete mechanic.
-
-        Pass ``include_compacted=True`` to additionally load rows preserved
-        by in-place context compaction (``active=0, compacted=1``). Those are
-        durable display history, not soft-deleted rows — a user-visible
-        transcript read must not drop them, or earlier turns silently become
-        unreachable once the UI exhausts its active-only window. Soft-deleted
-        Undo/Rewind rows (``active=0, compacted=0``) stay excluded; use
-        ``include_inactive`` for those.
-
-        Ordered by AUTOINCREMENT id (true insertion order) rather than
-        timestamp — see c03acca50 for the WSL2 clock-regression rationale.
-
-        When ``limit`` is provided, returns at most ``limit`` messages
-        starting from ``offset`` (0-based, in insertion order). Enables
-        pagination for the API endpoint to avoid loading entire transcripts.
-        With ``latest=True``, the offset is measured back from the newest
-        message and the selected page is still returned in chronological
-        order. ``offset`` alone (without ``limit``) also pages — SQLite
-        requires a LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1``
-        (unbounded).
-
-        ``after_id`` enables keyset pagination (``id > after_id``): O(1)
-        page seeks on huge transcripts where OFFSET degrades to O(n) per
-        page. Ascending order only (incompatible with ``latest``/``offset``).
-        """
+    def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
+                     limit: Optional[int] = None, offset: int = 0, latest: bool = False,
+                     after_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
+        rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
+        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
-        if include_inactive:
-            # Audit / debug reads: every row, including soft-deleted.
-            active_clause = ""
-        elif include_compacted:
-            # Display history: active rows plus rows preserved by in-place
-            # compaction (active=0, compacted=1), but never soft-deleted
-            # Undo/Rewind rows (active=0, compacted=0).
-            active_clause = " AND (active = 1 OR compacted = 1)"
-        else:
-            active_clause = " AND active = 1"
-        keyset_clause = " AND id > ?" if after_id is not None else ""
-        sql = (
-            "SELECT * FROM messages WHERE session_id = ?"
-            f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
-        )
-        params: list = [session_id]
-        if after_id is not None:
-            params.append(after_id)
-        if include_compacted:
-            # Read the full display set (a session's rows are bounded; the
-            # UI-level 500-row cap lives in the endpoint, not here), dedupe
-            # generations, then apply paging.
-            with self._read_ctx() as conn:
-                cursor = conn.execute(
-                    "SELECT * FROM messages WHERE session_id = ?" + active_clause
-                    + " ORDER BY id ASC",
-                    [session_id],
+        active_clause = self._active_clause(include_inactive, include_compacted)
+        if include_compacted and not include_inactive and self._ensure_display_order(session_id):
+            direction = "DESC" if latest else "ASC"
+            sql = f"""WITH page AS (
+                    SELECT display_order FROM messages
+                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                    GROUP BY display_order ORDER BY display_order {direction}
+                    LIMIT ? OFFSET ?
                 )
-                all_rows = cursor.fetchall()
-            rows = self._dedupe_display_generations(all_rows)
-            if latest:
-                rows = rows[::-1]
-            rows = rows[offset:]
-            if limit is not None:
-                rows = rows[:limit]
-            if latest:
-                rows = rows[::-1]
+                SELECT chosen.* FROM page
+                JOIN messages AS chosen ON chosen.id = (
+                    SELECT candidate.id FROM messages AS candidate
+                    WHERE candidate.session_id = ?
+                      AND candidate.display_order = page.display_order
+                      AND (candidate.active = 1 OR candidate.compacted = 1)
+                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                )
+                ORDER BY page.display_order ASC"""
+            rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
+        elif include_compacted:
+            # Read-only legacy stores cannot persist display identities; keep only fixed-width
+            # identities and representative ids while scanning, then fetch the selected payloads.
+            rows = self._legacy_display_page(
+                session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
         else:
+            sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
+                f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
+            params: list = [session_id] if after_id is None else [session_id, after_id]
             if limit is not None or offset:
                 # SQLite's OFFSET requires LIMIT; -1 means "no limit".
                 sql += " LIMIT ? OFFSET ?"
                 params.extend([-1 if limit is None else limit, offset])
-            with self._read_ctx() as conn:
-                cursor = conn.execute(sql, params)
-                rows = cursor.fetchall()
+            rows = self._read_all(sql, params)
             if latest:
                 rows.reverse()
-        result = []
-        for row in rows:
-            msg = dict(row)
-            if msg.pop("_compressed_summary", 0):
-                msg["_compressed_summary"] = True
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
-                    msg["tool_calls"] = []
-            if msg.get("display_metadata") is not None:
-                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
-            result.append(msg)
-        return result
+        return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results in these sessions that mention a GitHub PR url.
