@@ -301,9 +301,18 @@ def test_expected_gateway_profiles_none_when_receipt_is_malformed():
 def test_catchup_clears_marker_without_restart_when_fleet_current(
     monkeypatch, capsys
 ):
-    """The manual-`/restart` shape: fleet already serves disk HEAD."""
-    update_cmd._write_fleet_restart_pending_marker()
-    _write_latest_receipt(_plan_receipt("default"))
+    """The manual-`/restart` shape: fleet already serves disk HEAD.
+
+    Discharge goes through the marker's own inventory (b263ea5a3a1): every
+    owed gateway probes ``current`` on the checkout SHA, so the marker is
+    obsolete and no second bounce is owed. Unverifiable (sha-less or
+    inventory-less) markers never take this path.
+    """
+    _patch_marker_sha(monkeypatch, _CURRENT_SHA)
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=_CURRENT_SHA,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
         lambda **k: [_fleet_row()],
@@ -319,13 +328,17 @@ def test_catchup_clears_marker_without_restart_when_fleet_current(
 
     assert restarts["n"] == 0
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
-    assert "clearing the pending restart" in capsys.readouterr().out
 
 
-def test_catchup_restarts_when_expected_fleet_evidence_is_missing(monkeypatch):
-    """No usable receipt/plan: an all-current fleet still owes the restart."""
+def test_catchup_restarts_when_marker_is_unverifiable(monkeypatch):
+    """A marker without sha/inventory can never be settled by observation.
+
+    The restart still runs, but the marker stays pending (fail-closed:
+    nothing proves which runtimes it owed) and the catch-up exits 1 so
+    automation does not treat the fleet as healthy.
+    """
     update_cmd._write_fleet_restart_pending_marker()
-    _write_latest_receipt({"outcome": "success"})  # no plan → no evidence
+    _write_latest_receipt({"outcome": "success"})
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
         lambda **k: [_fleet_row()],
@@ -337,23 +350,31 @@ def test_catchup_restarts_when_expected_fleet_evidence_is_missing(monkeypatch):
         lambda: restarts.__setitem__("n", restarts["n"] + 1) or True,
     )
 
-    update_cmd._apply_pending_fleet_restart_catchup()
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._apply_pending_fleet_restart_catchup()
 
+    assert excinfo.value.code == 1
     assert restarts["n"] == 1
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
 
 
 def test_catchup_restarts_when_fleet_stale(monkeypatch):
-    update_cmd._write_fleet_restart_pending_marker()
-    monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **k: [_fleet_row(state="stale")],
+    """Post-restart recheck: once every owed gateway serves HEAD, the marker discharges."""
+    _patch_marker_sha(monkeypatch, _CURRENT_SHA)
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=_CURRENT_SHA,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
     )
     restarts = {"n": 0}
+
+    def _restart() -> bool:
+        restarts["n"] += 1
+        return True
+
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
     monkeypatch.setattr(
-        update_cmd,
-        "_run_pending_fleet_restart",
-        lambda: restarts.__setitem__("n", restarts["n"] + 1) or True,
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [_fleet_row()] if restarts["n"] else [_fleet_row(state="stale")],
     )
 
     update_cmd._apply_pending_fleet_restart_catchup()
@@ -363,9 +384,15 @@ def test_catchup_restarts_when_fleet_stale(monkeypatch):
 
 
 def test_catchup_restarts_when_planned_profile_missing(monkeypatch):
-    """A planned gateway the probe can no longer see keeps the restart."""
-    update_cmd._write_fleet_restart_pending_marker()
-    _write_latest_receipt(_plan_receipt("default", "work"))
+    """A planned gateway the probe can no longer see keeps the marker pending."""
+    _patch_marker_sha(monkeypatch, _CURRENT_SHA)
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=_CURRENT_SHA,
+        runtimes=[
+            {"kind": "gateway", "profile": "default"},
+            {"kind": "gateway", "profile": "work"},
+        ],
+    )
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
         lambda **k: [_fleet_row("default")],
@@ -377,14 +404,21 @@ def test_catchup_restarts_when_planned_profile_missing(monkeypatch):
         lambda: restarts.__setitem__("n", restarts["n"] + 1) or True,
     )
 
-    update_cmd._apply_pending_fleet_restart_catchup()
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._apply_pending_fleet_restart_catchup()
 
+    assert excinfo.value.code == 1
     assert restarts["n"] == 1
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
 
 
 def test_catchup_fails_closed_when_fleet_probe_raises(monkeypatch):
-    """A failed inspection must never read as 'already current'."""
-    update_cmd._write_fleet_restart_pending_marker()
+    """A failed inspection must never read as 'already current' or 'recovered'."""
+    _patch_marker_sha(monkeypatch, _CURRENT_SHA)
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=_CURRENT_SHA,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
 
     def _probe_broken(**_kwargs):
         raise RuntimeError("probe broken")
@@ -399,10 +433,12 @@ def test_catchup_fails_closed_when_fleet_probe_raises(monkeypatch):
         lambda: restarts.__setitem__("n", restarts["n"] + 1) or True,
     )
 
-    update_cmd._apply_pending_fleet_restart_catchup()
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._apply_pending_fleet_restart_catchup()
 
+    assert excinfo.value.code == 1
     assert restarts["n"] == 1
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
 
 
 def test_catchup_keeps_marker_when_restart_incomplete(monkeypatch):

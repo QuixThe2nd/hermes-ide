@@ -700,17 +700,10 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
         return
-    try:
-        from hermes_cli.update_receipt import collect_fleet_versions
-
-        if _live_fleet_already_serves_checkout(collect_fleet_versions()):
-            _clear_fleet_restart_pending_marker()
-            print("  ✓ Live fleet already serves this checkout; clearing the pending restart.")
-            return
-    except Exception as exc:
-        # A failed probe is not evidence of recovery; retain the normal
-        # fail-closed restart path below.
-        logger.debug("Could not settle pending restart from the live fleet: %s", exc)
+    # No "live fleet already serves the checkout" shortcut here: it must not
+    # discharge a marker whose OWNED inventory is not verifiably covered —
+    # _pending_fleet_restart_needed() already settles that via
+    # _marker_only_restart_obsolete (b263ea5a3a1).
     if defer:
         print()
         _warn_pending_fleet_restart()
@@ -721,10 +714,9 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")
     restart_completed = _run_pending_fleet_restart()
-    if restart_completed:
-        # The restart helper does not own the marker: a successful catch-up
-        # discharges it before the remaining receipt obligations are checked.
-        _clear_fleet_restart_pending_marker()
+    # The marker discharges only through _pending_fleet_restart_needed(): a
+    # "completed" restart with empty or failed discovery proves nothing about
+    # the marker's owned inventory (b263ea5a3a1).
     if restart_completed and not _pending_fleet_restart_needed():
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
