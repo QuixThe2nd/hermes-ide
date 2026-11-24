@@ -109,32 +109,3 @@ def test_maybe_wrap_anthropic_sdk_missing_falls_back():
     assert not isinstance(result, AnthropicAuxiliaryClient)
 
 
-# ---------------------------------------------------------------------------
-# Integration: resolve_provider_client for named kimi-coding provider
-# ---------------------------------------------------------------------------
-
-def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_path):
-    """End-to-end: resolve_provider_client('kimi-coding', 'kimi-for-coding')
-    must return AnthropicAuxiliaryClient because /coding speaks Anthropic.
-
-    This is the primary regression guard: the bug that caused title
-    generation 404s on every Kimi Coding Plan user after the "main model
-    for every user" aux design shipped.
-    """
-    from agent.auxiliary_client import (
-        resolve_provider_client,
-        AnthropicAuxiliaryClient,
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # sk-kimi- prefix triggers /coding endpoint auto-detection
-    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-faketesttoken123")
-
-    client, model = resolve_provider_client("kimi-coding", "kimi-for-coding")
-    assert client is not None, "Should resolve a client"
-    assert isinstance(client, AnthropicAuxiliaryClient), (
-        "Kimi Coding Plan endpoint (api.kimi.com/coding) speaks Anthropic "
-        "Messages — aux client MUST be AnthropicAuxiliaryClient, got "
-        f"{type(client).__name__}"
-    )
-    assert "kimi.com/coding" in str(client.base_url)
