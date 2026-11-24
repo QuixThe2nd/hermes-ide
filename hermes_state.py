@@ -150,7 +150,7 @@ from hermes_state_repair import (
     apply_durability_barriers,
 )
 from hermes_state_search import SessionSearchMixin
-from hermes_state_messages import SessionMessagesMixin
+from hermes_state_messages import SessionMessagesMixin, _INSERT_MESSAGE_SQL
 from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause, classify_session_status, workspace_key
 from hermes_state_fts import SessionFtsSetupMixin, fts5_cjk_so_path
 from hermes_state_profile_repair import SessionProfileRepairMixin
@@ -11651,13 +11651,6 @@ class SessionDB(
         from every outgoing payload anyway, so the scrubbed form IS the
         wire bytes).
         """
-        # Display metadata is presentation-only and never changes the model
-        # context role/content replayed to providers.
-        display_metadata_json = self._encode_display_metadata(display_metadata)
-        # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = self._reasoning_json_text(reasoning_details)
-        codex_items_json = self._reasoning_json_text(codex_reasoning_items)
-        codex_message_items_json = self._reasoning_json_text(codex_message_items)
         # tool_calls may arrive as a Python list (from the live agent) or
         # as a JSON string (from import/export). Parse first to avoid
         # double-encoding.
@@ -11666,10 +11659,6 @@ class SessionDB(
                 tool_calls = json.loads(tool_calls)
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
-        # cannot bind list/dict parameters directly.
-        stored_content = self._encode_content(content)
 
         message_timestamp = time.time()
         if timestamp is not None:
@@ -11718,38 +11707,7 @@ class SessionDB(
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
-            cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    stored_content,
-                    tool_call_id,
-                    tool_calls_json,
-                    _scrub_surrogates(tool_name),
-                    effect_disposition,
-                    message_timestamp,
-                    token_count,
-                    finish_reason,
-                    _scrub_surrogates(reasoning),
-                    _scrub_surrogates(reasoning_content),
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_message_id,
-                    1 if observed else 0,
-                    1 if _compressed_summary else 0,
-                    1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
-                    display_metadata_json,
-                ),
-            )
-            msg_id = cursor.lastrowid
+            msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
 
             # Update counters
             if num_tool_calls > 0:
@@ -12161,38 +12119,11 @@ class SessionDB(
                 msg.get("platform_message_id") or msg.get("message_id")
             )
 
-            api_content = msg.get("api_content")
-
             cur = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    self._encode_content(msg.get("content")),
-                    msg.get("tool_call_id"),
-                    tool_calls_json,
-                    _scrub_surrogates(msg.get("tool_name")),
-                    msg.get("effect_disposition"),
-                    message_timestamp,
-                    msg.get("token_count"),
-                    msg.get("finish_reason"),
-                    _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
-                    _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_msg_id,
-                    1 if msg.get("observed") else 0,
-                    1 if msg.get("_compressed_summary") else 0,
-                    1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                    _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
-                    self._encode_display_metadata(msg.get("display_metadata")),
-                ),
+                _INSERT_MESSAGE_SQL,
+                self._message_row_params(
+                    session_id, role, msg, tool_calls, message_timestamp,
+                    keep_reasoning=role == "assistant"),
             )
             if isinstance(msg, dict) and cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
