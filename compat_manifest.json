@@ -687,12 +687,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "agent.proxy_sources.iron_proxy",
-   "name": "stat",
-   "kind": "import",
-   "target": "stat"
-  },
-  {
    "facade": "agent.reasoning_effort",
    "name": "CODEX_RESPONSES_EFFORTS",
    "kind": "restored-def",
@@ -861,12 +855,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "agent.ssl_guard",
-   "name": "verify_ca_bundle_with_fallback",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
    "facade": "agent.system_prompt",
    "name": "OPENAI_MODEL_EXECUTION_GUIDANCE",
    "kind": "moved-lazy",
@@ -895,54 +883,6 @@
    "name": "Optional",
    "kind": "import",
    "target": "typing"
-  },
-  {
-   "facade": "agent.transcription_provider",
-   "name": "List",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.transcription_provider",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "agent.i18n"
-  },
-  {
-   "facade": "agent.transcription_provider",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
-  },
-  {
-   "facade": "agent.transcription_registry",
-   "name": "Dict",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.transcription_registry",
-   "name": "List",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.transcription_registry",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.transcription_registry",
-   "name": "hermes_home_key",
-   "kind": "moved-lazy",
-   "target": "hermes_constants"
-  },
-  {
-   "facade": "agent.transcription_registry",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
   },
   {
    "facade": "agent.transports.chat_completions",
@@ -979,36 +919,6 @@
    "name": "time",
    "kind": "import",
    "target": "time"
-  },
-  {
-   "facade": "agent.tts_registry",
-   "name": "Dict",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.tts_registry",
-   "name": "List",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.tts_registry",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "agent.tts_registry",
-   "name": "hermes_home_key",
-   "kind": "moved-lazy",
-   "target": "hermes_constants"
-  },
-  {
-   "facade": "agent.tts_registry",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
   },
   {
    "facade": "agent.turn_context",
@@ -1641,216 +1551,6 @@
    "target": "asyncio"
   },
   {
-   "facade": "gateway.platforms.qqbot.adapter",
-   "name": "base64",
-   "kind": "import",
-   "target": "base64"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.adapter",
-   "name": "mimetypes",
-   "kind": "import",
-   "target": "mimetypes"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.chunked_upload",
-   "name": "ApiRequestFn",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.chunked_upload",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.chunked_upload",
-   "name": "functools",
-   "kind": "import",
-   "target": "functools"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "logging",
-   "kind": "restored-import",
-   "target": "logging"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "Callable",
-   "kind": "restored-import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "Awaitable",
-   "kind": "restored-import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "logger",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of ApprovalSender)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "PostMessageFn",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of ApprovalSender)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "ApprovalSender",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "Awaitable",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "Callable",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "PostMessageFn",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.qqbot.adapter"
-  },
-  {
-   "facade": "gateway.platforms.qqbot.keyboards",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
-  },
-  {
-   "facade": "gateway.platforms.signal",
-   "name": "DEFAULT_EXT_TO_MIME",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.media_cache"
-  },
-  {
-   "facade": "gateway.platforms.signal",
-   "name": "TYPING_INTERVAL",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.weixin",
-   "name": "MSG_TYPE_USER",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.weixin",
-   "name": "struct",
-   "kind": "import",
-   "target": "struct"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "AUTH_FAILED_CODES",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "AUTH_RETRYABLE_CODES",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "FileUrlHandler",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "GroupQueryService",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "REPLY_REF_TTL_S",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "get_active_adapter",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao",
-   "name": "send_yuanbao_direct",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_media",
-   "name": "COS_USE_ACCELERATE",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "DEBUG_MODE",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "_encode_forward_multimedia",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of encode_forward_msg_data)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "_encode_forward_msg_content",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of encode_forward_msg_data)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "_encode_forward_msg",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of encode_forward_msg_data)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "encode_forward_msg_data",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
-  },
-  {
-   "facade": "gateway.platforms.yuanbao_proto",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
-  },
-  {
    "facade": "gateway.relay",
    "name": "relay_bot_username",
    "kind": "restored-def",
@@ -2059,12 +1759,6 @@
    "name": "base_url_hostname",
    "kind": "moved-lazy",
    "target": "utils"
-  },
-  {
-   "facade": "gateway.run",
-   "name": "build_auto_tts_output_path",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
   },
   {
    "facade": "gateway.run",
@@ -2377,18 +2071,6 @@
    "name": "is_gateway_running",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "gateway.sticker_cache",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
-  },
-  {
-   "facade": "gateway.sticker_cache",
-   "name": "tempfile",
-   "kind": "import",
-   "target": "tempfile"
   },
   {
    "facade": "gateway.stream_consumer",
@@ -2704,24 +2386,6 @@
   },
   {
    "facade": "hermes_cli.commands",
-   "name": "slack_app_manifest",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "slack_native_slashes",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
-   "name": "slack_subcommand_map",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.commands_platforms"
-  },
-  {
-   "facade": "hermes_cli.commands",
    "name": "subprocess",
    "kind": "import",
    "target": "subprocess"
@@ -2845,12 +2509,6 @@
    "name": "collect_relay_plugin_cutover_findings",
    "kind": "moved-lazy",
    "target": "hermes_cli.doctor_config"
-  },
-  {
-   "facade": "hermes_cli.doctor",
-   "name": "describe_vercel_auth",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.vercel_auth"
   },
   {
    "facade": "hermes_cli.doctor",
@@ -3400,12 +3058,6 @@
   },
   {
    "facade": "hermes_cli.observability.relay_shared_metrics",
-   "name": "TOOL_APPROVAL_MARK",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.observability.shared_metrics_contract"
-  },
-  {
-   "facade": "hermes_cli.observability.relay_shared_metrics",
    "name": "TOOL_CALL_SCOPE",
    "kind": "moved-lazy",
    "target": "hermes_cli.observability.shared_metrics_contract"
@@ -3449,12 +3101,6 @@
   {
    "facade": "hermes_cli.observability.relay_shared_metrics",
    "name": "task_terminal_state",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.observability.shared_metrics_contract"
-  },
-  {
-   "facade": "hermes_cli.observability.relay_shared_metrics",
-   "name": "tool_approval_outcome",
    "kind": "moved-lazy",
    "target": "hermes_cli.observability.shared_metrics_contract"
   },
@@ -3703,12 +3349,6 @@
    "name": "shutil",
    "kind": "import",
    "target": "shutil"
-  },
-  {
-   "facade": "hermes_cli.slack_cli",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
   },
   {
    "facade": "hermes_cli.sqlite_safe_read",
@@ -4341,142 +3981,10 @@
    "target": "importlib"
   },
   {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "ERR_PUSH_NOT_SUPPORTED",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "STATE_AUTH_REQUIRED",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "copy",
-   "kind": "import",
-   "target": "copy"
-  },
-  {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "data_part",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "file_part",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "message_with_parts",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.protocol",
-   "name": "stream_message",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "authenticate",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "get_bearer_token",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "get_peer_tokens",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "get_push_secret",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "get_trusted_peers",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "is_trusted_peer",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "resolve_bind_host",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.security",
-   "name": "sign_push_payload",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.a2a.tools",
-   "name": "TypedDict",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
    "facade": "plugins.platforms.discord.adapter",
    "name": "env_int",
    "kind": "moved-lazy",
    "target": "utils"
-  },
-  {
-   "facade": "plugins.platforms.feishu.feishu_comment",
-   "name": "add_comment_reaction",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.feishu.feishu_comment",
-   "name": "delete_comment_reaction",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.google_chat.oauth",
-   "name": "atomic_replace",
-   "kind": "moved-lazy",
-   "target": "utils"
-  },
-  {
-   "facade": "plugins.platforms.google_chat.oauth",
-   "name": "secrets",
-   "kind": "import",
-   "target": "secrets"
-  },
-  {
-   "facade": "plugins.platforms.google_chat.oauth",
-   "name": "subprocess",
-   "kind": "import",
-   "target": "subprocess"
   },
   {
    "facade": "plugins.platforms.matrix.adapter",
@@ -4495,120 +4003,6 @@
    "name": "get_matrix_capabilities",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.photon.adapter",
-   "name": "ProcessingOutcome",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.event"
-  },
-  {
-   "facade": "plugins.platforms.photon.adapter",
-   "name": "resolve_sidecar_dir",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.photon.sidecar_paths"
-  },
-  {
-   "facade": "plugins.platforms.photon.auth",
-   "name": "credential_summary",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.photon.auth",
-   "name": "get_session",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.photon.cli",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "plugins.platforms.photon.cli",
-   "name": "resolve_sidecar_dir",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.photon.sidecar_paths"
-  },
-  {
-   "facade": "plugins.platforms.raft.adapter",
-   "name": "asyncio",
-   "kind": "import",
-   "target": "asyncio"
-  },
-  {
-   "facade": "plugins.teams_pipeline.cli",
-   "name": "GraphSubscription",
-   "kind": "moved-lazy",
-   "target": "plugins.teams_pipeline.models"
-  },
-  {
-   "facade": "plugins.teams_pipeline.cli",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "plugins.teams_pipeline.cli",
-   "name": "datetime",
-   "kind": "import",
-   "target": "datetime"
-  },
-  {
-   "facade": "plugins.teams_pipeline.cli",
-   "name": "timedelta",
-   "kind": "import",
-   "target": "datetime"
-  },
-  {
-   "facade": "plugins.teams_pipeline.cli",
-   "name": "timezone",
-   "kind": "import",
-   "target": "datetime"
-  },
-  {
-   "facade": "plugins.teams_pipeline.meetings",
-   "name": "fetch_call_record_artifact",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.teams_pipeline.pipeline",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
-  },
-  {
-   "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "resolve_teams_pipeline_store_path",
-   "kind": "restored-import",
-   "target": "plugins.teams_pipeline.store"
-  },
-  {
-   "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "resolve_store_path",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of build_store)"
-  },
-  {
-   "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "build_store",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "resolve_store_path",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.teams_pipeline.subscriptions",
-   "name": "resolve_teams_pipeline_store_path",
-   "kind": "moved-lazy",
-   "target": "plugins.teams_pipeline.store"
   },
   {
    "facade": "plugins.video_gen.fal",
@@ -5037,12 +4431,6 @@
    "target": "datetime"
   },
   {
-   "facade": "tools.browser_tool",
-   "name": "windows_hide_flags",
-   "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
-  },
-  {
    "facade": "tools.clarify_gateway",
    "name": "get_notify",
    "kind": "restored-def",
@@ -5469,54 +4857,6 @@
    "target": "subprocess"
   },
   {
-   "facade": "tools.environments.base",
-   "name": "windows_hide_flags",
-   "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
-  },
-  {
-   "facade": "tools.environments.managed_modal",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tools.environments.vercel_sandbox",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tools.feishu_doc_tool",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "tools.feishu_doc_tool",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
-  },
-  {
-   "facade": "tools.feishu_doc_tool",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
-   "facade": "tools.feishu_drive_tool",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "tools.feishu_drive_tool",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
    "facade": "tools.file_operations",
    "name": "Any",
    "kind": "import",
@@ -5569,12 +4909,6 @@
    "name": "List",
    "kind": "import",
    "target": "typing"
-  },
-  {
-   "facade": "tools.file_operations",
-   "name": "MAX_FILE_SIZE",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
   },
   {
    "facade": "tools.file_operations",
@@ -6117,18 +5451,6 @@
    "target": "time"
   },
   {
-   "facade": "tools.microsoft_graph_client",
-   "name": "AsyncIterator",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tools.microsoft_graph_client",
-   "name": "GraphCredentials",
-   "kind": "moved-lazy",
-   "target": "tools.microsoft_graph_auth"
-  },
-  {
    "facade": "tools.open_preview_tool",
    "name": "OPEN_PREVIEW_SCHEMA",
    "kind": "restored-def",
@@ -6628,12 +5950,6 @@
   },
   {
    "facade": "tools.skills_hub",
-   "name": "windows_hide_flags",
-   "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
-  },
-  {
-   "facade": "tools.skills_hub",
    "name": "yaml",
    "kind": "import",
    "target": "yaml"
@@ -6946,12 +6262,6 @@
   },
   {
    "facade": "tools.terminal_tool",
-   "name": "has_direct_modal_credentials",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.terminal_tool",
    "name": "importlib",
    "kind": "import",
    "target": "importlib.util"
@@ -6985,12 +6295,6 @@
    "name": "re",
    "kind": "import",
    "target": "re"
-  },
-  {
-   "facade": "tools.terminal_tool",
-   "name": "resolve_modal_backend_state",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
   },
   {
    "facade": "tools.terminal_tool",
@@ -7041,630 +6345,6 @@
    "target": "uuid"
   },
   {
-   "facade": "tools.transcription_tools",
-   "name": "COMMAND_STT_OUTPUT_FORMATS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_command"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "COMMON_LOCAL_BIN_DIRS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "DEFAULT_COMMAND_STT_LANGUAGE",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_command"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "DEFAULT_COMMAND_STT_OUTPUT_FORMAT",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_command"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "DEFAULT_COMMAND_STT_TIMEOUT_SECONDS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_command"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "DEFAULT_LOCAL_STT_LANGUAGE",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "ELEVENLABS_STT_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "GROQ_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "GROQ_MODELS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "LOCAL_NATIVE_AUDIO_FORMATS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "MAX_FILE_SIZE",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "OPENAI_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "OPENAI_MODELS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "SUPPORTED_FORMATS",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "XAI_STT_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.transcription_common"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "platform",
-   "kind": "import",
-   "target": "platform"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "queue",
-   "kind": "import",
-   "target": "queue"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "resolve_managed_tool_gateway",
-   "kind": "moved-lazy",
-   "target": "tools.managed_tool_gateway"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "resolve_openai_audio_api_key",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "shlex",
-   "kind": "import",
-   "target": "shlex"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "subprocess",
-   "kind": "import",
-   "target": "subprocess"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "tempfile",
-   "kind": "import",
-   "target": "tempfile"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "urljoin",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "tools.transcription_tools",
-   "name": "windows_hide_flags",
-   "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "AudioDeliveryProfile",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_delivery"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "COMMAND_TTS_OUTPUT_FORMATS",
-   "kind": "moved-lazy",
-   "target": "tools.tts_command_provider"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH",
-   "kind": "moved-lazy",
-   "target": "tools.tts_command_provider"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_COMMAND_TTS_OUTPUT_FORMAT",
-   "kind": "moved-lazy",
-   "target": "tools.tts_command_provider"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS",
-   "kind": "moved-lazy",
-   "target": "tools.tts_command_provider"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_DEEPINFRA_TTS_VOICE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_EDGE_VOICE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_ELEVENLABS_MODEL_ID",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_ELEVENLABS_STREAMING_MODEL_ID",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_ELEVENLABS_VOICE_ID",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_GEMINI_AUDIO_TAGS",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_GEMINI_TTS_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_GEMINI_TTS_MODEL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_GEMINI_TTS_VOICE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_KITTENTTS_MODEL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_local"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_KITTENTTS_VOICE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_local"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_MINIMAX_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_MINIMAX_CN_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_MINIMAX_MODEL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_MINIMAX_VOICE_ID",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_MISTRAL_TTS_MODEL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_MISTRAL_TTS_VOICE_ID",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_OPENAI_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_OPENAI_MODEL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_OPENAI_VOICE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_PIPER_VOICE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_local"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_AUTO_SPEECH_TAGS",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_BASE_URL",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_BIT_RATE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_LANGUAGE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_SAMPLE_RATE",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_SPEED_DEFAULT",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_SPEED_MAX",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_SPEED_MIN",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "DEFAULT_XAI_VOICE_ID",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "ELEVENLABS_MODEL_MAX_TEXT_LENGTH",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_delivery"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "FALLBACK_MAX_TEXT_LENGTH",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_delivery"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "Future",
-   "kind": "import",
-   "target": "concurrent.futures"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "GEMINI_AUDIO_TAG_REWRITE_TASK",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "GEMINI_TTS_CHANNELS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "GEMINI_TTS_SAMPLE_RATE",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "GEMINI_TTS_SAMPLE_WIDTH",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "Iterator",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "MANAGED_OPENAI_TTS_MODELS",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_openai"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "FALLBACK_MAX_TEXT_LENGTH",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of MAX_TEXT_LENGTH)"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "MAX_TEXT_LENGTH",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "PROVIDER_MAX_TEXT_LENGTH",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_delivery"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "TTS_RESPONSE_BODY_CHUNK_BYTES",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "TTS_RESPONSE_BODY_LIMIT_BYTES",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_providers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "ThreadPoolExecutor",
-   "kind": "import",
-   "target": "concurrent.futures"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "Tuple",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "acquire_tts_lease",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_lifecycle"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "base64",
-   "kind": "import",
-   "target": "base64"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "field",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "hermes_xai_user_agent",
-   "kind": "moved-lazy",
-   "target": "tools.xai_http"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "platform",
-   "kind": "import",
-   "target": "platform"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "queue",
-   "kind": "import",
-   "target": "queue"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "read_selection",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "release_tts_lease",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_lifecycle"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "release_tts_provider",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_lifecycle"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "resolve_managed_tool_gateway",
-   "kind": "moved-lazy",
-   "target": "tools.managed_tool_gateway"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "resolve_openai_audio_api_key",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "selection_error",
-   "kind": "moved-lazy",
-   "target": "tools.tool_backend_helpers"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "shlex",
-   "kind": "import",
-   "target": "shlex"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "shutil",
-   "kind": "import",
-   "target": "shutil"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "stream_tts_to_speaker",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_speaker"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "subprocess",
-   "kind": "import",
-   "target": "subprocess"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "threading",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "time",
-   "kind": "import",
-   "target": "time"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "tts_lease_holders",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_lifecycle"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "urljoin",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "urlparse",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "uuid",
-   "kind": "import",
-   "target": "uuid"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "warm_tts_provider",
-   "kind": "moved-lazy",
-   "target": "tools.tts_tool_lifecycle"
-  },
-  {
-   "facade": "tools.tts_tool",
-   "name": "windows_hide_flags",
-   "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
-  },
-  {
    "facade": "tools.url_safety",
    "name": "has_sensitive_query_params",
    "kind": "restored-def",
@@ -7699,54 +6379,6 @@
    "name": "threading",
    "kind": "import",
    "target": "threading"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD",
-   "kind": "moved-lazy",
-   "target": "tools.voice_mode_transcript"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "DEFAULT_VOICE_STOP_PHRASES",
-   "kind": "moved-lazy",
-   "target": "tools.voice_mode_transcript"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "MIN_FRAGMENT_LENGTH_FOR_ECHO",
-   "kind": "moved-lazy",
-   "target": "tools.voice_mode_transcript"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "WHISPER_HALLUCINATIONS",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "difflib",
-   "kind": "import",
-   "target": "difflib"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "is_tts_echo",
-   "kind": "moved-lazy",
-   "target": "tools.voice_mode_transcript"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "re",
-   "kind": "import",
-   "target": "re"
-  },
-  {
-   "facade": "tools.voice_mode",
-   "name": "voice_stop_hint",
-   "kind": "moved-lazy",
-   "target": "tools.voice_mode_transcript"
   },
   {
    "facade": "tools.web_result_cache",
@@ -7857,112 +6489,10 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "tools.yuanbao_tools",
-   "name": "List",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tools.yuanbao_tools",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
    "facade": "toolsets",
    "name": "resolve_multiple_toolsets",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "dataclass",
-   "kind": "restored-import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "field",
-   "kind": "restored-import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "SpikeAgent",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of HostSession)"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "HostSession",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "SpikeAgent",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "field",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "tui_gateway.compute_host",
-   "name": "request_hard_interrupt",
-   "kind": "moved-lazy",
-   "target": "agent.interrupt_compat"
-  },
-  {
-   "facade": "tui_gateway.hosted_room_driver",
-   "name": "contextlib",
-   "kind": "import",
-   "target": "contextlib"
-  },
-  {
-   "facade": "tui_gateway.hosted_room_driver",
-   "name": "null_turn_lock",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.hosted_room_service",
-   "name": "hashlib",
-   "kind": "import",
-   "target": "hashlib"
-  },
-  {
-   "facade": "tui_gateway.mcp_rpc_helpers",
-   "name": "Optional",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tui_gateway.mcp_rpc_helpers",
-   "name": "Tuple",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "tui_gateway.mcp_rpc_helpers",
-   "name": "resolve_profile",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "tui_gateway.methods_prompt",
-   "name": "types",
-   "kind": "import",
-   "target": "types"
   },
   {
    "facade": "gateway.startup_watchdog",
@@ -7975,12 +6505,6 @@
    "name": "*",
    "kind": "module-stub",
    "target": "agent.relay_runtime"
-  },
-  {
-   "facade": "tools.environments.modal_utils",
-   "name": "*",
-   "kind": "module-stub",
-   "target": "(deleted)"
   }
  ]
 }
