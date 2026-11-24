@@ -324,13 +324,13 @@ def live_writer_holds_db(
 ) -> bool:
     """Return whether repair lacks proven exclusive ownership of ``db_path``."""
     foreign_holders = foreign_state_db_holders(db_path)
-    if any(
-        pid < 0
-        or path.startswith("uninspectable holder:")
-        or path.startswith("uninspectable descriptor:")
-        or path.endswith(" (deleted)")
-        for pid, path in foreign_holders
-    ):
+    if foreign_holders:
+        # #103339 item 2: a foreign holder of the main DB or a sidecar means ownership is
+        # not exclusive, full stop. An idle ``journal_mode=DELETE`` reader holds only a
+        # transient SHARED lock, so the SQLite probe below is blind to it — the scan is
+        # the authority, and a normal-looking holder is still a holder. (Anomalies such
+        # as pid<0 sentinels, uninspectable descriptors and deleted dentries land here
+        # too; they were previously the only scan-side refusals.)
         return True
 
     probe = None
