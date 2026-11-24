@@ -60,6 +60,22 @@ def active_service_main_pid(unit: str) -> Optional[int]:
     return pid or None
 
 
+def _redact_setenv_argv(argv: list[str]) -> list[str]:
+    """``--setenv=KEY=VALUE`` with the value blanked.
+
+    A failing ``systemd-run`` raises ``CalledProcessError`` whose text embeds the
+    full argv; the harness env carries API keys, tokens and passwords, so the
+    values must never reach the error that propagates into agent context."""
+    redacted = []
+    for part in argv:
+        if part.startswith("--setenv="):
+            key, sep, _value = part[len("--setenv="):].partition("=")
+            if sep:
+                part = f"--setenv={key}=<redacted>"
+        redacted.append(part)
+    return redacted
+
+
 def launch_detached_service(
     argv: list[str],
     *,
@@ -104,8 +120,15 @@ def launch_detached_service(
         cmd.append(f"--setenv={key}={value}")
     cmd.append("--")
     cmd.extend(str(part) for part in argv)
-    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                   timeout=30)
+    try:
+        subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=30)
+    except subprocess.CalledProcessError as exc:
+        # The default error text embeds the full argv, including every secret
+        # passed via --setenv; re-raise with values redacted.
+        raise subprocess.CalledProcessError(
+            exc.returncode, _redact_setenv_argv(cmd), exc.output, exc.stderr,
+        ) from None
     deadline = time.time() + 15
     pid = None
     while time.time() < deadline:
