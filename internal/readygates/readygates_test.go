@@ -53,3 +53,36 @@ func TestDecideSharedTable(t *testing.T) {
 		})
 	}
 }
+
+func TestDecideMultipleBlockersOrder(t *testing.T) {
+	res := Decide(Input{
+		Platforms:           []PlatformState{{Enabled: true, Connected: false}},
+		CronStarted:         false,
+		HousekeepingStarted: false,
+	})
+	if res.Ready {
+		t.Fatal("expected not ready")
+	}
+	want := []string{"platforms", "cron", "housekeeping"}
+	if len(res.BlockedBy) != len(want) {
+		t.Fatalf("got %v want %v", res.BlockedBy, want)
+	}
+	for i := range want {
+		if res.BlockedBy[i] != want[i] {
+			t.Fatalf("got %v want %v", res.BlockedBy, want)
+		}
+	}
+}
+
+func TestDecideOptionalStatesIgnored(t *testing.T) {
+	res := Decide(Input{
+		Platforms:           []PlatformState{{Enabled: true, Connected: true}},
+		CronStarted:         true,
+		HousekeepingStarted: true,
+		McpDiscoveryState:   "failed",
+		BootPathSendsState:  "running",
+	})
+	if !res.Ready || len(res.BlockedBy) != 0 {
+		t.Fatalf("got %+v", res)
+	}
+}
