@@ -47,9 +47,9 @@ async def test_aborted_hygiene_retains_cooldown_across_restart_and_final_result(
             if setting is not None:
                 cfg["display"] = {"suppress_warning_notifications": setting}
             (tmp_path / "config.yaml").write_text(json.dumps(cfg))
-            assert await runner._handle_message(event) == "ok"
+            assert (await runner._handle_message(event)).startswith("ok")
             assert runner._run_agent.await_count == 1
-            warnings = [sent for sent in adapter.sent if "Shortening the conversation history failed" in sent["content"]]
+            warnings = [sent for sent in adapter.sent if "Context compression aborted" in sent["content"]]
             assert len(warnings) == (1 if iteration == 0 and setting is not True else 0)
             assert len(calls) == 1  # fresh runner still obeys persisted cooldown
             cooldown = db.get_compression_failure_cooldown(sid)
@@ -62,7 +62,7 @@ async def test_aborted_hygiene_retains_cooldown_across_restart_and_final_result(
         db.clear_compression_failure_cooldown(sid)
         runner, adapter, event = _make_cooldown_runner(monkeypatch, tmp_path, CompressorAgent, db, sid)
         (tmp_path / "config.yaml").write_text(json.dumps(cfg))
-        assert await runner._handle_message(event) == "ok"
+        assert (await runner._handle_message(event)).startswith("ok")
         assert len(calls) == 2
         assert db.get_compression_failure_cooldown(sid) is None
         assert all(state.persistent.hygiene_failure_streak == 0 for state in runner._sessions.values())

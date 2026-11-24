@@ -275,19 +275,24 @@ class GatewayTopicThreadsMixin:
         """Schedule Discord auto-thread rename from the auto-title background thread."""
         if not title:
             return
-        relay_info = None
         if not self._is_discord_auto_thread_lane(source):
             # Relay title turn: the source is the PARENT channel event (thread didn't exist at
             # ingest). The auto-title races the delivery that fills the send-result cache, so a
             # miss HERE is not a verdict: schedule whenever the SHAPE matches; the async rename
-            # lane polls the cache (bounded wait) and no-ops on a true miss.
-            relay_info = self._relay_auto_thread_info(source)
-            if relay_info is None and not self._is_relay_discord_channel_lane(source):
+            # lane polls the cache (bounded wait) and no-ops on a true miss. relay_info is NOT
+            # pre-captured: at schedule time the prospective stamp is known but the reply send
+            # has not completed, and the cache fallback may still hold a stale sibling's entry.
+            # Passing either in would skip _await_relay_auto_thread_info's wait-for-the-reply
+            # and rename a thread that was never (or wrongly) created.
+            if (
+                self._relay_auto_thread_info(source) is None
+                and not self._is_relay_discord_channel_lane(source)
+            ):
                 return
         self._schedule_rename_from_title_thread(
             source,
             lambda copied: self._rename_discord_auto_thread_for_session_title(
-                copied, session_id, title, relay_info=relay_info
+                copied, session_id, title
             ),
             "Discord semantic thread rename",
         )

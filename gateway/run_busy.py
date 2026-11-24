@@ -1034,6 +1034,16 @@ class GatewayBusySessionMixin:
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         from gateway.run import _AGENT_PENDING_SENTINEL, _build_media_placeholder
 
+        # Gateway wakes (delegation/background completions) have no external user
+        # identity. Admit them before the auth gate — they are not user messages
+        # and a reconstructed source without user_id must not drop them.
+        if getattr(event, "internal", False) and event.allow_gateway_control:
+            adapter = self._adapter_for_source(event.source)
+            if adapter and session_key in getattr(adapter, "_pending_messages", {}):
+                self._queue_or_replace_pending_event(session_key, event)
+                return True
+            return False  # base adapter queues silently behind the active turn
+
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;

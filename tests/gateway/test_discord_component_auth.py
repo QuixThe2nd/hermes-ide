@@ -23,12 +23,10 @@ import pytest
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
 from plugins.platforms.discord.adapter import (  # noqa: E402
-    ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
     UpdatePromptView,
     _component_check_auth,
-    _resolve_exec_approval_admin_gate,
 )
 
 
@@ -104,17 +102,6 @@ def test_component_check_explicit_allow_all_passes(monkeypatch, env_name, env_va
 # ---------------------------------------------------------------------------
 
 
-def test_exec_approval_view_accepts_role_allowlist():
-    view = ExecApprovalView(
-        session_key="sess-1",
-        allowed_user_ids={"11111"},
-        allowed_role_ids={42},
-    )
-    # Role-only user passes
-    assert view._check_auth(_interaction(99999, role_ids=[42])) is True
-    # Neither user nor role match: reject
-    assert view._check_auth(_interaction(99999, role_ids=[7])) is False
-
 
 def test_slash_confirm_view_accepts_role_allowlist():
     view = SlashConfirmView(
@@ -162,7 +149,6 @@ def test_model_picker_view_accepts_role_allowlist():
 @pytest.mark.parametrize(
     "view_factory",
     [
-        lambda: ExecApprovalView(session_key="s", allowed_user_ids=set()),
         lambda: SlashConfirmView(session_key="s", confirm_id="c", allowed_user_ids=set()),
         lambda: UpdatePromptView(session_key="s", allowed_user_ids=set()),
     ],
@@ -173,7 +159,6 @@ def test_views_empty_allowlists_reject_by_default(view_factory, monkeypatch):
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
     view = view_factory()
     assert view._check_auth(_interaction(99999)) is False
-
 
 def test_model_picker_view_empty_allowlists_reject_by_default(monkeypatch):
     monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
@@ -197,7 +182,7 @@ def test_model_picker_view_empty_allowlists_reject_by_default(monkeypatch):
 
 def test_view_empty_allowlists_allow_with_explicit_allow_all(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
-    view = ExecApprovalView(session_key="s", allowed_user_ids=set())
+    view = SlashConfirmView(session_key="s", confirm_id="c", allowed_user_ids=set())
     assert view._check_auth(_interaction(99999)) is True
 
 
@@ -219,58 +204,6 @@ def test_component_check_pairing_approved_user_passes(monkeypatch):
         assert _component_check_auth(interaction, set(), set()) is True
     mock_store.is_approved.assert_called_once_with("discord", "11111")
 
-
-# ---------------------------------------------------------------------------
-# Opt-in admin gate for exec-approval buttons (feat/discord-admin-exec-approval).
-# Default OFF: any admitted user can approve (the v0.16-restored behavior).
-# When `require_admin_for_exec_approval` is true, the clicker must ALSO be in
-# `allow_admin_from`. Fails closed (logged) when the toggle is on but no
-# admins are configured. Only ExecApprovalView is gated — other views stay
-# user-scope.
-# ---------------------------------------------------------------------------
-
-
-def test_admin_gate_resolver_on_parses_admins():
-    """Toggle true -> gate enabled, admins coerced from allow_admin_from."""
-    require_admin, admins = _resolve_exec_approval_admin_gate(
-        {"require_admin_for_exec_approval": True, "allow_admin_from": "111, 222"}
-    )
-    assert require_admin is True
-    assert admins == {"111", "222"}
-    # list form normalizes identically
-    _, admins_list = _resolve_exec_approval_admin_gate(
-        {"require_admin_for_exec_approval": "true", "allow_admin_from": [111, 222]}
-    )
-    assert admins_list == {"111", "222"}
-
-
-def test_exec_view_gate_on_non_admin_rejected():
-    """Gate on: admitted user who is NOT an admin is rejected at the button."""
-    view = ExecApprovalView(
-        session_key="s",
-        allowed_user_ids={"11111", "22222"},
-        require_admin=True,
-        admin_user_ids={"11111"},
-    )
-    # 22222 is admitted (in allowlist) but not an admin -> rejected.
-    assert view._check_auth(_interaction(22222)) is False
-
-
-def test_exec_view_gate_on_no_admins_fails_closed(caplog):
-    """Gate on but no admins configured -> nobody approves, logged once."""
-    import logging
-
-    view = ExecApprovalView(
-        session_key="s",
-        allowed_user_ids={"11111"},
-        require_admin=True,
-        admin_user_ids=set(),
-    )
-    with caplog.at_level(logging.WARNING):
-        assert view._check_auth(_interaction(11111)) is False
-    assert any(
-        "require_admin_for_exec_approval" in r.message for r in caplog.records
-    )
 
 
 def test_other_views_not_admin_gated():

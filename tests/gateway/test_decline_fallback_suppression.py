@@ -25,84 +25,6 @@ from gateway.relay.egress import EGRESS_DECLINE_CODE
 CODE_ONLY_DECLINE: Dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
 
 
-# ── exec approval ───────────────────────────────────────────────────────────
-
-
-class _Adapter:
-    """Records every plain text send the caller attempts."""
-
-    typed_command_prefix = "/"
-
-    def __init__(self, approval_result: SendResult) -> None:
-        self._approval_result = approval_result
-        self.text_sends: List[str] = []
-
-    def pause_typing_for_chat(self, chat_id: str) -> None:
-        return None
-
-    def resume_typing_for_chat(self, chat_id: str) -> None:
-        return None
-
-    async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
-        return self._approval_result
-
-    async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
-        self.text_sends.append(message)
-        return SendResult(success=True, message_id="m1")
-
-
-def _runner(adapter: _Adapter):
-    """A TurnRunner driven through its real _approval_notify_sync."""
-    from gateway.run_turn_runner import TurnRunner
-
-    runner = object.__new__(TurnRunner)
-    ctx = SimpleNamespace(
-        _status_adapter=adapter,
-        _status_chat_id="C1",
-        _status_thread_metadata={},
-        _session_key="sk1",
-        session_key="sk1",
-        source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1"),
-    )
-    runner._ctx = ctx
-
-    class _Fut:
-        def __init__(self, result): self._r = result
-        def result(self, timeout=None): return self._r
-
-    runner._schedule = lambda coro, _label: _Fut(asyncio.run(coro))
-    runner._close_native_stream_boundary = lambda _why: None
-    return runner
-
-
-APPROVAL = {"command": "rm -rf /", "description": "danger", "pattern_key": "k"}
-
-
-def test_exec_approval_decline_does_not_send_the_text_fallback():
-    from gateway.run_turn_runner import _ExecApprovalDeclined
-
-    adapter = _Adapter(
-        SendResult(success=False, error="declined", raw_response=CODE_ONLY_DECLINE)
-    )
-    runner = _runner(adapter)
-
-    # Raises (not returns) so `_await_gateway_decision`'s notify-failure path
-    # drops the CENTRAL approval entry and unblocks the waiting tool.
-    with pytest.raises(_ExecApprovalDeclined):
-        runner._approval_notify_sync(dict(APPROVAL))
-
-    assert adapter.text_sends == []
-
-
-def test_exec_approval_ORDINARY_failure_still_falls_back_to_text():
-    """The control. An ordinary failure MUST still reach the user."""
-    adapter = _Adapter(SendResult(success=False, error="slack 500"))
-    runner = _runner(adapter)
-
-    runner._approval_notify_sync(dict(APPROVAL))
-
-    assert len(adapter.text_sends) == 1
-    assert "rm -rf /" in adapter.text_sends[0]
 
 
 # ── slash confirm ───────────────────────────────────────────────────────────
@@ -190,10 +112,15 @@ def _card_runner(adapter: _CardAdapter):
     from gateway.run_turn_runner import TurnRunner
 
     runner = object.__new__(TurnRunner)
+
+    async def _deliver_visible(deliver):
+        return await deliver()
+
     runner._ctx = SimpleNamespace(
         source=SimpleNamespace(chat_id="C1", platform="slack"),
         _progress_reply_to=None,
         _progress_metadata={},
+        deliver_visible=_deliver_visible,
     )
 
     async def _fallback(st):
@@ -346,9 +273,14 @@ def test_task_card_fallback_edit_decline_does_not_send_progress_text():
     """R6-4: R5-4 covered the native card, not the editable-text fallback."""
     adapter = _EditAdapter()
     runner = object.__new__(__import__("gateway.run_turn_runner", fromlist=["x"]).TurnRunner)
+
+    async def _deliver_visible(deliver):
+        return await deliver()
+
     runner._ctx = SimpleNamespace(
         source=SimpleNamespace(chat_id="C1", platform="slack"),
         _progress_metadata={},
+        deliver_visible=_deliver_visible,
     )
     sent = []
     runner._send_progress_text = lambda st, text: sent.append(text)

@@ -202,22 +202,6 @@ def test_media_decline_does_not_fall_back_to_a_text_send(relay):
     assert connector.ops == ["send_media"]
 
 
-def test_exec_approval_decline_is_not_reported_as_op_unavailable(relay):
-    """"prompt op unavailable" is a WRONG reason that triggers a text fallback.
-
-    The whole observable: the refusal reaches the caller verbatim, exactly one
-    op is emitted, and the minted prompt is UNREGISTERED — a prompt left
-    pending for a card that was never delivered would silently capture the
-    user's next reply in that chat as an approval press.
-    """
-    adapter, connector = relay
-    result = asyncio.run(adapter.send_exec_approval("C1", "rm -rf /", "sk1"))
-
-    assert result.success is False
-    assert result.error == DECLINE_TEXT
-    assert connector.ops == ["prompt"]
-    assert adapter._pending_prompts == {}
-
 
 def test_slash_confirm_decline_is_not_reported_as_op_unavailable(relay):
     adapter, connector = relay
@@ -253,7 +237,7 @@ def test_a_delivered_prompt_stays_registered(relay, monkeypatch):
         return {"success": True, "message_id": "pm1"}
 
     monkeypatch.setattr(connector, "send_outbound", _ok)
-    result = asyncio.run(adapter.send_exec_approval("C1", "ls", "sk1"))
+    result = asyncio.run(adapter.send_slash_confirm("C1", "T", "m", "sk1", "cf1"))
 
     assert result.success is True
     assert connector.ops == ["prompt"]
@@ -413,8 +397,8 @@ def code_only_relay():
 def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_relay):
     """The REAL adapter's SendResult must carry the structured decline through.
 
-    Drives the production `send_exec_approval` -> `_send_prompt` path and feeds
-    its real SendResult to the real `_approval_send_outcome`, rather than
+    Drives the production `send_clarify` -> `_send_prompt` path and feeds
+    its real SendResult to the real `_prompt_send_outcome`, rather than
     hand-building a SimpleNamespace. With `raw_response` dropped, the verdict
     degrades to "failed" — the cue that triggers the text fallback into the
     chat the connector just refused.
@@ -423,7 +407,7 @@ def test_code_only_prompt_decline_reaches_the_caller_as_a_decline(code_only_rela
 
     adapter, connector = code_only_relay
     result = asyncio.run(
-        adapter.send_exec_approval("C1", "rm -rf /", "sk1", description="danger")
+        adapter.send_clarify("C1", "Which?", ["a", "b"], "cl1", "sk1")
     )
 
     assert result is not None
