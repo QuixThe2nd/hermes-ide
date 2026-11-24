@@ -4981,7 +4981,8 @@ def resolve_provider_client(
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
     )
     if _unknown_model_provider(provider):
-        logger.warning(
+        _log_once_debug(
+            _LOGGED_UNKNOWN_PROVIDER_KEYS, provider,
             "resolve_provider_client: unknown provider %r; failing closed "
             "(bundled model providers are limited to custom / custom:<name>, including custom:litellm)",
             provider,

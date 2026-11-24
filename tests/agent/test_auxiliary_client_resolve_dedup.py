@@ -7,6 +7,7 @@ lifetime of the process so a retry loop can't spam the logs.
 """
 
 import logging
+from types import SimpleNamespace
 
 import agent.auxiliary_client as ac
 from agent.auxiliary_client import resolve_provider_client
@@ -70,7 +71,13 @@ class TestUnhandledAuthTypeDedup:
         patched = dict(auth.PROVIDER_REGISTRY)
         patched["bogus_authtype"] = bogus
         monkeypatch.setattr(auth, "PROVIDER_REGISTRY", patched)
-
+        # Post-#719 the resolver fails closed unless the name also owns a
+        # registered model-provider profile; admit the bogus provider so the
+        # registry branch (the thing under test) is reachable again.
+        monkeypatch.setattr(
+            "providers.get_provider_profile",
+            lambda _name: SimpleNamespace(default_aux_model=None),
+        )
         with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
             client, model = resolve_provider_client("bogus_authtype", "")
             resolve_provider_client("bogus_authtype", "")  # repeat → suppressed
@@ -104,7 +111,11 @@ class TestUnsupportedOAuthDedup:
         patched = dict(auth.PROVIDER_REGISTRY)
         patched["bogus_oauth"] = bogus
         monkeypatch.setattr(auth, "PROVIDER_REGISTRY", patched)
-
+        # Same #719 admission gate as above.
+        monkeypatch.setattr(
+            "providers.get_provider_profile",
+            lambda _name: SimpleNamespace(default_aux_model=None),
+        )
         with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
             resolve_provider_client("bogus_oauth", "")
             resolve_provider_client("bogus_oauth", "")
