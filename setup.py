@@ -84,6 +84,10 @@ except ImportError:
 # Editable installs do not read it: ``build_editable`` never runs
 # ``bdist_wheel``. The filter source (``nix/lib.nix`` ``pythonSrc``) keeps
 # every root ``.py`` file, so the build sandbox sees the same set of files.
+# The stem filter is load-bearing, not cosmetic: jobs can drop scratch files in
+# a checkout root (e.g. a detached-service wrapper like
+# ``.hermes-agent-cli.out.run.py``); a dot-containing stem is not importable and
+# setuptools parses it as a dotted package path, failing the whole build.
 def _root_py_modules():
     try:
         names = os.listdir(_ROOT)
@@ -92,7 +96,7 @@ def _root_py_modules():
     return sorted(
         name[:-3]
         for name in names
-        if name.endswith(".py") and name != "setup.py"
+        if name.endswith(".py") and name != "setup.py" and name[:-3].isidentifier()
     )
 
 

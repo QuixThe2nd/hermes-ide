@@ -91,6 +91,7 @@
 .env.test.local
 .gemini/
 .hermes/
+.hermes-agent-cli.*
 .hermes-bootstrap-complete
 .hermes-harness.*
 .hermes-lane/
