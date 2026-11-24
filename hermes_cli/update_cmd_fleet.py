@@ -407,12 +407,13 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         warn_pending_manual_serves(startup=True, pending_manual=pending_manual)
 
 
-
 def _systemd_gateway_unit_listings(on_list_timeout=None):
     """Yield ``(scope, scope_cmd, list-units CompletedProcess)`` per systemd scope that answered.
 
     A missing systemctl skips the scope silently; a listing timeout skips it after
     ``on_list_timeout(scope, exc)`` (when given) so the other scope is still processed.
+    A non-zero listing is not parsed: a failed enumeration's stdout is not evidence
+    (``_restart_systemd_units_best_effort`` skips it the same way).
     """
     for scope, scope_cmd in _SYSTEMD_SCOPES:
         try:
@@ -422,6 +423,8 @@ def _systemd_gateway_unit_listings(on_list_timeout=None):
         except subprocess.TimeoutExpired as exc:
             if on_list_timeout is not None:
                 on_list_timeout(scope, exc)
+            continue
+        if result.returncode != 0:
             continue
         yield scope, scope_cmd, result
 

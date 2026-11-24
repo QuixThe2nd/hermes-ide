@@ -1078,6 +1078,25 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
+def test_failed_unit_listing_is_not_parsed_as_evidence(monkeypatch):
+    """A scope whose list-units failed must not contribute units to restart."""
+    monkeypatch.setattr(
+        update_cmd_fleet, "_SYSTEMD_SCOPES", (("user", ["systemctl", "--user"]),)
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_systemctl",
+        lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="garbage.service\n"),
+    )
+    assert list(update_cmd_fleet._systemd_gateway_unit_listings()) == []
+
+    monkeypatch.setattr(
+        update_cmd_fleet, "_systemctl",
+        lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="real.service\n"),
+    )
+    listings = list(update_cmd_fleet._systemd_gateway_unit_listings())
+    assert [row[2].stdout for row in listings] == ["real.service\n"]
+
+
 def test_pending_restart_leaves_unacknowledged_manual_gateway_untouched(monkeypatch):
     """Catch-up must not resurrect the old stop-then-restart lifecycle."""
     from hermes_cli import gateway
