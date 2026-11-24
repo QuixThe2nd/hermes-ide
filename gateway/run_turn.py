@@ -1624,7 +1624,7 @@ class GatewayTurnMixin:
         logger.info(
             "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
             _platform_name, source.chat_id or "unknown", session_key or "unknown",
-            time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
+            time.perf_counter() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 
         # Successful turn: clear the consecutive-restart stuck-loop counter and resume_pending (set
@@ -1633,6 +1633,7 @@ class GatewayTurnMixin:
             await self._clear_restart_failure_count(session_key)
             try:
                 await self.async_session_store.clear_resume_pending(session_key)
+                await self._clear_resume_inbound_metadata(session_key)
             except Exception as _e:
                 logger.debug("clear_resume_pending failed for %s: %s", session_key, _e)
 
@@ -2212,13 +2213,9 @@ class GatewayTurnMixin:
 
         from gateway.run import (
             HygieneTurnHoldExceeded,
-            _exempt_from_empty_response_normalization,
             _is_forced_recovery_control_outcome,
             _is_gateway_hidden_reasoning_incomplete_turn,
             _is_gateway_restart_control_outcome,
-            _normalize_empty_agent_response,
-            _sanitize_gateway_final_response,
-            _should_clear_resume_pending_after_turn,
             logger,
         )
 
@@ -4104,44 +4101,19 @@ class GatewayTurnMixin:
                     _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
                 return None
 
+            # Shape the raw agent result through the shared boundary: sentinel/silence
+            # handling (a human turn's bare marker gets the visible fallback; a queued
+            # chain's TERMINAL turn owns the verdict), "(empty)" normalization, resume
+            # clears, and identity-guarded post-compression session_id propagation.
             response = agent_result.get("final_response") or ""
-            # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
-            # ("Codex response remained incomplete after 3 continuation
-            # attempts") doubles as final_response, so it would be delivered
-            # verbatim into the channel — where peer agents can ingest it as a
-            # completed assistant turn (#51628). Blank it here so the normal
-            # empty-response handling (and the suppression below) applies.
-            if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
-                response = ""
-            try:
-                from gateway.response_filters import is_intentional_silence_agent_result
-                _intentional_silence = is_intentional_silence_agent_result(
-                    agent_result, response,
-                )
-            except Exception:
-                _intentional_silence = False
-
-            # Convert the agent's internal "(empty)" sentinel into a
-            # user-friendly message.  "(empty)" means the model failed to
-            # produce visible content after exhausting all retries (nudge,
-            # prefill, empty-retry, fallback).  Sending the raw sentinel
-            # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)" and not _intentional_silence:
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
-            agent_messages = agent_result.get("messages", [])
             _response_ended_at = time.perf_counter()
+            response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
+                agent_result, source, history, session_entry, session_key,
+                _quick_key, run_generation, _run_start_session_id, _platform_name,
+                _msg_start_time, persist_user_display_kind=persist_user_display_kind,
+            )
             _response_time = _response_ended_at - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
-            _resp_len = len(response)
-            logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
-            )
 
             # NOTE: the cross-process cache-coherence re-baseline
             # (_refresh_agent_cache_message_count) is intentionally deferred
@@ -4149,70 +4121,6 @@ class GatewayTurnMixin:
             # must include the first-turn `session_meta` marker row and the
             # compression session_id swap, both of which happen later.  See
             # the call site after the `update_session(...)` write.
-
-            # Successful turn — clear any stuck-loop counter for this session.
-            # This ensures the counter only accumulates across CONSECUTIVE
-            # restarts where the session was active (never completed).
-            #
-            # Also clear the resume_pending flag (set by drain-timeout
-            # shutdown) — the turn ran to completion, so recovery
-            # succeeded and subsequent messages should no longer receive
-            # the restart-interruption system note.
-            if session_key and _should_clear_resume_pending_after_turn(agent_result):
-                await self._clear_restart_failure_count(session_key)
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                    await self._clear_resume_inbound_metadata(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
-
-            # Normalize empty responses: surface errors, partial failures, and
-            # the case where agent did work but returned no text. Fix for #18765.
-            # A forced-recovery CONTROL outcome is exempt by contract: the
-            # failed recovery must surface NO prose to the forced victim. So
-            # is a terminal gateway-restart control outcome: its silence is
-            # the contract, and the restart lifecycle UI is the only
-            # user-facing output for it.
-            if not _intentional_silence and not _exempt_from_empty_response_normalization(
-                agent_result
-            ):
-                response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
-                )
-                response = _sanitize_gateway_final_response(source.platform, response)
-
-            # Ordering contract: the agent thread already updated the contextvar
-            # in conversation_compression.py; propagate to SessionEntry + _save().
-            # If the agent's session_id changed during compression, update
-            # session_entry so transcript writes below go to the right session.
-            if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-                if session_entry.session_id == _run_start_session_id:
-                    session_entry.session_id = agent_result["session_id"]
-                    # The held turn lease follows the rotation: the transcript
-                    # persistence below writes to the NEW id, so the
-                    # serialization boundary must move with it or an alias
-                    # key resolving the fresh child could interleave (#64934).
-                    self._rebind_turn_lease(
-                        _quick_key, run_generation, session_entry.session_id
-                    )
-                    await self.async_session_store._save()
-                    await self.async_session_store._record_gateway_session_peer(
-                        session_entry.session_id,
-                        session_key,
-                        source,
-                    )
-                else:
-                    logger.info(
-                        "Skipping agent-result session split sync for %s because "
-                        "the session binding moved from %s to %s before "
-                        "compression finished",
-                        session_key or "?",
-                        _run_start_session_id,
-                        session_entry.session_id,
-                    )
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
             # Mattermost requires explicit per-platform opt-in because this is
