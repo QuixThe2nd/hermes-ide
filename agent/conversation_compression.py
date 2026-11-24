@@ -315,7 +315,7 @@ def _refresh_agent_tool_definitions(agent) -> bool:
     when new tools were added. Never raises: tool staleness must not fail
     a compaction.
     """
-    from tools.mcp_tool import refresh_agent_mcp_tools
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     added = refresh_agent_mcp_tools(agent, content_aware=True)
     if added:
