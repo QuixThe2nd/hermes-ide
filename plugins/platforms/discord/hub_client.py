@@ -401,6 +401,13 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
             # config watcher needs travel in this attach payload over the same-user
             # socket; none of it is logged or persisted.
             gate_credential = platform_gate_env("LITELLM_API_KEY") or None
+            # Same discipline for the allow/deny gates: snapshot them HERE, under this
+            # profile's scope. The hub-side adapter has no profile scope, so its per-adapter
+            # gate snapshot travels in the attach payload; explicit empty values keep a
+            # hub-side miss from borrowing the hub process's default-profile environment,
+            # and missing keys fall through to config.extra (per-profile YAML).
+            from plugins.platforms.discord.adapter import _GATE_ENV_KEYS
+            gate_env = {key: platform_gate_env(key) for key in _GATE_ENV_KEYS}
             managed_dir = managed_scope.get_managed_dir()
             reaction_gate_reload = {
                 "config_path": str(get_hermes_home() / "config.yaml"),
@@ -416,6 +423,7 @@ class DiscordHubClientAdapter(HubOverlapClientMixin, BasePlatformAdapter):
                 "profile_routes": profile_routes,
                 "config": self.config.to_dict(),
                 "gate_credential": gate_credential,
+                "gate_env": gate_env,
                 "reaction_gate_reload": reaction_gate_reload,
                 # The hub-side adapter pins per-owner state (thread participation)
                 # to this home; resolved under the owning profile's scope above.

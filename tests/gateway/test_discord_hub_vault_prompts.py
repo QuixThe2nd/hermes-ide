@@ -391,7 +391,8 @@ def test_hub_socket_roundtrip_returns_synthetic_submission(tmp_path, monkeypatch
                         "answer": {"identifier": IDENTIFIER, "password": PASSWORD}}
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = FakeHubAdapter()
 
         monkeypatch.setattr(server, "_attach_adapter", fake_attach)
@@ -448,7 +449,8 @@ def test_hub_socket_disconnect_wakes_waiter_and_fails_closed(tmp_path, monkeypat
                         "answer": {"identifier": IDENTIFIER, "password": PASSWORD}}
 
         async def fake_attach(generation_id, config_data, profile, profile_routes,
-                              gate_credential=None, reaction_gate_reload=None, hermes_home=None):
+                              gate_credential=None, reaction_gate_reload=None, hermes_home=None,
+                              gate_env=None):
             server._adapters[_token_key(config_data["token"])] = HangingHubAdapter()
 
         monkeypatch.setattr(server, "_attach_adapter", fake_attach)
