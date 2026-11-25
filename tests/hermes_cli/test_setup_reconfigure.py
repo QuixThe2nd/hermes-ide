@@ -169,34 +169,37 @@ class TestFreshInstall:
 
 
     def test_reconfigure_on_fresh_install_falls_through(self, fresh_install):
+        """--reconfigure is a no-op on a fresh install: the first-time mode picker still
+        runs and the picked mode executes. Rebased for the retirement of the first-time
+        Quick Setup (Nous Portal) mode (bdb18bf6c0d, #763): menu index 0 is now Full
+        Setup, which falls through to ``_run_full_setup`` as a first-time run."""
         args = _make_setup_args(reconfigure=True)
 
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
-                first="hermes_cli.setup_quick._run_first_time_quick_setup",
+                full="hermes_cli.setup._run_full_setup",
+                summary="hermes_cli.setup._print_setup_summary",
             )
             from hermes_cli.setup import run_setup_wizard
-            from hermes_cli import setup as setup_mod
 
-            section_indexes = []
-            m["first"].side_effect = lambda *_args: section_indexes.append(
-                setup_mod._SETUP_NAVIGATION.get().section_index
-            )
             run_setup_wizard(args)
 
         m["prompt"].assert_called_once()
-        m["first"].assert_called_once()
-        assert section_indexes == [0]
+        m["full"].assert_called_once()
+        assert m["full"].call_args.kwargs.get("is_existing") is False
 
     def test_blank_slate_runs_inside_navigation_step(self, fresh_install):
+        """Blank Slate is menu index 1 since the Quick Setup (Nous Portal) mode was
+        retired (bdb18bf6c0d, #763); its runner still executes inside navigation
+        section 0, not before/after the wizard steps."""
         args = _make_setup_args()
 
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 1}),
                 blank="hermes_cli.setup_quick._run_blank_slate_setup",
             )
             from hermes_cli import setup as setup_mod
