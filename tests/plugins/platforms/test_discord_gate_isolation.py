@@ -59,6 +59,9 @@ def _adapter(extra: dict | None = None) -> DiscordAdapter:
     adapter._gate_env_snapshot = None
     adapter._allowed_user_ids = set()
     adapter._allowed_role_ids = set()
+    # Mirrors __init__'s in-process default: no hub attach payload, so
+    # _snapshot_gate_env falls through to the live profile scope (#914).
+    adapter._hub_gate_env = None
     return adapter
 
 
