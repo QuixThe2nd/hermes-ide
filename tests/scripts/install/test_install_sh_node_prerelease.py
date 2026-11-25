@@ -111,5 +111,3 @@ def test_downloaded_tree_is_probed_before_it_replaces_anything() -> None:
     # The probe has to run before the tree is moved into place, or a bad build
     # has already clobbered a working managed Node.
     assert reject < text.index('mv "$extracted_dir" "$HERMES_HOME/node"', probe)
-
-

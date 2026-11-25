@@ -39,4 +39,3 @@ def test_install_sh_repairs_existing_managed_node_on_rerun() -> None:
 
     # No-op guard so it's safe to call when there is no managed Node.
     assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
-
