@@ -60,13 +60,15 @@ def _print_macos_fda_tip() -> None:
 
 def _blank_slate_minimal_toolsets(config: dict):
     """Write the minimal toolset state for a Blank Slate install: only ``file``, ``terminal``,
-    ``vision`` (``read_file`` can't read images), ``skills`` (the seeded ``hermes-agent`` skill
-    needs ``skill_view``) and ``skills_list`` (atomic opt-in since #479 — the model-facing skill
-    catalog the ``skills`` bundle used to carry) stay on. Two layers enforce it:
-    ``platform_toolsets["cli"]`` (explicit, so defaults aren't re-expanded) and
+    ``vision`` (``read_file`` can't read images) and ``skills`` (the seeded ``hermes-agent``
+    skill needs ``skill_view``) stay on. ``skills_list`` stays OFF: #479 made the model-facing
+    skill catalog an explicit operator opt-in in every standard posture, so a first run must not
+    silently enable it (``hermes skills list`` lists skills without the tool). Two layers enforce
+    the posture: ``platform_toolsets["cli"]`` (explicit, so defaults aren't re-expanded) and
     ``agent.disabled_toolsets`` (hard-suppression applied last in ``_get_platform_tools``,
-    overriding any default toolset recovery)."""
-    keep = {"file", "terminal", "vision", "skills", "skills_list"}
+    overriding any default toolset recovery; ``hermes tools`` reconciles a later explicit
+    opt-in out of that list)."""
+    keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
         from toolsets import TOOLSETS, resolve_toolset

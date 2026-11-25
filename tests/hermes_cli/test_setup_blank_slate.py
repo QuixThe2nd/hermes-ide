@@ -64,8 +64,49 @@ class TestBlankSlateMinimalToolsets:
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
         assert names == ["patch", "process_manage", "read_file", "search_files",
-                         "skill_manage", "skill_view", "skills_list",
+                         "skill_manage", "skill_view",
                          "terminal", "vision_analyze", "write_file"]
+        # #479: model-facing skill listing is opt-in in every standard
+        # posture — Blank Slate keeps skill_view/skill_manage but must NOT
+        # re-expose skills_list (explicit `hermes tools` opt-in only).
+        assert "skills_list" not in names
+
+    def test_skills_list_only_after_explicit_opt_in(self, monkeypatch):
+        """#479 regression: Blank Slate is a standard posture, so the
+        model-facing skills_list tool stays off the schema until the user
+        opts in through the supported ``hermes tools`` write — which lists
+        ``skills_list`` in ``platform_toolsets`` and clears it from
+        ``agent.disabled_toolsets`` (the #49995 reconcile). Enabling the
+        ``skills`` bundle alone must not resurrect it.
+        """
+        import model_tools
+        from tools.registry import registry as _tool_registry
+        _entry = _tool_registry.get_entry("vision_analyze")
+        monkeypatch.setattr(_entry, "check_fn", lambda: True)
+        from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
+
+        def schema_names(cfg):
+            enabled = sorted(_get_platform_tools(cfg, "cli"))
+            disabled = cfg.get("agent", {}).get("disabled_toolsets") or []
+            defs = model_tools.get_tool_definitions(
+                enabled_toolsets=enabled,
+                disabled_toolsets=disabled,
+                quiet_mode=True,
+            )
+            return {
+                (d.get("function") or {}).get("name") or d.get("name") for d in defs
+            }
+
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        assert "skills_list" not in schema_names(cfg)
+
+        # Explicit opt-in through the real supported writer (the same call
+        # `hermes tools` makes on save).
+        enabled = _get_platform_tools(cfg, "cli") | {"skills_list"}
+        _save_platform_tools(cfg, "cli", enabled)
+        names = schema_names(cfg)
+        assert {"skills_list", "skill_view", "skill_manage"} <= names
 
 
 class TestBlankSlateMinimizeConfig:
@@ -125,7 +166,7 @@ class TestBlankSlateFork:
         setup_quick._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
 
         # Minimal baseline was applied, walkthrough was NOT run.
-        assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "skills_list",
+        assert cfg["platform_toolsets"]["cli"] == ["file", "skills",
                                                    "terminal", "vision"]
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
