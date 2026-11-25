@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -87,9 +89,10 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     """Every gauge emitted in the runtime snapshot must also be registered in the
     observable-gauge metric_names list, or the OTLP exporter never observes it.
 
-    This asserts the vocabulary-registration invariant documented in
-    website/docs/developer-guide/gateway-monitoring.md: an emitted-but-unregistered gauge is
-    silently dropped. Regression guard for background_work / cron additions.
+    This asserts the vocabulary-registration invariant declared at
+    _OBSERVABLE_METRIC_NAMES in agent/monitoring/gateway_health_export.py: an
+    emitted-but-unregistered gauge is silently dropped. Regression guard for
+    background_work / cron additions.
     """
     from agent.monitoring import gateway_health_export
 
@@ -125,12 +128,20 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"
 
 
-def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():
-    from pathlib import Path
+def test_monitoring_status_output_distinguishes_relay_health_scope_and_terminal_flush(capsys):
+    """The retired developer-guide page's guidance survives in the user-facing
+    `hermes monitoring status` output with its scope stated accurately:
+    Relay's platform gauges project Hermes Agent-owned Relay transport health
+    rather than the authoritative shared connector/platform state, and
+    terminal cron events request a best-effort flush of up to one second.
+    Captured command output, not source text; no service is started."""
+    from hermes_cli.main_agent_cmds import cmd_monitoring
 
-    text = Path("website/docs/developer-guide/gateway-monitoring.md").read_text(encoding="utf-8")
+    cmd_monitoring(SimpleNamespace(monitoring_action="status"))
 
-    assert "Hermes Agent-owned Relay transport health" in text
-    assert "authoritative shared connector/platform state" in text
-    assert "up to one second" in text
-    assert "terminal" in text
+    out = capsys.readouterr().out
+    assert "Hermes Agent-owned Relay transport health" in out
+    assert "authoritative shared connector/platform state" in out
+    assert "request a best-effort flush" in out
+    assert "up to one second" in out
+    assert "terminal" in out.lower()
