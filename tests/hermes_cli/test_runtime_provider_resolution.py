@@ -1511,13 +1511,6 @@ def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
 
 
 # ------------------------------------------------------------------
-# fix #2562 — resolve_provider("custom") must not remap to "openrouter"
-# ------------------------------------------------------------------
-
-    assert resolved["api_key"] == "test-or-key"
-
-
-# ------------------------------------------------------------------
 # fix #7828 — custom_providers model field must propagate to runtime
 # ------------------------------------------------------------------
 
