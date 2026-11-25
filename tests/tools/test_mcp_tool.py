@@ -72,13 +72,14 @@ class TestFilterMCPChildren:
 
         cmdlines = {
             101: [
+                # jdtls via the wrapper script an eclipse.jdt.ls install produces
                 "/usr/bin/python3",
-                "-m",
-                "tui_gateway.slash_worker",
-                "--session-key",
-                "abc",
+                "/opt/jdtls/eclipse.jdt.ls/bin/jdtls",
+                "-data",
+                "/tmp/jdtls-workspace",
             ],
             102: [
+                # jdtls via the equinox launcher jar
                 "/usr/bin/java",
                 "-jar",
                 "/opt/jdtls/plugins/org.eclipse.equinox.launcher_1.7.0.jar",
