@@ -91,12 +91,29 @@ class TestEmitsOnRealProblems:
 class TestSkipsRemoteBackends:
     """Remote backends have their own probe; this one must stay out."""
 
-    def test_docker_returns_empty(self, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        # Even with a broken local env, docker must emit nothing.
-        monkeypatch.setattr(env_probe, "_python_version_of", lambda b: None)
-        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
-        assert env_probe.get_environment_probe_line() == ""
+    def test_plugin_remote_backend_returns_empty(self, monkeypatch):
+        from agent import terminal_env_registry as reg
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+        class _RemoteBox(TerminalEnvironmentProvider):
+            name = "remotebox"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, *, cwd, timeout, task_id="default", **kwargs):
+                raise AssertionError("classification-only provider")
+
+        reg._reset_for_tests()
+        try:
+            reg.register_provider(_RemoteBox())
+            monkeypatch.setenv("TERMINAL_ENV", "remotebox")
+            # Even with a broken local env, a remote backend must emit nothing.
+            monkeypatch.setattr(env_probe, "_python_version_of", lambda b: None)
+            monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+            assert env_probe.get_environment_probe_line() == ""
+        finally:
+            reg._reset_for_tests()
 
 
     def test_ssh_returns_empty(self, monkeypatch):

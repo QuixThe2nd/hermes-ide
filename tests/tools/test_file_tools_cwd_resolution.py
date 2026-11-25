@@ -23,6 +23,29 @@ import pytest
 import tools.file_tools as ft
 import tools.file_tools_paths as ftp
 import tools.terminal_tool as terminal_tool
+from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+
+class _ContainerBox(TerminalEnvironmentProvider):
+    """Registered container backend so _is_container_backend classifies it."""
+
+    name = "containbox"
+    is_container = True
+
+    def is_available(self):
+        return True
+
+    def create_environment(self, *, cwd, timeout, task_id="default", **kwargs):
+        raise AssertionError("classification-only provider")
+
+
+@pytest.fixture(autouse=True)
+def _clean_plugin_registry():
+    from agent import terminal_env_registry as reg
+
+    reg._reset_for_tests()
+    yield
+    reg._reset_for_tests()
 
 
 @pytest.fixture
@@ -92,18 +115,21 @@ def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
 
 @pytest.mark.require_symlinks
 def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
-    """Docker paths are sandbox-local and must not be host-dereferenced.
+    """Container paths are sandbox-local and must not be host-dereferenced.
 
     A user may have a host symlink at a container-looking path such as
-    ``/workspace/projects``. For Docker file ops, resolving that symlink on the
-    host rewrites the path before Docker sees it, making file tools and terminal
-    disagree about where the file lives.
+    ``/workspace/projects``. For container file ops, resolving that symlink on
+    the host rewrites the path before the backend sees it, making file tools
+    and terminal disagree about where the file lives.
     """
+    from agent import terminal_env_registry as reg
+
+    reg.register_provider(_ContainerBox())
     host_project = tmp_path / "host-project"
     host_project.mkdir()
     container_mount = tmp_path / "workspace-projects"
     container_mount.symlink_to(host_project, target_is_directory=True)
-    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "containbox"})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})
 
     container_path = container_mount / "oilsands-sim" / "README.md"
@@ -122,12 +148,15 @@ def test_container_path_normalization_uses_posix_path_syntax():
 
 @pytest.mark.require_symlinks
 def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypatch):
-    """Relative Docker paths should stay under the container cwd textually."""
+    """Relative container paths stay under the container cwd textually."""
+    from agent import terminal_env_registry as reg
+
+    reg.register_provider(_ContainerBox())
     host_project = tmp_path / "host-project"
     host_project.mkdir()
     container_mount = tmp_path / "workspace-projects"
     container_mount.symlink_to(host_project, target_is_directory=True)
-    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "containbox"})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})
     terminal_tool.record_session_cwd("default", str(container_mount))
 

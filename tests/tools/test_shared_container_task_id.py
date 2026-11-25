@@ -11,12 +11,12 @@ every other task_id collapses back to ``"default"``.
 
 If you change the collapse logic, update both the helper and these
 tests -- see `hermes-agent-dev` skill, "Why do subagents get their own
-containers?" section, and the Container lifecycle paragraph under
-Docker Backend in ``website/docs/user-guide/configuration.md``.
+containers?" section.
 """
 
 import pytest
 
+from agent.terminal_env_provider import TerminalEnvironmentProvider
 from tools import terminal_tool
 
 
@@ -104,11 +104,24 @@ def test_subagent_collapses_onto_parent_session(monkeypatch):
 
 def test_rl_override_wins_over_session_key(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
-    terminal_tool.register_task_env_overrides("tb2-z", {"docker_image": "z:1"})
+    terminal_tool.register_task_env_overrides("tb2-z", {"image": "z:1"})
     try:
         assert terminal_tool._resolve_container_task_id("tb2-z") == "tb2-z"
     finally:
         terminal_tool.clear_task_env_overrides("tb2-z")
+
+
+def test_retired_backend_image_override_key_does_not_isolate(monkeypatch):
+    # The backend-specific override keys (docker_image and siblings) were
+    # retired with their backends (c7442dd1745, #708); only the generic
+    # ``image``/``env_type`` keys pin a per-task sandbox. Leftover RL-harness
+    # registrations of the old keys must not resurrect isolation.
+    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
+    terminal_tool.register_task_env_overrides("tb2-legacy", {"docker_image": "z:1"})
+    try:
+        assert terminal_tool._resolve_container_task_id("tb2-legacy") == "session:sess-A"
+    finally:
+        terminal_tool.clear_task_env_overrides("tb2-legacy")
 
 
 def test_no_session_key_still_defaults(monkeypatch):
@@ -165,76 +178,68 @@ def test_contextvar_session_key_wins_over_environ(monkeypatch):
         clear_session_vars(tokens)
 
 
-# --- Persistent Docker is PROFILE-scoped, not session-scoped ------------------
+# --- Retired built-in docker knobs no longer reshape identity -----------------
 #
-# Product contract: TERMINAL_ENV=docker + container_persistent:true means ONE
-# long-lived container per Hermes profile, shared by every session of that
-# profile (CLI, gateway chats, WebUI). The a270c4ade session-key fallback must
-# NOT fragment persistent Docker into per-session containers; it exists for
-# backends where cross-session reuse is dangerous (SSH).
+# The built-in docker backend — and with it the profile-scoped persistent
+# container and the trusted-profiles shared-container key — was removed
+# (c7442dd1745, #708). Leftover TERMINAL_ENV=docker / TERMINAL_CONTAINER_
+# PERSISTENT / TERMINAL_DOCKER_SHARED_CONTAINER_KEY values in a user's env or
+# config must not reintroduce cross-session sharing: identity stays
+# session-scoped (the SSH-leak isolation) or "default" (CLI), and no
+# "profile:" / "shared:" keys are minted.
 
 
-def _persistent_docker(monkeypatch):
+def _docker_residue(monkeypatch, persistent="true", shared_key=None):
     monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", persistent)
+    if shared_key is not None:
+        monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", shared_key)
 
 
-def test_persistent_docker_default_profile_shares_default_container(monkeypatch):
-    # A gateway session of the default profile lands on the SAME container key
-    # CLI mode uses — "default" — not a per-session key.
+def test_docker_residue_keeps_session_scoping(monkeypatch):
+    # A gateway session stays in its own slot even with persistent-docker and
+    # shared-key residue: no collapse to "default", no "profile:"/"shared:" key.
     from gateway.session_context import clear_session_vars, set_session_vars
 
-    _persistent_docker(monkeypatch)
-    tokens = set_session_vars(session_key="agent:main:discord:dm:123", profile="")
-    try:
-        assert terminal_tool._resolve_container_task_id(None) == "default"
-    finally:
-        clear_session_vars(tokens)
-
-
-def test_persistent_docker_two_sessions_same_profile_share_container(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
-
-    _persistent_docker(monkeypatch)
+    _docker_residue(monkeypatch, shared_key="team/workspace")
     tokens = set_session_vars(session_key="agent:main:discord:dm:123", profile="work")
     try:
-        a = terminal_tool._resolve_container_task_id(None)
+        key = terminal_tool._resolve_container_task_id(None)
     finally:
         clear_session_vars(tokens)
-    tokens = set_session_vars(session_key="agent:main:discord:guild:456", profile="work")
-    try:
-        b = terminal_tool._resolve_container_task_id(None)
-    finally:
-        clear_session_vars(tokens)
-    assert a == b == "profile:work"
+    assert key == "session:agent:main:discord:dm:123"
 
 
-def test_persistent_docker_distinct_profiles_get_distinct_containers(monkeypatch):
+def test_docker_residue_cli_lands_on_default(monkeypatch):
+    # CLI (no session key) lands on "default"; the shared-container opt-in is
+    # gone with the backend, so no "shared:" unification happens.
+    _docker_residue(monkeypatch, shared_key="team/workspace")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    assert terminal_tool._resolve_container_task_id(None) == "default"
+
+
+def test_docker_residue_never_keys_by_profile(monkeypatch):
+    # Two sessions of one profile and one of another each keep their own
+    # session slot — nothing keys by profile under docker residue.
     from gateway.session_context import clear_session_vars, set_session_vars
 
-    _persistent_docker(monkeypatch)
-    tokens = set_session_vars(session_key="sess-X", profile="work")
-    try:
-        a = terminal_tool._resolve_container_task_id(None)
-    finally:
-        clear_session_vars(tokens)
-    tokens = set_session_vars(session_key="sess-X", profile="research")
-    try:
-        b = terminal_tool._resolve_container_task_id(None)
-    finally:
-        clear_session_vars(tokens)
-    assert a == "profile:work"
-    assert b == "profile:research"
-    assert a != b
+    _docker_residue(monkeypatch)
+    keys = []
+    for session_key, profile in (("s1", "work"), ("s2", "work"), ("s3", "research")):
+        tokens = set_session_vars(session_key=session_key, profile=profile)
+        try:
+            keys.append(terminal_tool._resolve_container_task_id(None))
+        finally:
+            clear_session_vars(tokens)
+    assert keys == ["session:s1", "session:s2", "session:s3"]
 
 
-def test_nonpersistent_docker_keeps_session_scoping(monkeypatch):
-    # container_persistent:false is an explicit isolation statement (#82731) —
-    # the profile-scope gate must not fire there.
+def test_nonpersistent_docker_residue_keeps_session_scoping(monkeypatch):
+    # Same inertness with the persistence knob off: no plugin backend declares
+    # per-session isolation for the retired name, so session scoping holds.
     from gateway.session_context import clear_session_vars, set_session_vars
 
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+    _docker_residue(monkeypatch, persistent="false")
     tokens = set_session_vars(session_key="sess-A", profile="work")
     try:
         assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
@@ -255,51 +260,91 @@ def test_ssh_backend_keeps_session_scoping(monkeypatch):
         clear_session_vars(tokens)
 
 
-# --- Trusted-profiles shared container opt-in (#84671) ------------------------
+# --- Per-session isolation for plugin backends ---------------------------------
+#
+# A plugin backend declaring ``session_isolated_when_nonpersistent`` gets
+# per-task identities when the persistence knob is off — the surviving home of
+# the #82731 "non-persistent means not shared" contract. Persistent mode (the
+# default) keeps the shared slot so subagents and sessions share one sandbox.
 
 
-def test_shared_key_unifies_profiles(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+class _DummySandbox(TerminalEnvironmentProvider):
+    """Minimal registered provider used to drive the classification flags."""
 
-    _persistent_docker(monkeypatch)
-    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
-    tokens = set_session_vars(session_key="s1", profile="work")
+    name = "dummysbx"
+    is_container = True
+    session_isolated_when_nonpersistent = True
+
+    def is_available(self):
+        return True
+
+    def create_environment(self, *, cwd, timeout, task_id="default", **kwargs):
+        raise AssertionError("classification-only provider; never instantiated")
+
+
+class _PlainSandbox(_DummySandbox):
+    name = "dummyplain"
+    session_isolated_when_nonpersistent = False
+
+
+@pytest.fixture(autouse=True)
+def _clean_plugin_registry():
+    from agent import terminal_env_registry as reg
+
+    reg._reset_for_tests()
+    yield
+    reg._reset_for_tests()
+
+
+def _register_provider(monkeypatch, name, *, session_isolated, persistent):
+    from agent import terminal_env_registry as reg
+
+    reg.register_provider(_DummySandbox() if session_isolated else _PlainSandbox())
+    monkeypatch.setenv("TERMINAL_ENV", name)
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", persistent)
+
+
+def test_plugin_nonpersistent_mode_gives_each_task_its_own_key(monkeypatch):
+    _register_provider(
+        monkeypatch, "dummysbx", session_isolated=True, persistent="false"
+    )
+    assert terminal_tool._resolve_container_task_id("rollout-7") == "rollout-7"
+
+
+def test_plugin_isolation_alias_collapses_subagent_onto_parent(monkeypatch):
+    # delegate_agent children register an alias so they still share the parent
+    # rollout's sandbox under per-session isolation.
+    _register_provider(
+        monkeypatch, "dummysbx", session_isolated=True, persistent="false"
+    )
+    terminal_tool.register_container_alias("subagent-1", "rollout-7")
     try:
-        a = terminal_tool._resolve_container_task_id(None)
+        assert terminal_tool._resolve_container_task_id("subagent-1") == "rollout-7"
     finally:
-        clear_session_vars(tokens)
-    tokens = set_session_vars(session_key="s2", profile="research")
-    try:
-        b = terminal_tool._resolve_container_task_id(None)
-    finally:
-        clear_session_vars(tokens)
-    assert a == b == "shared:team/workspace"
+        with terminal_tool._container_alias_lock:
+            terminal_tool._container_aliases.pop("subagent-1", None)
 
 
-def test_shared_key_applies_to_cli_no_session(monkeypatch):
-    # CLI (no session key) must land in the same shared container as gateway
-    # sessions, or the opt-in splits the container it exists to unify.
-    _persistent_docker(monkeypatch)
-    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+def test_plugin_persistent_mode_collapses_to_default(monkeypatch):
+    _register_provider(
+        monkeypatch, "dummysbx", session_isolated=True, persistent="true"
+    )
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
-    assert terminal_tool._resolve_container_task_id(None) == "shared:team/workspace"
+    assert terminal_tool._resolve_container_task_id("subagent-9") == "default"
 
 
-def test_empty_shared_key_keeps_profile_scoping(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
-
-    _persistent_docker(monkeypatch)
-    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "")
-    tokens = set_session_vars(session_key="s1", profile="work")
-    try:
-        assert terminal_tool._resolve_container_task_id(None) == "profile:work"
-    finally:
-        clear_session_vars(tokens)
+def test_plugin_without_isolation_flag_never_splits_tasks(monkeypatch):
+    # Only backends that declare the flag opt into per-session identities.
+    _register_provider(
+        monkeypatch, "dummyplain", session_isolated=False, persistent="false"
+    )
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    assert terminal_tool._resolve_container_task_id("subagent-9") == "default"
 
 
-def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
-    # The opt-in is a persistent-Docker concept only: SSH keeps session
-    # scoping even when the key is set.
+def test_shared_key_residue_keeps_ssh_session_scoping(monkeypatch):
+    # Shared-key residue under a surviving backend: SSH keeps session scoping
+    # — the retired opt-in has no effect anywhere anymore.
     from gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv("TERMINAL_ENV", "ssh")

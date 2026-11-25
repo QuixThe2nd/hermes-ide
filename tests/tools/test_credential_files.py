@@ -518,11 +518,35 @@ class TestToAgentVisiblePathPerBackend:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         return str(hermes_home / "attachments" / "drop.zip")
 
-    def test_docker_maps_to_root_hermes(self, tmp_path, monkeypatch):
+    def test_plugin_container_base_maps_to_root_hermes(self, tmp_path, monkeypatch):
         staged = self._staged(tmp_path, monkeypatch)
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        from tools.credential_files import to_agent_visible_cache_path
-        assert to_agent_visible_cache_path(staged) == "/root/.hermes/attachments/drop.zip"
+        from agent import terminal_env_registry as reg
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+        class _RootHermesBox(TerminalEnvironmentProvider):
+            name = "rootbox"
+
+            @property
+            def cache_path_base(self):
+                return "/root/.hermes"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, *, cwd, timeout, task_id="default", **kwargs):
+                raise AssertionError("classification-only provider")
+
+        reg._reset_for_tests()
+        try:
+            reg.register_provider(_RootHermesBox())
+            monkeypatch.setenv("TERMINAL_ENV", "rootbox")
+            from tools.credential_files import to_agent_visible_cache_path
+            assert (
+                to_agent_visible_cache_path(staged)
+                == "/root/.hermes/attachments/drop.zip"
+            )
+        finally:
+            reg._reset_for_tests()
 
     def test_ssh_maps_to_tilde_hermes(self, tmp_path, monkeypatch):
         staged = self._staged(tmp_path, monkeypatch)
