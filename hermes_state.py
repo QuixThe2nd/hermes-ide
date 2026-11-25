@@ -124,6 +124,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _describe_lock_holder,
     _read_lock_holder_record,
     is_advisory_lock_contention,
+    stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
 from hermes_state_portability import SessionPortabilityMixin
@@ -3273,110 +3274,6 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
             elif msg is not None:
                 handle.write(json.dumps({"content": str(msg)}, ensure_ascii=False) + "\n")
     return path
-
-
-# _read_sqlite_application_id runs on EVERY write via _raise_if_db_replaced,
-# against the LIVE state.db.  A bare open()/read()/close() there is the
-# howtocorrupt §2.2 bug: close() cancels every POSIX advisory lock this
-# process holds on the file — measured on Linux/SQLite 3.53.1, one probe call
-# drops the WAL-mode DMS shared lock the writer connection holds on state.db
-# (see hermes_cli/sqlite_safe_read.py for the module built around this rule).
-# With the DMS lock gone, a fresh opener in another process can treat this
-# writer as dead and rerun WAL-index recovery underneath it.
-#
-# The probe therefore reads through a per-path fd cached for the life of the
-# process: opening an fd never cancels locks (only close() does), and
-# os.pread takes no shared file position.  When the path is re-pointed at a
-# new inode (the very replacement this probe exists to detect), the stale fd
-# is RETIRED, never closed — closing it would cancel the live connection's
-# locks on the old file, the exact bug being avoided.  Replacement events are
-# rare and halt writes anyway, so the leak is bounded.
-_HEADER_PROBE_LOCK = threading.Lock()
-_HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
-_RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
-
-
-def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
-    """Lock-safe raw header read of a possibly-live SQLite database.
-
-    pread from a cached, never-closed fd (rebound when the path names a new
-    inode): closing the fd would drop this process's advisory locks.
-    """
-    key = str(db_path)
-    try:
-        st = os.stat(db_path)
-    except OSError:
-        return None
-    with _HEADER_PROBE_LOCK:
-        cached = _HEADER_PROBE_FDS.get(key)
-        if cached is not None and (cached[1], cached[2]) != (st.st_dev, st.st_ino):
-            # Path re-pointed at a new file. Retire (never close) the old fd.
-            _RETIRED_HEADER_PROBE_FDS.append(cached[0])
-            cached = None
-            del _HEADER_PROBE_FDS[key]
-        if cached is None:
-            try:
-                fd = os.open(db_path, os.O_RDONLY)
-            except OSError:
-                return None
-            try:
-                fst = os.fstat(fd)
-            except OSError:
-                _RETIRED_HEADER_PROBE_FDS.append(fd)
-                return None
-            cached = (fd, fst.st_dev, fst.st_ino)
-            _HEADER_PROBE_FDS[key] = cached
-        try:
-            return os.pread(cached[0], length, 0)
-        except OSError:
-            return None
-
-
-def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
-    """Read application_id from the SQLite header without opening a connection.
-
-    Safe against live databases: routed through :func:`_pread_db_header`,
-    which never issues a ``close()`` that would cancel this process's POSIX
-    locks on the file (howtocorrupt §2.2).
-    """
-    header = _pread_db_header(db_path, _STATE_DB_APPLICATION_ID_OFFSET + 4)
-    if header is None:
-        return None
-    if len(header) < _STATE_DB_APPLICATION_ID_OFFSET + 4:
-        return None
-    if header[:16] != b"SQLite format 3\x00":
-        return None
-    return int(
-        struct.unpack(
-            ">I",
-            header[_STATE_DB_APPLICATION_ID_OFFSET:_STATE_DB_APPLICATION_ID_OFFSET + 4],
-        )[0]
-    )
-
-
-def _stat_db_file_identity(path: Path) -> "Optional[tuple]":
-    """Return ``(st_dev, st_ino)`` for *path*, or None when identity is unavailable."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    # Windows volumes (and some network FS) report st_ino=0; a (0, 0)
-    # identity would false-positive every check. Skip the inode half of
-    # the guard there; generation stamp still applies.
-    if not st.st_dev or not st.st_ino:
-        return None
-    return (st.st_dev, st.st_ino)
-
-
-def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
-    """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars."""
-    identities: Dict[str, tuple] = {}
-    base = os.fspath(db_path)
-    for suffix in ("-wal", "-shm"):
-        ident = _stat_db_file_identity(Path(base + suffix))
-        if ident is not None:
-            identities[suffix] = ident
-    return identities
 
 
 
