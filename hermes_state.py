@@ -15253,6 +15253,12 @@ class SessionDB(
         Returns the number of FTS indexes that were optimized (0 if the
         merge step failed or no FTS tables exist).
         """
+        # A quarantined handle (corrupt image, replaced file, lost WAL generation) raises
+        # before any rewrite: a VACUUM reads every page and commits the result back,
+        # turning contained damage into an amplified one (#105670). Same guard
+        # _execute_write applies to every write.
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         # Merge FTS5 segments before VACUUM so the freed pages are returned
         # to the OS in the same pass. optimize_fts() manages its own lock.
         optimized = 0
