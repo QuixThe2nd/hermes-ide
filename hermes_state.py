@@ -3672,6 +3672,10 @@ class SessionDB(
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
         "cli",
         "cron",
+        # The kanban platform was removed (#548) but deployed databases still
+        # hold its never-ended worker rows — the sweep exists exactly for
+        # producers that can no longer close their own sessions.
+        "kanban",
         "acp",
         "api_server",
         "subagent",
@@ -10159,11 +10163,20 @@ class SessionDB(
 
         Pinning also clears ``hidden`` across the lineage: a pin means "keep
         this visible", and a hidden+pinned row is otherwise absent from both
-        the default listing and the pinned back-fill (#106171).
+        the default listing and the pinned back-fill (#106171). Exempt the
+        canonical Bot Chat (hidden + exact registry title): the desktop
+        contract keeps it hidden and reachable only through the bot row, and
+        unhiding it would also disable the rename guard in
+        ``_set_session_title`` that protects its identity (#106180).
         """
         result = self._set_lineage_column("pinned", session_id, int(pinned))
         if pinned:
-            self._set_lineage_column("hidden", session_id, 0)
+            row = self.get_session(session_id)
+            is_canonical_bot_chat = bool(row) and bool(row.get("hidden")) and (
+                (row.get("title") or "") == self.CANONICAL_BOT_CHAT_TITLE
+            )
+            if not is_canonical_bot_chat:
+                self._set_lineage_column("hidden", session_id, 0)
         return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
