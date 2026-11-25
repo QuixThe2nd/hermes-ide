@@ -28,6 +28,15 @@ _NON_MIRROR_DIRS = {
     "fakes", "fixtures", "install", "integration", "manual",
     "monitoring", "perf_guards", "scripts", "secret_sources",
     "security", "skills", "verify", "computer_use", "hermes_state",
+    # Genuinely cross-cutting — no single source package to mirror:
+    "compat",  # frozen old-updater mid-swap import surface, consumed by
+               # tests/test_old_updater_compat_surface.py (updater spans
+               # hermes_cli, pm, and scripts — it is not one package's test)
+    "installation",  # update/install-mechanism coverage spanning hermes_cli
+                     # updaters, the installers, and their scripts
+    "probes",  # live cross-suite probes (API delegation HTTP, cron timeout
+               # fork race, MCP device flow) — they exercise several
+               # subsystems end-to-end from one home
 }
 
 # Root-level modules whose tests sit directly in tests/ (no package to mirror).
