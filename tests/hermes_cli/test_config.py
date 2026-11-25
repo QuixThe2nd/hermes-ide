@@ -969,7 +969,9 @@ class TestConfigSupportFloor:
         # the shipped ttl_minutes (20) applies.
         "model_catalog": {},
         "plugins": {"enabled": []},
-        "stt": {"provider": "local"},
+        # f48b344de8b (#702) retired the v14 flat-stt.model flattening with the voice
+        # paths: a legacy flat stt section now passes through verbatim (old keys load).
+        "stt": {"model": "base", "provider": "local"},
     }
 
     _V20_FIXTURE = {
@@ -1896,15 +1898,17 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
 
 
 def test_empty_dict_default_sections_are_open_containers():
-    """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
-    mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as
-    typos, while a real typo under a populated sibling section still gets a suggestion."""
+    """``compression.model_thresholds.<model>`` / ``delegation.request_overrides.<id>`` are
+    free-form mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not
+    be refused as typos, while a real typo under a populated sibling section still gets a
+    suggestion. (``terminal.docker_env`` left the schema with the docker backend,
+    c7442dd1745 #708.)"""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     assert DEFAULT_CONFIG["compression"]["model_thresholds"] == {}
-    assert DEFAULT_CONFIG["terminal"]["docker_env"] == {}
+    assert DEFAULT_CONFIG["delegation"]["request_overrides"] == {}
     assert _validate_config_key("compression.model_thresholds.gpt-5") == (True, None)
-    assert _validate_config_key("terminal.docker_env.FOO") == (True, None)
+    assert _validate_config_key("delegation.request_overrides.FOO") == (True, None)
     assert _validate_config_key("lsp.servers.python.command") == (True, None)
     assert _validate_config_key("auxiliary.vision.extra_body.reasoning") == (True, None)
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
