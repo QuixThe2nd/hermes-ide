@@ -3379,15 +3379,6 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
     return identities
 
 
-_canonical_sqlite_path = _state_holders.canonical_sqlite_path
-
-
-def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
-    base = os.path.abspath(os.fspath(db_path))
-    return {
-        _state_holders.canonical_sqlite_path(base + "-wal"),
-        _state_holders.canonical_sqlite_path(base + "-shm"),
-    }
 
 
 def refuse_deleted_wal_generation(db_path) -> None:
