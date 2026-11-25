@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.config import load_config, save_config
+from hermes_cli.config import load_config, save_config, get_env_value
 from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
 
@@ -117,27 +117,52 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
 
 
+def _pick_terminal_backend(wanted):
+    """prompt_choice fake that selects a backend menu entry by LABEL — never a hardcoded
+    index — and records the menu the wizard actually offered."""
+    menus = []
+
+    def fake_prompt_choice(question, choices, default=0):
+        assert question == "Select terminal backend:", question
+        menus.append(list(choices))
+        return next(i for i, label in enumerate(choices) if wanted in label)
+
+    return menus, fake_prompt_choice
+
+
+def _assert_local_ssh_menu(menu):
+    """The picker offers exactly Local, SSH and Keep current: the sandbox backends
+    (docker/modal/daytona/singularity/vercel) left with c7442dd1745 (#708). The
+    Keep-current label echoes whatever legacy value the config holds, so retired-name
+    absence is asserted on the selectable entries only."""
+    assert len(menu) == 3
+    assert menu[0].startswith("Local -") and menu[1].startswith("SSH -")
+    assert menu[-1].startswith("Keep current")
+    assert not any(
+        retired in label.lower()
+        for label in menu[:-1]
+        for retired in ("docker", "modal", "daytona", "singularity", "vercel"))
+
+
 def test_local_backend_setup_routes_config_and_env(tmp_path, monkeypatch):
     """Live routing contract for the surviving Local backend (the modal/vercel_sandbox
     wizard flows were removed with the backends in c7442dd1745, #708): selecting Local
     writes terminal.backend, defaults terminal.cwd, and persists TERMINAL_ENV."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = load_config()
+    menus, pick = _pick_terminal_backend("Local -")
 
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select terminal backend:":
-            return 0
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", pick)
 
     from hermes_cli.setup import setup_terminal_backend
 
     setup_terminal_backend(config)
 
+    _assert_local_ssh_menu(menus[0])
     assert config["terminal"]["backend"] == "local"
     assert isinstance(config["terminal"].get("cwd"), str) and config["terminal"]["cwd"]
     assert os.environ["TERMINAL_ENV"] == "local"
+    assert get_env_value("TERMINAL_ENV") == "local"
 
 
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
@@ -150,14 +175,10 @@ def test_ssh_setup_replaces_retired_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = load_config()
     config["terminal"]["backend"] = "vercel_sandbox"  # legacy value predating the strip
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select terminal backend:":
-            return 1
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+    menus, pick = _pick_terminal_backend("SSH -")
 
     answers = iter(["myhost", "me", "2222", ""])
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", pick)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *a, **kw: next(answers))
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
 
@@ -165,11 +186,14 @@ def test_ssh_setup_replaces_retired_backend(tmp_path, monkeypatch):
 
     setup_terminal_backend(config)
 
+    _assert_local_ssh_menu(menus[0])
     assert config["terminal"]["backend"] == "ssh"
     assert os.environ["TERMINAL_ENV"] == "ssh"
     assert os.environ["TERMINAL_SSH_HOST"] == "myhost"
     assert os.environ["TERMINAL_SSH_USER"] == "me"
     assert os.environ["TERMINAL_SSH_PORT"] == "2222"
+    assert get_env_value("TERMINAL_SSH_HOST") == "myhost"
+    assert get_env_value("TERMINAL_SSH_PORT") == "2222"
 
 
 def test_retired_backend_names_fail_closed_at_runtime():
