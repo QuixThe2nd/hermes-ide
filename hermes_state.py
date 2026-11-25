@@ -14332,176 +14332,6 @@ class SessionDB(
             self._remove_session_files(sessions_dir, sid)
         return count
 
-    @staticmethod
-    def _prune_filter_where(
-        *,
-        last_active_before: Optional[float] = None,
-        last_active_after: Optional[float] = None,
-        started_before: Optional[float] = None,
-        started_after: Optional[float] = None,
-        source: Optional[str] = None,
-        title_like: Optional[str] = None,
-        end_reason: Optional[str] = None,
-        cwd_prefix: Optional[str] = None,
-        min_messages: Optional[int] = None,
-        max_messages: Optional[int] = None,
-        archived: Optional[bool] = None,
-        model_like: Optional[str] = None,
-        provider: Optional[str] = None,
-        user_id: Optional[str] = None,
-        chat_id: Optional[str] = None,
-        chat_type: Optional[str] = None,
-        branch_like: Optional[str] = None,
-        min_tokens: Optional[int] = None,
-        max_tokens: Optional[int] = None,
-        min_cost: Optional[float] = None,
-        max_cost: Optional[float] = None,
-        min_tool_calls: Optional[int] = None,
-        max_tool_calls: Optional[int] = None,
-        include_pinned: bool = False,
-    ) -> Tuple[str, list]:
-        """Build the shared WHERE clause for bulk prune/archive selection.
-
-        All filters AND together. Only ended sessions are ever candidates
-        (``ended_at IS NOT NULL``) so a live session is never selected.
-        ``archived`` is a tri-state: ``None`` = both, ``True`` = only
-        archived rows, ``False`` = only unarchived rows.
-
-        String matching conventions: ``model_like`` / ``branch_like`` /
-        ``title_like`` are case-insensitive substring matches (model slugs
-        and branch names vary in prefix format); ``provider`` / ``user_id``
-        / ``chat_id`` / ``chat_type`` / ``source`` / ``end_reason`` are
-        exact (case-insensitive for provider). Token bounds apply to
-        ``input_tokens + output_tokens``; cost bounds apply to
-        ``COALESCE(actual_cost_usd, estimated_cost_usd)``.
-
-        The clause references the ``s`` table alias — callers must select
-        ``FROM sessions s``.
-        """
-        clauses = ["s.ended_at IS NOT NULL"]
-        params: list = []
-        if last_active_before is not None:
-            clauses.append(
-                """COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = s.id),
-                       s.started_at
-                   ) < ?"""
-            )
-            params.append(last_active_before)
-            # An automatic orphan sweep closes a stale open row so the user can
-            # still recover it. Age those rows from the sweep, not from their old
-            # activity, or the next prune pass can delete them immediately.
-            clauses.append(
-                "(COALESCE(s.end_reason, '') != 'startup_orphan_reap' "
-                "OR s.ended_at < ?)"
-            )
-            params.append(last_active_before)
-        if last_active_after is not None:
-            clauses.append(
-                """COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = s.id),
-                       s.started_at
-                   ) >= ?"""
-            )
-            params.append(last_active_after)
-        if started_before is not None:
-            clauses.append("s.started_at < ?")
-            params.append(started_before)
-        if started_after is not None:
-            clauses.append("s.started_at >= ?")
-            params.append(started_after)
-        if source:
-            clauses.append("s.source = ?")
-            params.append(source)
-        if title_like:
-            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(title_like.lower())}%")
-        if end_reason:
-            clauses.append("s.end_reason = ?")
-            params.append(end_reason)
-        if cwd_prefix:
-            clause, clause_params = _cwd_prefix_clause(cwd_prefix)
-            clauses.append(clause)
-            params.extend(clause_params)
-        if min_messages is not None:
-            clauses.append("s.message_count >= ?")
-            params.append(min_messages)
-        if max_messages is not None:
-            clauses.append("s.message_count <= ?")
-            params.append(max_messages)
-        if model_like:
-            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(model_like.lower())}%")
-        if provider:
-            clauses.append("LOWER(COALESCE(s.billing_provider, '')) = ?")
-            params.append(provider.lower())
-        if user_id:
-            clauses.append("s.user_id = ?")
-            params.append(user_id)
-        if chat_id:
-            clauses.append("s.chat_id = ?")
-            params.append(chat_id)
-        if chat_type:
-            clauses.append("s.chat_type = ?")
-            params.append(chat_type)
-        if branch_like:
-            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(branch_like.lower())}%")
-        if min_tokens is not None:
-            clauses.append(
-                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) >= ?"
-            )
-            params.append(min_tokens)
-        if max_tokens is not None:
-            clauses.append(
-                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) <= ?"
-            )
-            params.append(max_tokens)
-        if min_cost is not None:
-            clauses.append(
-                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) >= ?"
-            )
-            params.append(min_cost)
-        if max_cost is not None:
-            clauses.append(
-                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) <= ?"
-            )
-            params.append(max_cost)
-        if min_tool_calls is not None:
-            clauses.append("COALESCE(s.tool_call_count, 0) >= ?")
-            params.append(min_tool_calls)
-        if max_tool_calls is not None:
-            clauses.append("COALESCE(s.tool_call_count, 0) <= ?")
-            params.append(max_tool_calls)
-        if archived is True:
-            clauses.append("s.archived = 1")
-        elif archived is False:
-            clauses.append("s.archived = 0")
-        # Pinned sessions are a durable "keep" flag (exempt from the stale
-        # auto-archive sweep). Bulk prune/delete/archive must honor that too:
-        # exclude pinned rows unless the caller explicitly opts in. Without
-        # this, `sessions prune`/`delete`/`archive` with a filter silently
-        # destroyed pinned conversations (round-3 QA SES-01, data loss).
-        if not include_pinned:
-            clauses.append("COALESCE(s.pinned, 0) = 0")
-        return " AND ".join(clauses), params
-
-    @staticmethod
-    def _apply_prune_age_filter(
-        older_than_days: Optional[float], filters: Dict[str, Any]
-    ) -> None:
-        """Translate the legacy age window into the shared activity filter."""
-        if (
-            filters.get("last_active_before") is None
-            and filters.get("started_before") is None
-            and older_than_days is not None
-        ):
-            filters["last_active_before"] = time.time() - (
-                older_than_days * 86400
-            )
-
     def list_prune_candidates(
         self,
         older_than_days: Optional[float] = None,
@@ -14515,20 +14345,16 @@ class SessionDB(
         keyword filters as :meth:`_prune_filter_where` (unknown names raise
         ``TypeError`` there). Rows are ordered oldest-first and carry
         ``id, source, title, model, started_at, last_active, ended_at,
-        message_count, archived``. ``older_than_days`` is an inactivity
-        threshold: it uses the latest message timestamp, falling back to
-        ``started_at`` for sessions without messages.
+        ``message_count, archived``. ``older_than_days`` is an inactivity
+        threshold on real recency: the freshest of the session heartbeat
+        (``last_activity_at``) and the latest message timestamp, falling back
+        to ``started_at`` for sessions without messages.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_where(older_than_days, source, filters)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
-                           COALESCE(
-                               (SELECT MAX(m.timestamp) FROM messages m
-                                WHERE m.session_id = s.id),
-                               s.started_at
-                           ) AS last_active,
+                           {_sql_session_last_active("s")} AS last_active,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""",
@@ -14548,8 +14374,7 @@ class SessionDB(
         ``include_pinned`` tri-state), but returns only a count. Used by the
         CLI to report how many pinned sessions are being spared.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_where(older_than_days, source, filters)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 f"SELECT COUNT(*) FROM sessions s WHERE {where}", params
@@ -14569,8 +14394,7 @@ class SessionDB(
         why an otherwise matching session was skipped without making live
         sessions eligible for destructive pruning.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_where(older_than_days, source, filters)
         ended_guard = "s.ended_at IS NOT NULL"
         if not where.startswith(ended_guard):
             raise RuntimeError("prune filter lost its ended-session safety guard")
@@ -14665,13 +14489,15 @@ class SessionDB(
 
         By default, delete ended sessions inactive for
         ``older_than_days`` days, optionally restricted to ``source``.
-        Activity is the latest message timestamp, falling back to
-        ``started_at`` for sessions without messages. Additional keyword
+        Activity is the freshest of the session heartbeat
+        (``last_activity_at``) and the latest message timestamp, falling back
+        to ``started_at`` for sessions without messages. Additional keyword
         filters AND together — the full set is defined by
         :meth:`_prune_filter_where`:
 
         * ``last_active_before`` / ``last_active_after`` — epoch bounds on
-          the latest message timestamp (falling back to ``started_at``).
+          real recency (freshest of heartbeat and latest message, else
+          ``started_at``).
         * ``started_before`` / ``started_after`` — epoch bounds on
           ``started_at``. An explicit ``started_before`` overrides the
           default ``older_than_days`` inactivity cutoff; pass
@@ -14702,8 +14528,7 @@ class SessionDB(
         are skipped, while expired or provably dead holders are reclaimed and
         fenced in the same write transaction.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, where_params = self._prune_filter_where(source=source, **filters)
+        where, where_params = self._prune_where(older_than_days, source, filters)
         removed_ids: list[str] = []
 
         def _do(conn):
