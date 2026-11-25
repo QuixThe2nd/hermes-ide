@@ -1104,19 +1104,10 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
     memo = _copilot_acp_session_memo
     if not force_refresh and memo is not None and now - memo[0] < memo[1]:
         return memo[2]
+    from providers import get_provider_profile
+
     try:
-        # The model-provider strip (db4ffa25327) retired the per-plugin CopilotACPProfile whose
-        # fetch_models() this used to call; the seam it wrapped survives, so drive it directly:
-        # resolve credentials, require the ACP scheme, then ask the signed-in session.
-        from agent.copilot_acp_client import CopilotACPClient
-        from hermes_cli.auth import resolve_external_process_provider_credentials
-        creds = resolve_external_process_provider_credentials("copilot-acp")
-        live = None
-        if str(creds.get("base_url") or "").startswith("acp://"):
-            client = CopilotACPClient(
-                api_key=creds.get("api_key"), base_url=creds.get("base_url"),
-                command=creds.get("command"), args=creds.get("args"))
-            live = client.list_models(timeout_seconds=15.0) or None
+        live = get_provider_profile("copilot-acp").fetch_models() or None
     except Exception:
         logger.debug("copilot-acp session model discovery failed", exc_info=True)
         live = None
