@@ -152,7 +152,11 @@ from hermes_state_repair import (
     apply_durability_barriers,
 )
 from hermes_state_search import SessionSearchMixin
-from hermes_state_messages import SessionMessagesMixin, _INSERT_MESSAGE_SQL
+from hermes_state_messages import (
+    SessionMessagesMixin,
+    _INSERT_MESSAGE_SQL,
+    _coerce_timestamp,
+)
 from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause, classify_session_status, workspace_key
 from hermes_state_fts import SessionFtsSetupMixin, fts5_cjk_so_path
 from hermes_state_profile_repair import SessionProfileRepairMixin
@@ -11500,15 +11504,14 @@ class SessionDB(
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
 
-        message_timestamp = time.time()
-        if timestamp is not None:
-            try:
-                if hasattr(timestamp, "timestamp"):
-                    message_timestamp = float(timestamp.timestamp())
-                else:
-                    message_timestamp = float(timestamp)
-            except (TypeError, ValueError):
-                logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
+        # The write-side twin of the readers' coerce_epoch: a caller-supplied
+        # timestamp outside the sane epoch window (or any non-coercible junk)
+        # must never be persisted — it falls back to now.
+        message_timestamp = (
+            _coerce_timestamp(timestamp, time.time())
+            if timestamp is not None
+            else time.time()
+        )
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -11939,14 +11942,9 @@ class SessionDB(
             tool_calls = msg.get("tool_calls")
             message_timestamp = now_ts
             if msg.get("timestamp") is not None:
-                try:
-                    ts_value = msg.get("timestamp")
-                    if hasattr(ts_value, "timestamp"):
-                        message_timestamp = float(ts_value.timestamp())
-                    else:
-                        message_timestamp = float(ts_value)
-                except (TypeError, ValueError):
-                    logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
+                # Same write-side window guard as append_message: a corrupt
+                # explicit timestamp degrades to now, never persists.
+                message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
             reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
             codex_reasoning_items = (
                 msg.get("codex_reasoning_items") if role == "assistant" else None
