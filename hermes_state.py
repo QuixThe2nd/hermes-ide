@@ -5524,8 +5524,8 @@ class SessionDB(
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
         """
-        if self._db_corrupt:
-            return  # quarantined: never checkpoint over a damaged image
+        if self._quarantine_reason() is not None:
+            return  # quarantined: never checkpoint over a damaged, replaced or split file
         try:
             with self._lock:
                 if self._conn is None:
