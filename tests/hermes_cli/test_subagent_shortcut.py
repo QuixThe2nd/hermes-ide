@@ -36,12 +36,12 @@ def test_monitor_shortcuts_preserve_draft_and_respect_modal_prompts(monkeypatch)
                     await asyncio.wait_for(painted.wait(), 3)
                     assert opened.pop() is cli
                     assert (editor.text, editor.buffer.cursor_position) == ('keep my draft', 5)
-                cli._approval_state = {'options': []}
+                cli._slash_confirm_state = {'pending': True}
                 bindings = app.key_bindings
                 for key in ('c-t', 'f6'):
                     assert not any(b.filter() for b in bindings.get_bindings_for_keys((key,)))
             finally:
-                cli._approval_state = None
+                cli._slash_confirm_state = None
                 app.exit()
                 await task
     asyncio.run(run())
