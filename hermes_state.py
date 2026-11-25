@@ -134,20 +134,25 @@ from hermes_state_dbfile import (
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
+    collect_state_db_stats, count_db_holders, iter_deleted_sqlite_sidecar_holders,
 )
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
-    _WAL_INCOMPAT_MARKERS, _apply_wal_size_limit, _on_disk_journal_mode,
+    _WAL_INCOMPAT_MARKERS, _apply_macos_checkpoint_barrier, _apply_wal_size_limit,
+    _enforce_macos_synchronous_full, _on_disk_journal_mode,
     apply_database_pragmas, apply_wal_with_fallback,
+    WalUnsupportedError, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
+    resolve_synchronous_level, sqlite_source_id,
 )
 from hermes_state_repair import (
     _bump_schema_cookie, _claim_repair_attempt, _existing_malformed_backups,
     _mask_volatile_header, preflight_db_writability, repair_state_db_schema,
+    apply_durability_barriers,
 )
 from hermes_state_search import SessionSearchMixin
-from hermes_state_messages import SessionMessagesMixin
-from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause
-from hermes_state_fts import SessionFtsSetupMixin
+from hermes_state_messages import SessionMessagesMixin, _INSERT_MESSAGE_SQL
+from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause, classify_session_status, workspace_key
+from hermes_state_fts import SessionFtsSetupMixin, fts5_cjk_so_path
 from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -302,23 +307,6 @@ def _scrub_surrogates(value: Any) -> Any:
     well-formed text.
     """
     return _sanitize_surrogates(value) if isinstance(value, str) else value
-
-
-def workspace_key(row: Dict[str, Any]) -> Optional[str]:
-    """A session's workspace grouping key: its git repo root when known, else
-    its cwd.
-
-    Branch is deliberately excluded so checking out a new branch doesn't
-    fragment a workspace's session history. Returns None for cwd-less (unbound)
-    sessions. Both fields are already recorded on ``sessions`` — this just picks
-    the coarser identity for grouping/filtering.
-    """
-    root = (row.get("git_repo_root") or "").strip()
-    if root:
-        return root
-
-    cwd = (row.get("cwd") or "").strip()
-    return cwd or None
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
@@ -1110,46 +1098,6 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 "its environment."
             )
 
-# ---------------------------------------------------------------------------
-# WAL-compatibility fallback
-# ---------------------------------------------------------------------------
-# SQLite's WAL mode requires shared-memory (mmap) coordination and fcntl
-# byte-range locks that don't reliably work on network filesystems (NFS,
-# SMB/CIFS, some FUSE mounts, WSL1).  Upstream documents this explicitly:
-# https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
-#
-# On those filesystems ``PRAGMA journal_mode=WAL`` raises
-# ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
-# propagate that, every feature backed by state.db breaks
-# silently — /resume, /title, /history, /branch, etc.
-#
-# ZFS is a separate case: its COW + mmap semantics can corrupt the WAL
-# shared-memory (-shm) file under concurrent connection bursts, presenting
-# as ``disk I/O error`` rather than ``locking protocol``.
-#
-# Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
-# works on NFS and ZFS.  Concurrency drops — concurrent readers are blocked
-# during a write — but the feature works.
-#
-# Separately, SQLite's WAL-reset bug can corrupt multi-process WAL databases
-# on unfixed library builds (issue #69784).  See:
-# https://sqlite.org/wal.html#walresetbug
-# Fixed in 3.51.3+ with backports 3.50.7 and 3.44.6.  On vulnerable builds we
-# refuse to *enable* WAL for fresh / non-WAL databases (prefer DELETE).  We do
-# NOT live-downgrade an on-disk WAL database — other gateway/cron/worker
-# connections may still hold it open, and flipping journal_mode under them is
-# unsafe (same invariant as the NFS path below).
-_WAL_INCOMPAT_MARKERS = (
-    "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
-    "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # ZFS SHM corruption under concurrent connections
-)
-
-# Upper bound for the write-ahead log. SQLite defaults to -1 (unlimited),
-# which lets state.db-wal keep the high-water mark of the largest-ever
-# transaction forever. See _apply_wal_size_limit().
-_WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
-
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
@@ -1158,19 +1106,6 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 _last_init_error: Optional[str] = None
 _last_init_error_lock = threading.Lock()
 
-# Paths for which we've already logged a WAL-fallback WARNING.  Without
-# this, repeated connections would re-log the same filesystem-incompat
-# warning, filling errors.log.
-_wal_fallback_warned_paths: set[str] = set()
-_wal_fallback_warned_lock = threading.Lock()
-
-# Dedup WARNING for the WAL-reset vulnerability fallback (issue #69784).
-_wal_reset_bug_warned_paths: set[str] = set()
-_wal_reset_bug_warned_lock = threading.Lock()
-
-# Dedup ERROR for the "configured delete overridden by on-disk WAL" warning.
-_delete_overridden_warned_paths: set[str] = set()
-_delete_overridden_warned_lock = threading.Lock()
 _test_instance_registry: "weakref.WeakSet[Any]" = weakref.WeakSet()
 def _register_test_instance(db: Any) -> None:
     """Track *db* for suite-level teardown closing (test-isolation runs only)."""
@@ -1377,866 +1312,6 @@ def _strip_stale_tool_call_markers(
     return messages
 
 
-def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
-    """Read the journal mode from the SQLite DB header on disk.
-
-    Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
-    if the value cannot be determined (new DB, or PRAGMA read failed).
-
-    A PRAGMA read can fail transiently with ``disk i/o error`` on
-    virtualized block devices (XFS on cloud hosts).  Treating that as
-    "mode unknown" pushes callers onto their fail-closed unknown-mode
-    branch even though the on-disk mode is perfectly readable a few
-    milliseconds later.  Retry the read a few times before giving up:
-    transient EIO clears, deterministic unsupported-filesystem errors do
-    not.  ``None`` is still returned on final failure so the caller's
-    existing "unknown → refuse to downgrade" logic applies.
-    """
-    last_exc: Optional[Exception] = None
-    for _ in range(4):
-        try:
-            row = conn.execute("PRAGMA journal_mode").fetchone()
-        except sqlite3.OperationalError as exc:
-            last_exc = exc
-            if "disk i/o error" not in str(exc).lower():
-                return None
-            time.sleep(0.05)
-            continue
-        if row is None:
-            return None
-        mode = row[0]
-        if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
-            try:
-                mode = mode.decode("ascii")
-            except UnicodeDecodeError:
-                return None
-        return str(mode).strip().lower() if mode is not None else None
-    if last_exc is not None:
-        logger.debug(
-            "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
-        )
-    return None
-
-
-def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
-    """Enable ``PRAGMA checkpoint_fullfsync`` on macOS (no-op elsewhere).
-
-    On Darwin, ``synchronous=FULL`` (the WAL default) issues a plain
-    ``fsync()``, which Apple documents does *not* guarantee that data
-    has reached stable storage or that writes are not reordered — see
-    the ``fsync(2)`` man page.  SQLite's WAL corruption-safety guarantee
-    assumes the OS honors the fsync write barrier; macOS does not unless
-    the app uses ``F_FULLFSYNC``.
-
-    During a launchd *system* shutdown/reboot the OS page cache is
-    dropped (effectively a power-loss event for in-flight pages), so a
-    WAL checkpoint whose ``fsync()`` "reported" durable may never have
-    hit the platter — corrupting ``state.db`` with a malformed image.
-    This is the trigger in issue #30636 ("SIGTERM during launchd
-    shutdown under high load"), distinct from a plain in-session kill
-    (which the page cache survives and SQLite recovers from).
-
-    ``checkpoint_fullfsync=1`` forces an ``F_FULLFSYNC`` barrier only at
-    checkpoint boundaries — where WAL frames land in the main DB — so the
-    cost amortizes to roughly +0.1 ms/commit (vs ~+4 ms for the broader
-    ``fullfsync=1`` that flushes on every commit's WAL sync).  Guarded by
-    ``sys.platform == "darwin"`` because ``F_FULLFSYNC`` is macOS-only;
-    on other platforms the PRAGMA is a no-op, so we skip it entirely.
-
-    Best-effort: never raises.
-    """
-    if sys.platform != "darwin":
-        return
-    try:
-        conn.execute("PRAGMA checkpoint_fullfsync=1")
-    except sqlite3.OperationalError:
-        pass
-
-
-def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
-    """Enforce ``PRAGMA synchronous=FULL`` on macOS to prevent btree corruption.
-
-    On Darwin, the default ``synchronous=NORMAL`` only calls ``fsync()``,
-    which Apple's fsync(2) man page explicitly states does *not* guarantee
-    data-on-platter or write-ordering. During a WAL checkpoint race with
-    process termination (e.g., launchd shutdown), this can leave the main
-    DB with half-written btree pages → ``btreeInitPage error 11``.
-
-    WAL mode's durability guarantee assumes the OS honors fsync barriers;
-    macOS does not unless we explicitly set ``synchronous=FULL``, which issues
-    a real ``fsync()`` on every transaction commit.  The ``F_FULLFSYNC``
-    barrier at checkpoint boundaries is handled separately by
-    :func:`_apply_macos_checkpoint_barrier`.
-
-    This function is called after any successful WAL activation (either
-    from ``apply_wal_with_fallback()`` setting a fresh WAL or when probing
-    an existing WAL mode). It ensures macOS connections always use FULL
-    synchronous mode, even if a prior connection set ``synchronous=NORMAL``.
-
-    Best-effort: never raises.
-    """
-    if sys.platform != "darwin":
-        return
-    try:
-        conn.execute("PRAGMA synchronous=FULL")
-    except sqlite3.OperationalError:
-        pass
-
-
-def is_sqlite_wal_reset_vulnerable(
-    version_info: Optional[tuple] = None,
-) -> bool:
-    """Return True when the linked SQLite library has the WAL-reset bug.
-
-    Upstream documents the bug in versions 3.7.0 through 3.51.2, fixed in
-    3.51.3+, with backports 3.50.7 and 3.44.6:
-    https://sqlite.org/wal.html#walresetbug
-
-    Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
-    """
-    info = version_info if version_info is not None else sqlite3.sqlite_version_info
-    return _is_sqlite_wal_reset_vulnerable(info)
-
-
-def sqlite_source_id() -> str:
-    """Return ``sqlite_source_id()``, or an empty string when unavailable."""
-    try:
-        conn = sqlite3.connect(":memory:")
-        try:
-            row = conn.execute("SELECT sqlite_source_id()").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return ""
-    if not row or row[0] is None:
-        return ""
-    return str(row[0])
-
-
-def _database_has_content(conn: sqlite3.Connection) -> bool:
-    """Return whether the database file already holds pages.
-
-    Used to tell an EXISTING database apart from a brand-new one before
-    rewriting its journal mode. ``PRAGMA page_count`` is a header read, so
-    this costs nothing and takes no lock.
-
-    Fail-quiet: any error, or a database we cannot measure, answers False.
-    The only caller uses this to decide whether to emit a warning, and a
-    warning that fires when the answer is unknown would fire on every fresh
-    database -- precisely the case where there is provably no operator choice
-    being overwritten.
-    """
-    try:
-        row = conn.execute("PRAGMA page_count").fetchone()
-    except sqlite3.Error:
-        return False
-    if not row or row[0] is None:
-        return False
-    try:
-        return int(row[0]) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def resolve_journal_mode() -> str:
-    """Return the configured journal mode (``wal`` or ``delete``).
-
-    ``database.journal_mode`` in config.yaml is the canonical operator
-    setting. ``wal`` remains the default; use ``delete`` when the backing
-    filesystem does not provide WAL-safe durability (for example macOS
-    virtiofs, NFS, or SMB). Invalid or malformed values fail safely to the
-    existing default.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        config = load_config_readonly() or {}
-        database = config.get("database", {})
-        if not isinstance(database, dict):
-            return "wal"
-        raw = database.get("journal_mode", "wal")
-    except Exception:
-        return "wal"
-
-    if not isinstance(raw, str):
-        return "wal"
-    mode = raw.strip().lower()
-    return mode if mode in ("wal", "delete") else "wal"
-
-
-class WalUnsupportedError(sqlite3.OperationalError):
-    """Raised by :func:`apply_wal_with_fallback` when ``require_wal=True`` and
-    the filesystem cannot provide WAL journal mode.
-
-    Covers both shapes of WAL refusal on network filesystems (NFS / SMB / FUSE
-    / the AgentFS NFS overlay): SQLite *raising* ``SQLITE_PROTOCOL`` ("locking
-    protocol"), and the quieter macOS-NFS case where ``PRAGMA journal_mode=WAL``
-    silently returns the still-effective mode without raising.  Subclasses
-    ``sqlite3.OperationalError`` so existing ``except sqlite3.OperationalError``
-    DB-init handling still catches it, while callers that specifically mandate
-    WAL can catch this narrower type.
-    """
-
-
-def apply_wal_with_fallback(
-    conn: sqlite3.Connection,
-    *,
-    db_label: str = "state.db",
-    require_wal: bool = False,
-) -> str:
-    """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
-
-    Returns the journal mode actually set (``"wal"`` or ``"delete"``).
-
-    On WAL-incompatible filesystems (NFS, SMB, some FUSE, ZFS), SQLite either
-    raises ``OperationalError("locking protocol")`` /
-    ``OperationalError("disk I/O error")`` or — on macOS NFS / SMB /
-    the AgentFS NFS overlay — silently refuses the switch and leaves the DB in
-    DELETE.  Either way the degradation is logged at ERROR level (it is a real
-    loss of concurrency — a write blocks concurrent readers — not a cosmetic
-    warning) and, by default, the function falls back to DELETE (the pre-WAL
-    default, which works on NFS and ZFS) so the feature keeps working.
-
-    On SQLite builds that still contain the WAL-reset corruption bug
-    (issue #69784), refuse to enable WAL on fresh / non-WAL databases
-    (prefer DELETE).  If the on-disk DB is already WAL, keep WAL and warn
-    — never live-downgrade under possible concurrent openers.
-
-    This gate (#70055) is deliberately RETAINED. An earlier revision of the
-    lock-cancellation fix (#71724) reverted it on the theory that DELETE was
-    "the mode that corrupts", but that comparison was confounded: the clean
-    WAL result came from SQLite 3.53.1, which carries BOTH the WAL-reset fix
-    AND 3.51.0's defenses against close()-broken POSIX locks, so it says
-    nothing about 3.50.4.  Re-measured on the actually-bundled 3.50.4 with
-    the lock fix in place, WAL and DELETE are both clean (0/3 each) — i.e.
-    there is no evidence that WAL is safer here, and upstream still documents
-    the WAL-reset bug as real through 3.51.2 with serious consequences.  Until
-    a fixed runtime is delivered, keep new databases out of WAL.
-
-    Callers that genuinely require WAL concurrency (and would rather fail loudly
-    than run silently degraded) pass ``require_wal=True``; the function then
-    raises :class:`WalUnsupportedError` instead of returning ``"delete"``.  All
-    current callers deliberately keep the default ``require_wal=False`` so
-    NFS-homed installs keep working.
-
-    The ERROR is deduplicated per ``db_label``: repeated connections to the
-    same underlying DB log once per process, not once per call. Different
-    db_labels log independently, so each database gets one error on the
-    same NFS mount.
-
-    Never downgrades to DELETE if the on-disk DB header reports WAL — see
-    _on_disk_journal_mode.  That holds for both the NFS path and the
-    WAL-reset vulnerability path.
-    """
-    configured = resolve_journal_mode()
-
-    # Vulnerable SQLite: do not enable WAL on new/non-WAL files. Resolve the
-    # operator setting first so an explicit DELETE request still verifies that
-    # SQLite actually accepted DELETE rather than silently returning MEMORY or
-    # another connection-specific mode.
-    if is_sqlite_wal_reset_vulnerable():
-        return _apply_delete_for_wal_reset_bug(
-            conn,
-            db_label=db_label,
-            require_delete=configured == "delete",
-        )
-
-    # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
-    # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
-    current_mode = _on_disk_journal_mode(conn)
-    if current_mode == "wal":
-        if configured == "delete":
-            # Never-live-downgrade keeps this WAL; tell the operator their
-            # configured delete did not apply (see _log_configured_delete_overridden_once).
-            _log_configured_delete_overridden_once(db_label)
-        _apply_wal_size_limit(conn)
-        _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
-        return "wal"
-
-    # #68545: honor the canonical database.journal_mode setting. Existing
-    # on-disk WAL databases were returned above and are never live-downgraded.
-    if configured == "delete":
-        if current_mode is None:
-            # The mode probe failed (database locked / busy): another
-            # process may hold this DB open in WAL. Ownership is not
-            # provably exclusive, so flipping journal modes here could
-            # destroy committed-but-uncheckpointed WAL transactions of a
-            # concurrent writer. Fail loudly instead of downgrading — the
-            # operator explicitly requested DELETE and we cannot verify it.
-            raise sqlite3.OperationalError(
-                "could not verify journal mode before applying configured "
-                "journal_mode=delete (database is locked — possible "
-                "concurrent openers); refusing to downgrade a database "
-                "this process does not exclusively own"
-            )
-        actual = _set_journal_mode_no_wait(conn, "DELETE")
-        if actual != "delete":
-            raise sqlite3.OperationalError(
-                f"could not set configured journal_mode=delete (got {actual or 'no result'})"
-            )
-        return actual
-
-    # Decide BEFORE the flip whether it would silently overwrite a mode
-    # somebody chose. Both inputs are only readable while the file is still
-    # in its original state: `current_mode` is the probe above, and
-    # page_count distinguishes an existing database from a fresh one.
-    #
-    # A 0-page database has no prior choice to overwrite, and every caller
-    # reaches this before creating any schema (SessionDB._connect_and_init
-    # applies WAL, then _init_schema), so brand-new databases land here empty
-    # and stay quiet.
-    _upgrading_existing_db = (
-        current_mode is not None
-        and current_mode != "wal"
-        and _database_has_content(conn)
-    )
-
-    try:
-        # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
-        # resulting journal mode. Network filesystems that refuse WAL by
-        # *raising* SQLITE_PROTOCOL ("locking protocol") are handled in the
-        # except branch below. But macOS NFS — and SMB/CIFS, and the AgentFS
-        # NFS overlay — refuse the switch WITHOUT raising: the pragma simply
-        # returns the still-effective mode (e.g. ``delete``). Trust the
-        # returned row, not the mere absence of an exception; otherwise we
-        # report a false ``"wal"`` AND skip the fallback WARNING, leaving the
-        # DB silently in DELETE (reader-blocks-writer) with no signal.
-        row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-        mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
-        if mode == "wal":
-            if _upgrading_existing_db:
-                _log_journal_mode_upgrade_once(db_label, current_mode)
-            _apply_wal_size_limit(conn)
-            _apply_macos_checkpoint_barrier(conn)
-            _enforce_macos_synchronous_full(conn)
-            return "wal"
-        # Silent refusal (macOS NFS / SMB / AgentFS overlay): WAL was not
-        # honored, but nothing raised.
-        silent_exc = WalUnsupportedError(
-            f"journal_mode=WAL refused without raising (still {mode!r})"
-        )
-        if require_wal:
-            raise silent_exc
-        _log_wal_fallback_once(db_label, silent_exc)
-        return mode or "delete"
-    except sqlite3.OperationalError as exc:
-        # The require_wal silent-refusal raise above is a WalUnsupportedError
-        # (an OperationalError subclass) and lands here — propagate it
-        # unchanged rather than re-running it through the marker logic.
-        if isinstance(exc, WalUnsupportedError):
-            raise
-        msg = str(exc).lower()
-        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
-            raise
-        # ``disk i/o error`` is ambiguous: on ZFS / APFS-CoW it is a
-        # deterministic WAL-incompatibility (SHM corruption under concurrent
-        # connection bursts — #55305, #71498), but it can also be a one-shot
-        # transient EIO (page-cache pressure, brief lock contention).
-        # Treating a transient EIO as a permanent downgrade signal produced
-        # the mixed-journal-mode corruption pattern fixed in 5c49cd0ed0
-        # (process A downgrades to DELETE while sibling processes set WAL).
-        # Disambiguate by retrying the pragma a couple of times: transient
-        # EIO clears and we return "wal"; the deterministic filesystem cases
-        # keep failing and fall through to the guarded DELETE fallback.
-        if "disk i/o error" in msg:
-            for _ in range(2):
-                time.sleep(0.05)
-                try:
-                    row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-                except sqlite3.OperationalError as retry_exc:
-                    if "disk i/o error" not in str(retry_exc).lower():
-                        raise
-                    exc = retry_exc
-                    continue
-                mode = (
-                    str(row[0]).strip().lower()
-                    if row and row[0] is not None
-                    else ""
-                )
-                if mode == "wal":
-                    # Same flip, later door: a transient EIO cleared and the
-                    # switch went through. The header rewrite is identical, so
-                    # the signal must be too.
-                    if _upgrading_existing_db:
-                        _log_journal_mode_upgrade_once(db_label, current_mode)
-                    _apply_wal_size_limit(conn)
-                    _apply_macos_checkpoint_barrier(conn)
-                    _enforce_macos_synchronous_full(conn)
-                    return "wal"
-                break
-        # Don't downgrade if another process already set WAL on disk, or if
-        # the mode cannot be verified at all (probe blocked by a concurrent
-        # opener's locks) — ownership is not provably exclusive either way.
-        existing = _on_disk_journal_mode(conn)
-        if existing == "wal" or existing is None:
-            raise
-        if require_wal:
-            # Caller mandates WAL — fail loudly instead of degrading to DELETE.
-            raise WalUnsupportedError(str(exc)) from exc
-        _log_wal_fallback_once(db_label, exc)
-        _set_journal_mode_no_wait(conn, "DELETE")
-        return "delete"
-
-
-def _set_journal_mode_no_wait(conn: sqlite3.Connection, mode: str) -> str:
-    """Execute ``PRAGMA journal_mode=<mode>`` without waiting on other openers.
-
-    This is the ONLY place a journal-mode switch pragma may be issued for a
-    non-WAL target.  It temporarily forces ``busy_timeout=0`` so SQLite's own
-    exclusivity requirement becomes a concurrent-opener detector: leaving WAL
-    mode requires exclusive access to the database, so if ANY other connection
-    (this process or another) holds the DB open, the pragma fails immediately
-    with ``database is locked`` instead of waiting out a busy timeout and
-    sneaking the flip in between a concurrent writer's transactions — which is
-    exactly how committed-but-uncheckpointed WAL transactions get destroyed.
-
-    Callers must treat a raised ``OperationalError`` as "not exclusively
-    owned: leave the journal mode alone", never as a retryable condition.
-
-    Returns the resulting journal mode as reported by SQLite (lowercase), or
-    ``""`` when SQLite returned no row.
-    """
-    previous_timeout = 0
-    try:
-        row = conn.execute("PRAGMA busy_timeout").fetchone()
-        if row and row[0] is not None:
-            previous_timeout = int(row[0])
-    except (sqlite3.OperationalError, TypeError, ValueError):
-        previous_timeout = 0
-    conn.execute("PRAGMA busy_timeout=0")
-    try:
-        row = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
-        return str(row[0]).strip().lower() if row and row[0] is not None else ""
-    finally:
-        try:
-            conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
-        except sqlite3.OperationalError:
-            pass
-
-
-def _apply_delete_for_wal_reset_bug(
-    conn: sqlite3.Connection,
-    *,
-    db_label: str,
-    require_delete: bool = False,
-) -> str:
-    """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
-
-    - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
-    - Mode unreadable (probe blocked by a concurrent opener's locks):
-      ownership is not provably exclusive — leave the journal mode alone
-      and warn.  Never treat "could not read the mode" as "not WAL": that
-      exact confusion let a vulnerable-SQLite process flip a live WAL
-      state.db to DELETE under a concurrent WAL writer, destroying its
-      committed-but-uncheckpointed transactions.
-    - Otherwise: set DELETE (refusing to wait out concurrent openers) and
-      warn.
-    - For an explicit operator request, verify SQLite accepted DELETE.
-    """
-    current = _on_disk_journal_mode(conn)
-
-    if current == "wal":
-        _log_wal_reset_bug_once(db_label, kept_wal=True)
-        if require_delete:
-            # The vulnerability warning above suggests upgrading SQLite, which
-            # does not help on a WAL-incompatible filesystem; surface that the
-            # configured delete is not in effect (see _log_configured_delete_overridden_once).
-            # Emitted last so the actionable message is the final one in the log.
-            _log_configured_delete_overridden_once(db_label)
-        # Do not TRUNCATE / journal_mode=DELETE while other processes may
-        # still hold this WAL DB open; same safety rule as the NFS path.
-        _apply_wal_size_limit(conn)
-        _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
-        return "wal"
-
-    if current is None:
-        # The mode probe itself failed — another opener's locks are the
-        # most likely cause, and the DB may well be in WAL under a live
-        # writer.  Never flip a journal mode we cannot even read.
-        if require_delete:
-            raise sqlite3.OperationalError(
-                "could not verify journal mode before applying configured "
-                "journal_mode=delete (database is locked — possible "
-                "concurrent openers); refusing to downgrade a database "
-                "this process does not exclusively own"
-            )
-        _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
-        return "wal"
-
-    actual = ""
-    try:
-        actual = _set_journal_mode_no_wait(conn, "DELETE")
-    except sqlite3.OperationalError as exc:
-        if require_delete:
-            raise
-        lowered = str(exc).lower()
-        if "locked" in lowered or "busy" in lowered:
-            # A concurrent opener appeared between the probe and the flip
-            # (or already held the DB): SQLite refused the exclusive lock.
-            # Leave the journal mode exactly as it is.
-            _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
-            return current or "delete"
-        # Best-effort for the automatic vulnerable-runtime fallback: DELETE is
-        # normally already the default for new file-backed databases.
-    if require_delete and actual != "delete":
-        raise sqlite3.OperationalError(
-            "could not set configured journal_mode=delete "
-            f"(got {actual or 'no result'})"
-        )
-    _log_wal_reset_bug_once(db_label, kept_wal=False)
-    return "delete"
-
-
-def _wal_reset_repair_hint() -> str:
-    """Return a context-appropriate hint for repairing the SQLite runtime.
-
-    Uses the codebase's install-type detection so the hint matches what
-    ``hermes update`` can actually do for this install (#75153).
-    """
-    try:
-        from hermes_cli.config import (
-            detect_install_method,
-            recommended_update_command_for_method,
-            get_project_root,
-        )
-        method = detect_install_method(get_project_root())
-        cmd = recommended_update_command_for_method(method)
-        if method in {"git", "unknown"}:
-            return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
-        if method == "source":
-            return "source checkouts can repair the runtime by re-running their venv setup"
-        if method == "docker":
-            return f"update the container image with `{cmd}`"
-        # nix/nixos
-        return cmd
-    except Exception:
-        pass
-    return (
-        "install a Python build bundled with SQLite 3.51.3+ "
-        "(or backports 3.50.7 / 3.44.6) and restart Hermes"
-    )
-
-
-# Dedup state for _log_journal_mode_upgrade_once, mirroring the
-# _wal_fallback_warned_* pair below it.
-_journal_upgrade_warned_paths: set = set()
-_journal_upgrade_warned_lock = threading.Lock()
-
-
-def _log_wal_reset_bug_once(
-    db_label: str,
-    *,
-    kept_wal: bool,
-    indeterminate: bool = False,
-) -> None:
-    """Log once per (process, db_label) about the WAL-reset vulnerability path."""
-    with _wal_reset_bug_warned_lock:
-        if db_label in _wal_reset_bug_warned_paths:
-            return
-        _wal_reset_bug_warned_paths.add(db_label)
-    if indeterminate:
-        action = (
-            "journal mode could not be verified or exclusively switched "
-            "(database is locked — possible concurrent openers); leaving the "
-            "journal mode untouched (no live downgrade under concurrent "
-            "openers)"
-        )
-    elif kept_wal:
-        action = (
-            "is already in WAL mode — leaving WAL in place (no live "
-            "downgrade under concurrent openers)"
-        )
-    else:
-        action = "using journal_mode=DELETE instead of enabling WAL"
-    # Check whether this is a Hermes-managed install (uv-managed venv)
-    # so the warning doesn't promise a repair path that doesn't exist
-    # for git/pip/system Python installs (#75153).
-    repair_hint = _wal_reset_repair_hint()
-    logger.warning(
-        "%s: linked SQLite %s (interpreter %s) is vulnerable to the WAL-reset "
-        "corruption bug (https://sqlite.org/wal.html#walresetbug) — %s. "
-        "Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); "
-        "%s. See `hermes doctor`. This warning fires once per "
-        "process per database.",
-        db_label,
-        sqlite3.sqlite_version,
-        sys.executable,
-        action,
-        repair_hint,
-    )
-
-
-def _log_journal_mode_upgrade_once(db_label: str, previous_mode: str) -> None:
-    """Log a single WARNING per (process, db_label) about a non-WAL -> WAL flip.
-
-    ``PRAGMA journal_mode`` is a property of the FILE, not of the connection:
-    switching an existing database to WAL rewrites its header and outlives the
-    process that did it. Operators do set it directly on the file -- that was
-    the documented mitigation for the SQLite 3.50.4 WAL-reset bug -- and
-    nothing here told them the next open would silently put it back.
-
-    WARNING, not ERROR, and deliberately so. The reverse move is logged at
-    ERROR by ``_log_wal_fallback_once`` because dropping to DELETE is a real
-    loss of concurrency; this direction is normally the desirable one (see
-    ``hermes_cli/runtime_repair._default_live_venv``, which treats a database
-    stuck on DELETE as a bug worth repairing on update). The problem is not
-    the change, it is that the change was invisible: an operator who chose
-    DELETE deliberately had no way to learn their choice had been overwritten,
-    or which lever makes it stick. So this says what happened and names the
-    durable setting, without claiming a degradation that is not there.
-
-    Deduped per process per ``db_label`` like its siblings: repeated opens
-    must not turn one persistent condition into a log flood.
-    """
-    with _journal_upgrade_warned_lock:
-        if db_label in _journal_upgrade_warned_paths:
-            return
-        _journal_upgrade_warned_paths.add(db_label)
-    logger.warning(
-        "%s: on-disk journal_mode was %s and has been switched to WAL. This "
-        "rewrites the database header and persists after this process exits. "
-        "If %s was a deliberate choice (for example the mitigation for the "
-        "SQLite WAL-reset bug, or a WAL-unsafe filesystem), setting it with "
-        "PRAGMA on the file will not survive -- every open re-applies the "
-        "configured mode. Set `database.journal_mode: delete` in config.yaml "
-        "to make it stick. This message fires once per process per database.",
-        db_label,
-        previous_mode,
-        previous_mode,
-    )
-
-
-def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
-    """Log a single ERROR per (process, db_label) about WAL fallback.
-
-    ERROR (not WARNING): a DB silently dropped to DELETE means a real loss of
-    concurrency — under concurrent writers a write blocks readers, surfacing
-    as SQLITE_BUSY/lock contention — so it must be loud, not cosmetic.
-
-    Without this dedup, repeated connections on NFS would fill errors.log
-    with identical errors.
-    """
-    with _wal_fallback_warned_lock:
-        if db_label in _wal_fallback_warned_paths:
-            return
-        _wal_fallback_warned_paths.add(db_label)
-    logger.error(
-        "%s: WAL journal_mode unsupported on this filesystem (%s) — "
-        "falling back to journal_mode=DELETE (slower rollback-journal "
-        "mode; reduces concurrency but works on NFS/SMB/FUSE/ZFS). See "
-        "https://www.sqlite.org/wal.html for details. This message "
-        "fires once per process per database.",
-        db_label,
-        exc,
-    )
-
-
-def _log_configured_delete_overridden_once(db_label: str) -> None:
-    """Log a single ERROR per (process, db_label) when the operator configured
-    ``journal_mode=delete`` but the on-disk DB is already WAL, so the configured
-    mode is not in effect.
-
-    Counterpart to :func:`_log_wal_fallback_once` for the opposite direction:
-    there WAL was refused by the filesystem and we silently fell back to DELETE;
-    here the operator asked for DELETE but an inherited on-disk WAL header means
-    we keep WAL (the never-live-downgrade rule prevents a live downgrade, which
-    causes mixed-mode corruption). The signal matters because otherwise the
-    operator has no indication that ``database.journal_mode: delete`` had no
-    effect and the DB still requires a one-time offline ``PRAGMA
-    journal_mode=DELETE`` (with no open connections) to apply.
-
-    Fires once per process per database.
-    """
-    with _delete_overridden_warned_lock:
-        if db_label in _delete_overridden_warned_paths:
-            return
-        _delete_overridden_warned_paths.add(db_label)
-    logger.error(
-        "%s: database.journal_mode=delete is configured but the on-disk "
-        "database is already WAL; keeping WAL (a live downgrade under open "
-        "connections can corrupt the DB). To apply journal_mode=DELETE, stop "
-        "all connections to this DB and run a one-time offline "
-        "'PRAGMA journal_mode=DELETE' on the file. This message fires once "
-        "per process per database.",
-        db_label,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Config-driven database pragmas
-# ---------------------------------------------------------------------------
-# PRAGMA synchronous accepts either an integer or a symbolic name, and operators
-# write the names. Mapped here rather than passed through so a typo becomes a
-# warning instead of a silently different durability level.
-_SYNCHRONOUS_LEVELS: Dict[str, int] = {
-    "OFF": 0,
-    "NORMAL": 1,
-    "FULL": 2,
-    "EXTRA": 3,
-}
-_SYNCHRONOUS_NAMES: Dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
-_SYNCHRONOUS_FULL = 2
-
-
-def resolve_synchronous_level(raw_value: Any) -> Optional[int]:
-    """Map a configured ``database.synchronous`` value to its PRAGMA integer.
-
-    Accepts the symbolic names SQLite documents (``OFF``/``NORMAL``/``FULL``/
-    ``EXTRA``, any case) and the equivalent integers ``0``-``3``. Returns None
-    for anything else so the caller can warn and leave the level untouched —
-    guessing at a malformed durability setting is worse than ignoring it.
-    """
-    if isinstance(raw_value, bool):
-        # bool is an int subclass, and YAML turns a bare `on`/`off` into one.
-        # "off" as a durability level is a real choice; True is meaningless.
-        return 0 if raw_value is False else None
-    if isinstance(raw_value, int):
-        return raw_value if raw_value in _SYNCHRONOUS_NAMES else None
-    text = str(raw_value).strip()
-    if not text:
-        return None
-    upper = text.upper()
-    if upper in _SYNCHRONOUS_LEVELS:
-        return _SYNCHRONOUS_LEVELS[upper]
-    try:
-        value = int(text)
-    except (TypeError, ValueError):
-        return None
-    return value if value in _SYNCHRONOUS_NAMES else None
-
-
-def _apply_synchronous_pragma(
-    conn: sqlite3.Connection,
-    raw_value: Any,
-    *,
-    db_label: str,
-) -> None:
-    """Set ``PRAGMA synchronous`` from config, never below FULL on macOS.
-
-    Split out of the integer loop in :func:`apply_database_pragmas` because
-    this PRAGMA is not interchangeable with the sizing ones around it. Those
-    trade memory or disk for speed; this one decides whether a commit is on
-    the platter, so an unrecognised value must not fall through to "SQLite
-    default" the way a bad ``cache_size`` harmlessly can.
-
-    The Darwin floor exists because :func:`_enforce_macos_synchronous_full`
-    runs during ``apply_wal_with_fallback()`` and this function runs after it,
-    so a configured ``NORMAL`` would otherwise silently undo the macOS btree
-    protection that fix put there deliberately. Raising the level on macOS is
-    allowed; lowering it is refused out loud.
-    """
-    level = resolve_synchronous_level(raw_value)
-    if level is None:
-        logger.warning(
-            "%s: ignoring unrecognized database.synchronous=%r "
-            "(expected OFF, NORMAL, FULL, EXTRA, or 0-3)",
-            db_label,
-            raw_value,
-        )
-        return
-    if sys.platform == "darwin" and level < _SYNCHRONOUS_FULL:
-        logger.warning(
-            "%s: refusing database.synchronous=%s on macOS; keeping FULL. "
-            "Darwin's fsync() does not guarantee write ordering, so a lower "
-            "level readmits the half-written btree pages FULL exists to "
-            "prevent.",
-            db_label,
-            _SYNCHRONOUS_NAMES[level],
-        )
-        return
-    try:
-        conn.execute(f"PRAGMA synchronous={level}")
-    except sqlite3.OperationalError:
-        pass
-
-
-def apply_database_pragmas(
-    conn: sqlite3.Connection,
-    *,
-    db_label: str = "state.db",
-    tuning_config: bool = True,
-) -> None:
-    """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml``.
-
-    Reads the ``database:`` section and applies configurable PRAGMAs when set
-    to integer values.  The journal mode itself is NOT handled here —
-    ``database.journal_mode`` is owned by :func:`resolve_journal_mode` inside
-    :func:`apply_wal_with_fallback`, which layers the operator setting under
-    all the safety guards (never live-downgrading an on-disk WAL DB,
-    filesystem fallback, WAL-reset-bug gating).
-
-    ``tuning_config=False`` skips the config read entirely, so a caller
-    that serves explicit database paths it does not own (Mission
-    Control's read-only listing of the main and profile DBs) gets the
-    plain-SQLite defaults without the config load's side effects on
-    the ambient ``HERMES_HOME`` — matching what a bare
-    ``sqlite3.connect`` did before. Default ``True`` keeps every
-    existing caller's behavior.
-
-    Supported keys under ``database:`` in config.yaml:
-
-    * ``cache_size`` — negative value = KiB, positive = pages
-      (e.g. ``-262144`` = 256 MB page cache)
-    * ``mmap_size`` — max bytes for memory-mapped I/O (0 = disabled)
-    * ``temp_store`` — 0=DEFAULT(file), 1=FILE, 2=MEMORY, 3=ALWAYS
-    * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages
-    * ``journal_size_limit`` — max journal/WAL size in bytes
-    * ``synchronous`` — durability level: ``OFF``/``NORMAL``/``FULL``/``EXTRA``
-      or ``0``-``3``. Unset leaves SQLite's own default, which is a
-      *compile-time* constant (``SQLITE_DEFAULT_WAL_SYNCHRONOUS``) and so
-      differs between the bundled, distro and Homebrew builds an operator
-      might be running. Setting it explicitly is the only way to know.
-
-    Best-effort: config load or pragma failures are ignored so DB init
-    never breaks on a malformed ``database:`` section.
-    """
-    if not tuning_config:
-        return
-    try:
-        # Local import avoids a circular import with hermes_cli.config.
-        from hermes_cli.config import cfg_get, load_config_readonly
-
-        cfg = load_config_readonly()
-    except Exception:
-        return
-
-    # Performance PRAGMAs (applied to ALL connection types: writer, read_only,
-    # and WAL per-thread readers).
-    for pragma_name in (
-        "cache_size",
-        "mmap_size",
-        "temp_store",
-        "wal_autocheckpoint",
-        "journal_size_limit",
-    ):
-        raw_value = cfg_get(cfg, "database", pragma_name, default=None)
-        if raw_value is None:
-            continue
-        try:
-            value = int(str(raw_value).strip())
-        except (TypeError, ValueError):
-            logger.warning(
-                "%s: ignoring non-integer database.%s=%r",
-                db_label,
-                pragma_name,
-                raw_value,
-            )
-            continue
-        try:
-            conn.execute(f"PRAGMA {pragma_name}={value}")
-        except sqlite3.OperationalError:
-            pass
-
-    # Last, so it wins over nothing and loses to nothing: the sizing pragmas
-    # above cannot change durability, and the macOS enforcement ran earlier
-    # during WAL activation (see _apply_synchronous_pragma for why that
-    # ordering needs an explicit floor rather than an explicit override).
-    raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
-    if raw_synchronous is not None:
-        _apply_synchronous_pragma(conn, raw_synchronous, db_label=db_label)
 
 
 # ---------------------------------------------------------------------------
@@ -3223,31 +2298,6 @@ def _reapply_durability_barriers(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def apply_durability_barriers(conn: sqlite3.Connection) -> bool:
-    """Apply state-store durability barriers without changing journal mode.
-
-    This is the public entry point for secondary users of ``state.db`` that
-    must inherit its owner's journal mode while retaining per-connection
-    durability settings. Also applies the configured ``database.synchronous``
-    level (a per-connection pragma that would otherwise only ride on the
-    journal-mode setup path guest connections must not run).
-    """
-    ok = _reapply_durability_barriers(conn)
-    try:
-        # Local import avoids a circular import with hermes_cli.config.
-        from hermes_cli.config import cfg_get, load_config_readonly
-
-        cfg = load_config_readonly()
-        raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
-        if raw_synchronous is not None:
-            _apply_synchronous_pragma(
-                conn, raw_synchronous, db_label="state.db (guest)"
-            )
-    except Exception:
-        pass
-    return ok
-
-
 @contextmanager
 def _exclusive_repair_db_guard(db_path: Path):
     """Yield one live connection that excludes writers for repair surgery.
@@ -4137,14 +3187,6 @@ BEGIN
 END;
 """
 
-def fts5_cjk_so_path() -> Path:
-    """Location of the cjk_unicode61 loadable extension."""
-    env = os.getenv("HERMES_FTS5_CJK_SO")
-    if env:
-        return Path(env).expanduser()
-    return get_hermes_home() / "lib" / "libfts5_cjk.so"
-
-
 def _cjk_fts_config_enabled() -> bool:
     """config.yaml ``sessions.cjk_fts`` (default on), via its env bridge."""
     return os.getenv("HERMES_CJK_FTS", "1").strip().lower() not in (
@@ -4346,49 +3388,6 @@ def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
         _state_holders.canonical_sqlite_path(base + "-wal"),
         _state_holders.canonical_sqlite_path(base + "-shm"),
     }
-
-
-def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
-    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.
-
-    Linux-only (``/proc/<pid>/fd`` readlink). Windows and other hosts
-    return ``[]`` — Windows cannot unlink a sidecar another process still
-    holds, and macOS does not use the `` (deleted)`` suffix.
-
-    The scan includes this process: on the SessionDB open/write refuse
-    path, the in-process writer that still holds the orphan inode is the
-    one that must not mint a replacement WAL (and must stop committing).
-    ``_foreign_state_db_holders`` keeps skipping this PID for FTS
-    maintenance so a process does not block its own optional repair.
-    """
-    if not sys.platform.startswith("linux"):
-        return []
-
-    holders: List[Tuple[int, str]] = []
-    watched = _watched_sqlite_sidecar_paths(db_path)
-    try:
-        for pid_str in os.listdir("/proc"):
-            if not pid_str.isdigit():
-                continue
-            pid = int(pid_str)
-            fd_dir = f"/proc/{pid}/fd"
-            try:
-                fds = os.listdir(fd_dir)
-            except OSError:
-                continue
-            for fd in fds:
-                try:
-                    target = os.readlink(f"{fd_dir}/{fd}")
-                except OSError:
-                    continue
-                if " (deleted)" not in target:
-                    continue
-                if _state_holders.canonical_sqlite_path(target) in watched:
-                    holders.append((pid, target))
-    except Exception as exc:
-        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
-        return holders
-    return holders
 
 
 def refuse_deleted_wal_generation(db_path) -> None:
@@ -4620,194 +3619,6 @@ def quarantine_zeroed_state_db(
 # ── Read-only health/stats probes (hermes doctor, dashboards) ──────────
 
 
-def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
-    """Best-effort, strictly read-only stats snapshot of a state.db file.
-
-    Opens the database with ``mode=ro`` (URI) and a short timeout so it can
-    run against a *live* database held by a gateway without ever taking a
-    write lock or mutating the file. Every field is collected independently:
-    a failed pragma/SELECT yields ``None`` for that field, and the helper
-    itself never raises.
-
-    Deliberately does NOT instantiate :class:`SessionDB` — its constructor
-    runs schema DDL (migrations, FTS table creation), which is exactly the
-    kind of write a diagnostics probe must never perform.
-
-    Returned keys (all present, any may be None on failure):
-
-    - ``page_count``, ``page_size``, ``freelist_count`` — PRAGMA values
-    - ``logical_size_bytes`` — page_count * page_size (post-checkpoint size)
-    - ``wal_size_bytes`` — stat() of ``<db>-wal`` (0 when absent)
-    - ``journal_mode`` — PRAGMA journal_mode string
-    - ``messages`` / ``sessions`` — row counts
-    - ``fts_tables`` — dict of {table_name: bool} presence for
-      messages_fts / messages_fts_trigram / messages_fts_cjk
-    - ``fts_storage_version`` — int from state_meta, None when the marker is
-      absent (legacy pre-v23 inline layout)
-    - ``fts_rebuild_pending`` — True when the deferred v23 backfill has not
-      finished (high_water present and progress < high_water)
-    - ``fts_rebuild_high_water`` / ``fts_rebuild_progress`` — raw ints
-    - ``fts_rebuild_deferral`` — durable blocked-repair diagnostic, when present
-    """
-    stats: Dict[str, Any] = {
-        "page_count": None,
-        "page_size": None,
-        "freelist_count": None,
-        "logical_size_bytes": None,
-        "wal_size_bytes": None,
-        "journal_mode": None,
-        "messages": None,
-        "sessions": None,
-        "fts_tables": None,
-        "fts_storage_version": None,
-        "fts_rebuild_pending": None,
-        "fts_rebuild_high_water": None,
-        "fts_rebuild_progress": None,
-        "fts_rebuild_deferral": None,
-    }
-
-    # WAL sidecar size needs no connection at all.
-    try:
-        wal_path = Path(str(db_path) + "-wal")
-        stats["wal_size_bytes"] = wal_path.stat().st_size if wal_path.exists() else 0
-    except OSError:
-        pass
-
-    conn = None
-    try:
-        # mode=ro refuses to create the file and refuses every write; a
-        # short timeout keeps doctor snappy when a writer holds the lock.
-        # Route through the tracked connect so byte-probe helpers
-        # (read_header_bytes_preopen) see this connection and refuse raw
-        # opens that could cancel our POSIX locks mid-read.
-        conn = _connect_tracked_db(
-            f"file:{Path(db_path)}?mode=ro",
-            tracking_path=Path(db_path),
-            uri=True,
-            timeout=2.0,
-        )
-    except Exception as exc:
-        logger.debug("collect_state_db_stats: cannot open %s read-only: %s",
-                     db_path, exc)
-        return stats
-
-    def _scalar(sql: str) -> Any:
-        try:
-            row = conn.execute(sql).fetchone()
-            return row[0] if row else None
-        except Exception:
-            return None
-
-    try:
-        pc = _scalar("PRAGMA page_count")
-        ps = _scalar("PRAGMA page_size")
-        stats["page_count"] = int(pc) if pc is not None else None
-        stats["page_size"] = int(ps) if ps is not None else None
-        if stats["page_count"] is not None and stats["page_size"] is not None:
-            stats["logical_size_bytes"] = stats["page_count"] * stats["page_size"]
-
-        fl = _scalar("PRAGMA freelist_count")
-        stats["freelist_count"] = int(fl) if fl is not None else None
-
-        jm = _scalar("PRAGMA journal_mode")
-        stats["journal_mode"] = str(jm) if jm is not None else None
-
-        msgs = _scalar("SELECT COUNT(*) FROM messages")
-        stats["messages"] = int(msgs) if msgs is not None else None
-        sess = _scalar("SELECT COUNT(*) FROM sessions")
-        stats["sessions"] = int(sess) if sess is not None else None
-
-        # FTS table presence via sqlite_master (never SELECTs from the
-        # virtual tables themselves — a corrupt index must not fail stats).
-        try:
-            names = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' "
-                    "AND name IN (?, ?, ?)",
-                    ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
-                ).fetchall()
-            }
-            stats["fts_tables"] = {
-                t: (t in names)
-                for t in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
-            }
-        except Exception:
-            pass
-
-        # Raw state_meta reads — cheap, and independent of SessionDB.
-        def _meta_int(key: str) -> Optional[int]:
-            try:
-                row = conn.execute(
-                    "SELECT value FROM state_meta WHERE key = ?", (key,)
-                ).fetchone()
-                return int(row[0]) if row and row[0] is not None else None
-            except Exception:
-                return None
-
-        stats["fts_storage_version"] = _meta_int("fts_storage_version")
-        high_water = _meta_int("fts_rebuild_high_water")
-        progress = _meta_int("fts_rebuild_progress")
-        stats["fts_rebuild_high_water"] = high_water
-        stats["fts_rebuild_progress"] = progress
-        if high_water is None:
-            stats["fts_rebuild_pending"] = False
-        else:
-            stats["fts_rebuild_pending"] = (progress or 0) < high_water
-        try:
-            row = conn.execute(
-                "SELECT value FROM state_meta WHERE key = ? LIMIT 1",
-                (FTS_REBUILD_DEFERRAL_KEY,),
-            ).fetchone()
-            if row:
-                parsed = json.loads(row[0])
-                if isinstance(parsed, dict):
-                    stats["fts_rebuild_deferral"] = parsed
-        except Exception:
-            pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    return stats
-
-
-def count_db_holders(db_path: Path) -> Optional[int]:
-    """Best-effort count of processes holding ``db_path`` open (Linux only).
-
-    Scans ``/proc/*/fd`` symlinks for the resolved database path. Returns
-    the number of distinct PIDs with the file open, or ``None`` on any
-    error or on non-Linux platforms. Never raises; no lsof dependency.
-    Unreadable per-process fd dirs (other users' processes without root)
-    are silently skipped, so the count is a lower bound.
-    """
-    try:
-        if not sys.platform.startswith("linux"):
-            return None
-        target = os.path.realpath(str(db_path))
-        holders = 0
-        for pid in os.listdir("/proc"):
-            if not pid.isdigit():
-                continue
-            fd_dir = f"/proc/{pid}/fd"
-            try:
-                fds = os.listdir(fd_dir)
-            except OSError:
-                continue  # process gone or not ours
-            for fd in fds:
-                try:
-                    if os.readlink(f"{fd_dir}/{fd}") == target:
-                        holders += 1
-                        break  # one hit per PID
-                except OSError:
-                    continue
-        return holders
-    except Exception:
-        return None
-
-
 def _is_inactive_orphan_desktop_holder(
     *,
     ppid: int,
@@ -4860,34 +3671,6 @@ SESSION_STATUS_EMPTY = "empty"
 # finish_reason values that mark the turn as having ended in a provider or
 # agent error (vs. a normal 'stop'/'length'/'tool_calls' completion).
 _ERROR_FINISH_REASONS = frozenset({"error", "agent_error", "content_filter"})
-
-
-def classify_session_status(
-    role: Optional[str],
-    has_tool_calls: bool,
-    finish_reason: Optional[str],
-) -> str:
-    """Classify a session's lifecycle from the shape of its final message.
-
-    - assistant with a normal finish → ``complete``
-    - assistant that still has pending tool_calls (no tool result row ever
-      followed, or it would be the last row instead) → ``interrupted``
-    - user or tool as the last row → ``interrupted`` (the agent never got to
-      answer / never consumed the tool result)
-    - an error finish_reason on the last row → ``error``
-    - anything unrecognized → ``complete`` (benign default; pickers must not
-      alarm on unknown shapes)
-    """
-    if (finish_reason or "").strip().lower() in _ERROR_FINISH_REASONS:
-        return SESSION_STATUS_ERROR
-    r = (role or "").strip().lower()
-    if r == "assistant":
-        # The last row being an assistant message WITH tool_calls means the
-        # matching tool result never landed — an interrupted tool turn.
-        return SESSION_STATUS_INTERRUPTED if has_tool_calls else SESSION_STATUS_COMPLETE
-    if r in {"user", "tool"}:
-        return SESSION_STATUS_INTERRUPTED
-    return SESSION_STATUS_COMPLETE
 
 
 def forced_recovery_tail_digest(row: Optional[Dict[str, Any]]) -> str:
@@ -12868,13 +11651,6 @@ class SessionDB(
         from every outgoing payload anyway, so the scrubbed form IS the
         wire bytes).
         """
-        # Display metadata is presentation-only and never changes the model
-        # context role/content replayed to providers.
-        display_metadata_json = self._encode_display_metadata(display_metadata)
-        # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = self._reasoning_json_text(reasoning_details)
-        codex_items_json = self._reasoning_json_text(codex_reasoning_items)
-        codex_message_items_json = self._reasoning_json_text(codex_message_items)
         # tool_calls may arrive as a Python list (from the live agent) or
         # as a JSON string (from import/export). Parse first to avoid
         # double-encoding.
@@ -12883,10 +11659,6 @@ class SessionDB(
                 tool_calls = json.loads(tool_calls)
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
-        # cannot bind list/dict parameters directly.
-        stored_content = self._encode_content(content)
 
         message_timestamp = time.time()
         if timestamp is not None:
@@ -12903,6 +11675,30 @@ class SessionDB(
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
+        msg = {
+            "content": content,
+            "tool_call_id": tool_call_id,
+            "tool_calls": tool_calls,
+            "tool_name": tool_name,
+            "effect_disposition": effect_disposition,
+            "token_count": token_count,
+            "finish_reason": finish_reason,
+            "reasoning": reasoning,
+            "reasoning_content": reasoning_content,
+            "reasoning_details": reasoning_details,
+            "codex_reasoning_items": codex_reasoning_items,
+            "codex_message_items": codex_message_items,
+            "platform_message_id": platform_message_id,
+            "observed": observed,
+            "_compressed_summary": _compressed_summary,
+            "api_content": api_content,
+            "display_kind": display_kind,
+            "display_metadata": display_metadata,
+        }
+        params = self._message_row_params(
+            session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True
+        )
+
         def _do(conn):
             self._check_transcript_write_guards(
                 conn,
@@ -12911,38 +11707,7 @@ class SessionDB(
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
-            cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    stored_content,
-                    tool_call_id,
-                    tool_calls_json,
-                    _scrub_surrogates(tool_name),
-                    effect_disposition,
-                    message_timestamp,
-                    token_count,
-                    finish_reason,
-                    _scrub_surrogates(reasoning),
-                    _scrub_surrogates(reasoning_content),
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_message_id,
-                    1 if observed else 0,
-                    1 if _compressed_summary else 0,
-                    1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
-                    display_metadata_json,
-                ),
-            )
-            msg_id = cursor.lastrowid
+            msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
 
             # Update counters
             if num_tool_calls > 0:
@@ -13354,38 +12119,11 @@ class SessionDB(
                 msg.get("platform_message_id") or msg.get("message_id")
             )
 
-            api_content = msg.get("api_content")
-
             cur = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    self._encode_content(msg.get("content")),
-                    msg.get("tool_call_id"),
-                    tool_calls_json,
-                    _scrub_surrogates(msg.get("tool_name")),
-                    msg.get("effect_disposition"),
-                    message_timestamp,
-                    msg.get("token_count"),
-                    msg.get("finish_reason"),
-                    _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
-                    _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_msg_id,
-                    1 if msg.get("observed") else 0,
-                    1 if msg.get("_compressed_summary") else 0,
-                    1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                    _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
-                    self._encode_display_metadata(msg.get("display_metadata")),
-                ),
+                _INSERT_MESSAGE_SQL,
+                self._message_row_params(
+                    session_id, role, msg, tool_calls, message_timestamp,
+                    keep_reasoning=role == "assistant"),
             )
             if isinstance(msg, dict) and cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
@@ -13833,115 +12571,52 @@ class SessionDB(
                 seen[key] = row
         return sorted(seen.values(), key=lambda r: r["id"])
 
-    def get_messages(
-        self,
-        session_id: str,
-        include_inactive: bool = False,
-        include_compacted: bool = False,
-        limit: Optional[int] = None,
-        offset: int = 0,
-        latest: bool = False,
-        after_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """Load messages for a session in insertion order.
-
-        By default only active messages are returned. Pass
-        ``include_inactive=True`` to load soft-deleted rows (e.g. for
-        audit / debug views of rewound history). See
-        :meth:`rewind_to_message` for the soft-delete mechanic.
-
-        Pass ``include_compacted=True`` to additionally load rows preserved
-        by in-place context compaction (``active=0, compacted=1``). Those are
-        durable display history, not soft-deleted rows — a user-visible
-        transcript read must not drop them, or earlier turns silently become
-        unreachable once the UI exhausts its active-only window. Soft-deleted
-        Undo/Rewind rows (``active=0, compacted=0``) stay excluded; use
-        ``include_inactive`` for those.
-
-        Ordered by AUTOINCREMENT id (true insertion order) rather than
-        timestamp — see c03acca50 for the WSL2 clock-regression rationale.
-
-        When ``limit`` is provided, returns at most ``limit`` messages
-        starting from ``offset`` (0-based, in insertion order). Enables
-        pagination for the API endpoint to avoid loading entire transcripts.
-        With ``latest=True``, the offset is measured back from the newest
-        message and the selected page is still returned in chronological
-        order. ``offset`` alone (without ``limit``) also pages — SQLite
-        requires a LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1``
-        (unbounded).
-
-        ``after_id`` enables keyset pagination (``id > after_id``): O(1)
-        page seeks on huge transcripts where OFFSET degrades to O(n) per
-        page. Ascending order only (incompatible with ``latest``/``offset``).
-        """
+    def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
+                     limit: Optional[int] = None, offset: int = 0, latest: bool = False,
+                     after_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
+        rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
+        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
-        if include_inactive:
-            # Audit / debug reads: every row, including soft-deleted.
-            active_clause = ""
-        elif include_compacted:
-            # Display history: active rows plus rows preserved by in-place
-            # compaction (active=0, compacted=1), but never soft-deleted
-            # Undo/Rewind rows (active=0, compacted=0).
-            active_clause = " AND (active = 1 OR compacted = 1)"
-        else:
-            active_clause = " AND active = 1"
-        keyset_clause = " AND id > ?" if after_id is not None else ""
-        sql = (
-            "SELECT * FROM messages WHERE session_id = ?"
-            f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
-        )
-        params: list = [session_id]
-        if after_id is not None:
-            params.append(after_id)
-        if include_compacted:
-            # Read the full display set (a session's rows are bounded; the
-            # UI-level 500-row cap lives in the endpoint, not here), dedupe
-            # generations, then apply paging.
-            with self._read_ctx() as conn:
-                cursor = conn.execute(
-                    "SELECT * FROM messages WHERE session_id = ?" + active_clause
-                    + " ORDER BY id ASC",
-                    [session_id],
+        active_clause = self._active_clause(include_inactive, include_compacted)
+        if include_compacted and not include_inactive and self._ensure_display_order(session_id):
+            direction = "DESC" if latest else "ASC"
+            sql = f"""WITH page AS (
+                    SELECT display_order FROM messages
+                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                    GROUP BY display_order ORDER BY display_order {direction}
+                    LIMIT ? OFFSET ?
                 )
-                all_rows = cursor.fetchall()
-            rows = self._dedupe_display_generations(all_rows)
-            if latest:
-                rows = rows[::-1]
-            rows = rows[offset:]
-            if limit is not None:
-                rows = rows[:limit]
-            if latest:
-                rows = rows[::-1]
+                SELECT chosen.* FROM page
+                JOIN messages AS chosen ON chosen.id = (
+                    SELECT candidate.id FROM messages AS candidate
+                    WHERE candidate.session_id = ?
+                      AND candidate.display_order = page.display_order
+                      AND (candidate.active = 1 OR candidate.compacted = 1)
+                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                )
+                ORDER BY page.display_order ASC"""
+            rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
+        elif include_compacted:
+            # Read-only legacy stores cannot persist display identities; keep only fixed-width
+            # identities and representative ids while scanning, then fetch the selected payloads.
+            rows = self._legacy_display_page(
+                session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
         else:
+            sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
+                f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
+            params: list = [session_id] if after_id is None else [session_id, after_id]
             if limit is not None or offset:
                 # SQLite's OFFSET requires LIMIT; -1 means "no limit".
                 sql += " LIMIT ? OFFSET ?"
                 params.extend([-1 if limit is None else limit, offset])
-            with self._read_ctx() as conn:
-                cursor = conn.execute(sql, params)
-                rows = cursor.fetchall()
+            rows = self._read_all(sql, params)
             if latest:
                 rows.reverse()
-        result = []
-        for row in rows:
-            msg = dict(row)
-            if msg.pop("_compressed_summary", 0):
-                msg["_compressed_summary"] = True
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
-                    msg["tool_calls"] = []
-            if msg.get("display_metadata") is not None:
-                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
-            result.append(msg)
-        return result
+        return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results in these sessions that mention a GitHub PR url.

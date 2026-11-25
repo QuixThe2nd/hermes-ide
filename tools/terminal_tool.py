@@ -69,6 +69,7 @@ from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
     _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
+    cleanup_vm, get_active_env, is_persistent_env,
 )
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
@@ -1504,13 +1505,6 @@ def _stop_cleanup_thread():
             pass
 
 
-def get_active_env(task_id: str):
-    """Return the active BaseEnvironment for *task_id*, or None."""
-    lookup = _resolve_container_task_id(task_id)
-    with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
-
-
 def ensure_task_env(task_id: Optional[str] = None):
     """Lazily create and cache the sandbox env for *task_id* if none is active.
 
@@ -1580,29 +1574,6 @@ def ensure_task_env(task_id: Optional[str] = None):
             env_type, effective_task_id[:8],
         )
         return new_env
-
-
-def is_persistent_env(task_id: str) -> bool:
-    """Return True if the active environment for task_id is configured for
-    cross-turn persistence (``persistent_filesystem=True``).
-
-    Used by the agent loop to skip per-turn teardown for backends whose whole
-    point is to survive between turns (persistent plugin sandboxes). Non-persistent
-    backends still get torn down at end-of-turn to prevent leakage. The idle reaper
-    (``_cleanup_inactive_envs``) handles persistent envs once they exceed
-    ``terminal.lifetime_seconds``.
-
-    Session-scoped sandbox environments (per-session isolation mode) also count
-    as persistent HERE: their lifetime is the SESSION, not the turn — they
-    are removed by ``AIAgent.close()`` → ``cleanup_vm`` at session teardown
-    and by the idle reaper, not per-turn.
-    """
-    env = get_active_env(task_id)
-    if env is None:
-        return False
-    if getattr(env, "_session_scoped", False):
-        return True
-    return bool(getattr(env, "_persistent", False))
 
 
 def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
@@ -1685,62 +1656,6 @@ def _cleanup_env(env, *, force_remove: bool = False) -> None:
         env.stop()
     elif hasattr(env, 'terminate'):
         env.terminate()
-
-
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
-    """Manually clean up a specific environment by task_id.
-
-    *force_remove* (default False) is forwarded to backends that accept it
-    — currently only ``DockerEnvironment``. The default of False matches
-    session-lifecycle semantics: this function is called from
-    ``AIAgent.close()`` (TUI session close, gateway session teardown) and the
-    per-turn cleanup branch for non-persistent envs, both of which should
-    honor the user's persist-mode preference. Stopping the container here
-    would defeat the "ONE long-lived container shared across sessions"
-    contract — exactly the bug Ben reported when the container was killed
-    on every TUI session close.
-
-    Pass ``force_remove=True`` for actual user-initiated teardown
-    (e.g. ``/reset``-style flows that haven't been wired yet, or future
-    "destroy my sandbox" commands).
-
-    The idle reaper passes the env through ``env.cleanup()`` directly (not
-    via this function), so persist-mode idle envs are similarly no-op'd —
-    only the orphan reaper at next startup reclaims them.
-    """
-    # Remove from tracking dicts while holding the lock, but defer the
-    # actual (potentially slow) env.cleanup() call to outside the lock
-    # so other tool calls aren't blocked.
-    env = None
-    with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
-
-    # Clean up per-task creation lock
-    with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
-
-    # Invalidate stale file_ops cache entry
-    try:
-        from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
-    except ImportError:
-        pass
-
-    if env is None:
-        return
-
-    try:
-        _cleanup_env(env, force_remove=force_remove)
-
-        logger.info("Manually cleaned up environment for task: %s", task_id)
-
-    except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
 def _atexit_cleanup():
@@ -3224,3 +3139,24 @@ registry.register(
     emoji="💻",
     max_result_size_chars=100_000,
 )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+_PLUGIN_COMPAT_LAZY = {
+    'is_interrupted': ('tools.interrupt', 'is_interrupted'),
+    'is_managed_tool_gateway_ready': ('tools.managed_tool_gateway', 'is_managed_tool_gateway_ready'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----
