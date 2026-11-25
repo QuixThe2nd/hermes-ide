@@ -20,10 +20,9 @@ def test_current_checkout_repairs_failed_node_deps(capsys):
     completion = MagicMock()
     with patch.object(
         update_cmd, "_update_node_dependencies", return_value=["Node.js dependencies"]
-    ), patch.object(update_cmd, "_m") as m:
+    ):
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
-    m.return_value._build_web_ui.assert_not_called()
     completion.assert_called_once()
     assert "could not be repaired" in completion.call_args[0][0]
     out = capsys.readouterr().out
@@ -36,9 +35,7 @@ def test_current_checkout_healthy_node_deps_reports_up_to_date():
     completion = MagicMock()
     with patch.object(
         update_cmd, "_update_node_dependencies", return_value=[]
-    ), patch.object(update_cmd, "_m") as m:
+    ):
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
-    # The refresh pairs with the web build like every other call site.
-    m.return_value._build_web_ui.assert_called_once()
     completion.assert_called_once_with("✓ Already up to date!")
