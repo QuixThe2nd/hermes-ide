@@ -140,6 +140,7 @@ from agent.session_persistence import SessionPersistenceMixin
 # compact SessionPersistenceMixin bodies in the MRO) reference these decomposed
 # siblings' helpers — import them here so the names resolve.
 from agent.session_persistence import _safe_session_filename_component  # noqa: F401
+from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT  # noqa: F401
 from agent.context_compressor import (  # noqa: F401
     COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor, _DB_PERSISTED_MARKER, user_originated_turn_view)
 from agent.memory_manager import sanitize_context  # noqa: F401
@@ -1258,7 +1259,9 @@ class AIAgent(
                 # Already-durable messages: either carried over from the loaded
                 # history copy, or seeded by a caller. Stamp them so future
                 # flushes skip them without consulting any id() set again.
-                if id(msg) in history_ids or id(msg) in seed_ids:
+                if (
+                    id(msg) in history_ids or id(msg) in seed_ids
+                ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")
@@ -4149,6 +4152,16 @@ class AIAgent(
                             "completed": False,
                             "interrupted": True,
                         }
+                        # A hard stop (/stop) cancels the accepted input; a follow-up
+                        # interrupt must not consume it (see carry_unadmitted_user_message).
+                        _hard_event = getattr(
+                            self, "_hard_interrupt_requested", None
+                        )
+                        if (
+                            callable(getattr(_hard_event, "is_set", None))
+                            and _hard_event.is_set()
+                        ):
+                            interrupt_result["_hard_interrupted"] = True
                         interrupt_message = getattr(
                             self, "_interrupt_message", None
                         )
@@ -4164,6 +4177,19 @@ class AIAgent(
                         except Exception:
                             self._interrupt_requested = False
                             self._interrupt_message = None
+                        from agent.turn_facade_lease import (
+                            carry_unadmitted_user_message,
+                        )
+
+                        carry_unadmitted_user_message(
+                            interrupt_result,
+                            user_message,
+                            persist_user_message,
+                            timestamp=persist_user_timestamp,
+                            display_kind=persist_user_display_kind,
+                            display_metadata=persist_user_display_metadata,
+                            platform_id=persist_user_platform_id,
+                        )
                         return interrupt_result
                     # Fail closed like gateway TurnLeaseTimeoutError: do not
                     # enter load/run/flush, and surface a resend notice instead
@@ -4213,15 +4239,28 @@ class AIAgent(
                 # the lease, so the in-memory history is current and reloading
                 # would only cause an unnecessary prompt cache miss.
                 if _lease_waited:
+                    _carried_history = conversation_history
                     latest_session_id = _turn_db.resolve_resume_session_id(session_id)
                     if latest_session_id:
                         self.session_id = latest_session_id
                         task_context["session_id"] = latest_session_id
-                    conversation_history = _turn_db.get_messages_as_conversation(
+                    reloaded = _turn_db.get_messages_as_conversation(
                         self.session_id,
                         repair_alternation=True,
                         include_row_ids=True,
                     )
+                    # A follow-up that aborted an earlier wait carries that turn's
+                    # never-persisted input only in memory (see
+                    # carry_unadmitted_user_message); the reload would drop it. Re-append
+                    # the tagged rows that have no durable row id so the follow-up turn
+                    # sees and flushes them.
+                    reloaded.extend(
+                        m for m in (_carried_history or [])
+                        if isinstance(m, dict)
+                        and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                        and "_row_id" not in m
+                    )
+                    conversation_history = reloaded
 
                 # Long model/tool/compression turns outlive a fixed TTL. Refresh
                 # on the shared periodic scheduler; holder-qualified UPDATE and DELETE fence a
