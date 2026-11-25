@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str
+from hermes_cli.fallback_config import resolve_entry_api_key
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches
 
@@ -155,7 +156,16 @@ def _resolve_openrouter_runtime(
         )
     )
     if is_openrouter_context:
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"), get_secret_str("OPENAI_API_KEY")]
+        # A promoted official-OpenRouter fallback carries its own credential — inline
+        # model.api_key, else the key_env / api_key_env reference (resolve_entry_api_key
+        # precedence, read through the profile's secret scope). It beats the ambient keys
+        # but stays behind the explicit override. Only the route's own config block
+        # contributes: another provider's configured key belongs to that provider's
+        # endpoint, not openrouter.ai.
+        configured_key = ""
+        if cfg_provider == "openrouter":
+            configured_key = resolve_entry_api_key(model_cfg) or ""
+        candidates = [explicit_api_key, configured_key, get_secret_str("OPENROUTER_API_KEY"), get_secret_str("OPENAI_API_KEY")]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).
