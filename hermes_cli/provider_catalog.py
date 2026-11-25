@@ -87,11 +87,17 @@ def provider_catalog() -> list[ProviderDescriptor]:
         # auth_type: registry is authoritative; then profile, then overlay (moa → "virtual"), then api_key.
         auth_type = ((cfg.auth_type if cfg else "") or (prof.auth_type if prof else "")
                      or (overlay.auth_type if overlay else "") or "api_key")
-        # Credential env vars: registry first (already normalized), else derived from the profile.
+        # Credential env vars: registry first (already normalized), else derived from the profile,
+        # else from the Hermes overlay. A provider whose only metadata source is an overlay (e.g.
+        # fireworks, whose plugin #719 deleted while its OpenAI-compatible endpoint and advertised
+        # FIREWORKS_API_KEY remain) must not render as a keys-tab provider with no variable to
+        # write the key into.
         if cfg and cfg.api_key_env_vars:
             api_key_vars, base_url_var = tuple(cfg.api_key_env_vars), cfg.base_url_env_var or ""
         elif prof and prof.env_vars:
             api_key_vars, base_url_var = _split_env_vars(tuple(prof.env_vars))
+        elif overlay and overlay.extra_env_vars:
+            api_key_vars, base_url_var = _split_env_vars(overlay.extra_env_vars)
         else:
             api_key_vars, base_url_var = (), ""
         label = (prof.display_name if prof else "") or entry.label or slug
