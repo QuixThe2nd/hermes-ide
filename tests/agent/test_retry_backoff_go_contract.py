@@ -17,6 +17,7 @@ cross-check.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from datetime import datetime
 from datetime import timezone
@@ -177,10 +178,19 @@ def test_go_binary_answers_the_shared_table(case, go_retrybackoff):
     assert json.loads(run.stdout) == case["expect"]
 
 
-@pytest.fixture(scope="session")
-def go_retrybackoff(tmp_path_factory) -> str | None:
-    """Build cmd/retrybackoff once per session; None when no Go toolchain."""
-    binary = tmp_path_factory.mktemp("retrybackoff-bin") / "retrybackoff"
+def _build_retrybackoff(binary_dir: Path) -> str | None:
+    """Build cmd/retrybackoff into ``binary_dir``; None when no Go toolchain.
+
+    Availability is checked BEFORE launching the build: with ``go`` absent from
+    PATH, ``subprocess.run`` raises FileNotFoundError during fixture setup and
+    every Go-backed contract case ERRORs instead of taking the skip path
+    (#915 review). The gate keeps the contract obligatory where the toolchain
+    exists (CI) and skips only the genuinely absent local setup; a present-but-
+    broken toolchain still fails loudly below.
+    """
+    if shutil.which("go") is None:
+        return None
+    binary = binary_dir / "retrybackoff"
     build = subprocess.run(
         ["go", "build", "-o", str(binary), "./cmd/retrybackoff"],
         cwd=str(_REPO / "internal" / "retrybackoff"),
@@ -191,6 +201,54 @@ def go_retrybackoff(tmp_path_factory) -> str | None:
             return None
         pytest.fail(f"go build cmd/retrybackoff failed:\n{build.stderr}")
     return str(binary)
+
+
+@pytest.fixture(scope="session")
+def go_retrybackoff(tmp_path_factory) -> str | None:
+    """Build cmd/retrybackoff once per session; None when no Go toolchain."""
+    return _build_retrybackoff(tmp_path_factory.mktemp("retrybackoff-bin"))
+
+# ---- Go toolchain gating (fixture-only: the decision, not the build) -------
+
+
+def test_go_leg_skips_without_a_toolchain(monkeypatch, tmp_path):
+    """``go`` absent from PATH → None (skip), and no build is ever launched
+    (#915 review: FileNotFoundError during setup ERROR'd every Go case)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    def _no_build(*_a, **_k):
+        raise AssertionError("go build must not launch without a toolchain")
+
+    monkeypatch.setattr(subprocess, "run", _no_build)
+    assert _build_retrybackoff(tmp_path) is None
+
+
+def test_go_leg_builds_when_the_toolchain_is_present(monkeypatch, tmp_path):
+    """A present toolchain must NOT take the skip path: the contract stays
+    obligatory where Go exists (CI)."""
+    seen = {}
+
+    def _fake_run(cmd, **_k):
+        seen["argv0"] = cmd[0]
+        Path(cmd[cmd.index("-o") + 1]).touch()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/go" if name == "go" else None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    out = _build_retrybackoff(tmp_path)
+    assert out == str(tmp_path / "retrybackoff")
+    assert seen["argv0"] == "go"
+
+
+def test_go_leg_fails_loudly_on_a_real_build_error(monkeypatch, tmp_path):
+    """A toolchain that exists but cannot build is an error, never a skip."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/go" if name == "go" else None)
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="", stderr="reference to undefined name"),
+    )
+    with pytest.raises(pytest.fail.Exception, match="go build cmd/retrybackoff failed"):
+        _build_retrybackoff(tmp_path)
 
 
 # ---- invariants (both engines, beyond the table) --------------------------
