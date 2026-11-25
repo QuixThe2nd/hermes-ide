@@ -43,6 +43,51 @@ def test_detached_wrapper_is_not_a_py_file(tmp_path, monkeypatch):
     assert runner_arg == str(wrapper)
     assert not runner_arg.endswith(".py")
 
+
+def test_system_manager_denial_falls_back_to_user_manager(tmp_path, monkeypatch):
+    # A gateway running as a *user* service is refused by polkit on the system
+    # manager ("Access denied"), which used to kill every detached harness in 0s.
+    import tools.harness_persist as hp
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if "--user" not in cmd:
+            raise subprocess.CalledProcessError(1, cmd, "", "Failed to start transient service unit: Access denied")
+
+        class _Done:
+            returncode = 0
+
+        return _Done()
+
+    monkeypatch.setattr(hp.subprocess, "run", fake_run)
+    monkeypatch.setattr(hp, "active_service_main_pid", lambda unit: os.getpid())
+    launched = hp.launch_detached_service(
+        ["/bin/true"], cwd=str(tmp_path), env={"PATH": "/usr/bin:/bin"},
+        stdout_path=tmp_path / "out", stderr_path=tmp_path / "err",
+    )
+    assert launched["pid"] == os.getpid()
+    assert len(calls) == 2
+    assert calls[0][0] == "systemd-run" and "--user" not in calls[0]
+    assert calls[1][:2] == ["systemd-run", "--user"]
+    assert calls[1][2:] == calls[0][1:]
+
+
+def test_both_managers_failing_raises_the_system_error(tmp_path, monkeypatch):
+    import tools.harness_persist as hp
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd, "", "user" if "--user" in cmd else "system")
+
+    monkeypatch.setattr(hp.subprocess, "run", fake_run)
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        hp.launch_detached_service(
+            ["/bin/true"], cwd=str(tmp_path), env={},
+            stdout_path=tmp_path / "out", stderr_path=tmp_path / "err",
+        )
+    assert excinfo.value.stderr == "system"
+
 def _stop(unit: str) -> None:
     subprocess.run(["systemctl", "stop", unit], check=False, timeout=30)
 
