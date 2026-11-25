@@ -75,10 +75,11 @@ jobs:
         # (HERMES_DISABLE_LAZY_INSTALLS=1 in tests/conftest.py), so the
         # SDKs those tests need must be in the venv up front — resolved
         # from uv.lock like everything else, which also honors the exact
-        # supply-chain pins these extras carry.
+        # supply-chain pins these extras carry. Discord integration tests use
+        # discord.py's actual MessageType, ui and ext.commands objects.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra hindsight --extra parallel-web --extra discord
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
