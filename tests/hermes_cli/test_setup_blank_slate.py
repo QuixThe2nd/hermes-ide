@@ -125,7 +125,8 @@ class TestBlankSlateFork:
         setup_quick._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
 
         # Minimal baseline was applied, walkthrough was NOT run.
-        assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "terminal", "vision"]
+        assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "skills_list",
+                                                   "terminal", "vision"]
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True

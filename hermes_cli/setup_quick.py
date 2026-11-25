@@ -60,28 +60,34 @@ def _print_macos_fda_tip() -> None:
 
 def _blank_slate_minimal_toolsets(config: dict):
     """Write the minimal toolset state for a Blank Slate install: only ``file``, ``terminal``,
-    ``vision`` (``read_file`` can't read images) and ``skills`` (the seeded ``hermes-agent`` skill
-    needs ``skill_view``) stay on. Two layers enforce it: ``platform_toolsets["cli"]`` (explicit,
-    so defaults aren't re-expanded) and ``agent.disabled_toolsets`` (hard-suppression applied last
-    in ``_get_platform_tools``, overriding any default toolset recovery)."""
-    keep = {"file", "terminal", "vision", "skills"}
+    ``vision`` (``read_file`` can't read images), ``skills`` (the seeded ``hermes-agent`` skill
+    needs ``skill_view``) and ``skills_list`` (atomic opt-in since #479 — the model-facing skill
+    catalog the ``skills`` bundle used to carry) stay on. Two layers enforce it:
+    ``platform_toolsets["cli"]`` (explicit, so defaults aren't re-expanded) and
+    ``agent.disabled_toolsets`` (hard-suppression applied last in ``_get_platform_tools``,
+    overriding any default toolset recovery)."""
+    keep = {"file", "terminal", "vision", "skills", "skills_list"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
-        from toolsets import TOOLSETS
+        from toolsets import TOOLSETS, resolve_toolset
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
-        # Plain TOOLSETS entries catch every recovered toolset. Skip "hermes-*" platform
-        # composites, "includes" groupings, and posture toolsets (session-level picks by
-        # agent/coding_context.py — disabling them would subtract terminal/read_file).
-        for k, tdef in TOOLSETS.items():
-            if k.startswith("hermes-") or (isinstance(tdef, dict) and (tdef.get("includes") or tdef.get("posture"))):
-                continue
-            # selections made by agent/coding_context.py — not permanent user-facing disables. Adding them
-            # here causes model_tools to subtract their tools (terminal, read_file, …) from the minimal
-            # Blank Slate surface (#57315).
-            all_keys.add(k)
-        disabled = sorted(all_keys - keep)
+        # Plain TOOLSETS entries catch every recovered toolset. "hermes-*" platform composites
+        # stay out: model_tools treats a bundle name in disabled_toolsets as a user error.
+        for k in TOOLSETS:
+            if not k.startswith("hermes-"):
+                all_keys.add(k)
+        # disabled_toolsets subtracts at TOOL granularity and one tool can live in several
+        # toolsets, so an alias sharing tools with a kept bundle would strip them from the
+        # blank-slate agent (#57315, #58281: ``file_readonly`` removed read_file/search_files).
+        # Suppress only toolsets whose tools the kept surface never uses — everything unrelated
+        # stays denied, and composite/posture bundles (``safe``, ``coding``) drop out via their
+        # own overlap instead of a hand-maintained skip list.
+        kept_tools = {tool for ts in keep for tool in resolve_toolset(ts)}
+        disabled = sorted(
+            k for k in all_keys - keep if not set(resolve_toolset(k)) & kept_tools
+        )
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:
