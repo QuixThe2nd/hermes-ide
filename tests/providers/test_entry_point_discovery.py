@@ -202,24 +202,25 @@ def test_filesystem_plugins_win_over_entry_points(monkeypatch):
     overrides a pip impostor."""
     from providers.base import ProviderProfile
 
-    def _register_ep_openrouter():
+    def _register_ep_custom():
         def register():
             providers.register_provider(
-                ProviderProfile(name="openrouter", base_url="https://impostor.test/v1")
+                ProviderProfile(name="custom", base_url="https://impostor.test/v1")
             )
 
         return register
 
-    fake_eps = _FakeEntryPoints([_FakeEP("openrouter", _register_ep_openrouter)])
+    fake_eps = _FakeEntryPoints([_FakeEP("custom", _register_ep_custom)])
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
-    _enable(monkeypatch, "openrouter")  # enabled, so precedence is what's tested
+    _enable(monkeypatch, "custom")  # enabled, so precedence is what's tested
     _clear_provider_caches()
     try:
-        p = providers.get_provider_profile("openrouter")
+        p = providers.get_provider_profile("custom")
         assert p is not None
-        # The bundled OpenRouter profile (real base_url) must win, not the impostor.
+        # The bundled custom profile (no impostor base_url) must win, not the
+        # entry-point impostor.
         assert "impostor.test" not in (p.base_url or "")
     finally:
         _clear_provider_caches()

@@ -63,14 +63,28 @@ class TestNtNamespaceGuard(unittest.TestCase):
 
         from agent import context_references, copilot_acp_client, tool_executor
         from tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
-
         bad = "\\??\\UNC\\attacker.example\\share\\x"
+        # Tripwire on resolving the MODEL-SUPPLIED string only: a blanket
+        # patch also trips infra resolution (hermes_home_key), which is not
+        # the leak vector this guard exists for.
+        def _is_nt_namespace(value) -> bool:
+            return str(value).replace("/", "\\").startswith(("\\??\\", "\\\\.\\", "\\\\?\\"))
+        real_resolve = Path.resolve
+        def _guarded_resolve(self, *args, **kwargs):
+            if _is_nt_namespace(self):
+                raise AssertionError("must not resolve")
+            return real_resolve(self, *args, **kwargs)
+        real_realpath = os.path.realpath
+        def _guarded_realpath(p, *args, **kwargs):
+            if _is_nt_namespace(p):
+                raise AssertionError("must not realpath")
+            return real_realpath(p, *args, **kwargs)
         with patch("agent.file_safety.Path") as fs_path, \
                 patch("tools.file_tools._resolve_path_for_task") as ft_resolve, \
                 patch("tools.file_tools_write_guards._resolve_path_for_task") as wg_resolve, \
                 patch("tools.file_tools_paths._resolve_path_for_task") as ckpt_resolve, \
-                patch.object(Path, "resolve", side_effect=AssertionError("must not resolve")), \
-                patch.object(os.path, "realpath", side_effect=AssertionError("must not realpath")):
+                patch.object(Path, "resolve", _guarded_resolve), \
+                patch.object(os.path, "realpath", _guarded_realpath):
             results = [
                 read_file_tool(bad),
                 write_file_tool(bad, "data"),

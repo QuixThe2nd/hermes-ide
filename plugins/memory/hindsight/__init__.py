@@ -2060,7 +2060,8 @@ class HindsightMemoryProvider(MemoryProvider):
         request_timeout = float(self._timeout or _DEFAULT_TIMEOUT)
         try:
             self._run_hindsight_operation(
-                lambda c: c._aupdate_bank_config(self._bank_id, updates)
+                lambda c: c._aupdate_bank_config(self._bank_id, updates),
+                retry_stale=False,
             )
             logger.debug("Hindsight bank config applied: bank=%s, retain_mission=%s, reflect_mission=%s",
                          self._bank_id,
@@ -2080,7 +2081,8 @@ class HindsightMemoryProvider(MemoryProvider):
             response = self._run_hindsight_operation(
                 lambda c: c.directives.list_directives(
                     self._bank_id, _request_timeout=request_timeout
-                )
+                ),
+                retry_stale=False,
             )
             existing = {
                 str(getattr(item, "name", "") or "")
@@ -2104,7 +2106,8 @@ class HindsightMemoryProvider(MemoryProvider):
                             "is_active": True,
                         },
                         _request_timeout=request_timeout,
-                    )
+                    ),
+                    retry_stale=False,
                 )
             except Exception as exc:
                 logger.warning("Hindsight create_directive(%s) failed for bank %s: %s",
@@ -2186,7 +2189,7 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
-    def _run_hindsight_operation(self, operation):
+    def _run_hindsight_operation(self, operation, *, retry_stale: bool = True):
         """Run an async Hindsight client operation, retrying once after idle shutdown.
 
         The operation callable is invoked INSIDE a coroutine on the shared
@@ -2198,6 +2201,12 @@ class HindsightMemoryProvider(MemoryProvider):
         scheduled here fails with aiohttp's "Timeout context manager should
         be used inside a task". Evaluating the callable on the owning loop
         keeps construct/use/retry/close on one loop.
+
+        ``retry_stale=False`` is for best-effort side work (bank defaults):
+        a best-effort call must not drive the stale-daemon recreate — one
+        unreachable daemon would otherwise cost a client rebuild (and an
+        embedded daemon restart attempt) per tuning call at first use. The
+        next real memory operation still recreates as before.
         """
         async def _invoke(client):
             result = operation(client)
@@ -2212,7 +2221,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # Stale embedded-daemon connection failure only (upstream's marker
             # set in .embedded is a superset of the fork's inline tuple).
             text = f"{type(exc).__name__}: {exc}".lower()
-            if self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
+            if not retry_stale or self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
                 raise
             logger.info(
                 "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",

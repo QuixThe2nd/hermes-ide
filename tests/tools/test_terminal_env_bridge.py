@@ -37,16 +37,15 @@ def _write_config(text: str) -> None:
 def test_unset_terminal_env_backfills_backend_from_config():
     _write_config(
         "terminal:\n"
-        "  backend: docker\n"
-        "  docker_image: custom/image:1\n"
+        "  backend: ssh\n"
+        "  ssh_host: config.example.test\n"
     )
 
     config = terminal_tool._get_env_config()
 
-    assert config["env_type"] == "docker"
-    assert config["docker_image"] == "custom/image:1"
-    assert os.environ["TERMINAL_ENV"] == "docker"
-
+    assert config["env_type"] == "ssh"
+    assert config["ssh_host"] == "config.example.test"
+    assert os.environ["TERMINAL_ENV"] == "ssh"
 
 def test_explicit_config_backend_overrides_stale_env(monkeypatch):
     _write_config("terminal:\n  backend: docker\n")
@@ -59,30 +58,53 @@ def test_explicit_config_backend_overrides_stale_env(monkeypatch):
 
 
 def test_partial_terminal_config_preserves_unrelated_env_values(monkeypatch):
-    _write_config("terminal:\n  backend: docker\n")
+    _write_config("terminal:\n  backend: local\n")
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "env/image:2")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "env.example.test")
 
     config = terminal_tool._get_env_config()
 
-    assert config["env_type"] == "docker"
-    assert config["docker_image"] == "env/image:2"
-    assert os.environ["TERMINAL_DOCKER_IMAGE"] == "env/image:2"
+    assert config["env_type"] == "local"
+    assert config["ssh_host"] == "env.example.test"
+    assert os.environ["TERMINAL_SSH_HOST"] == "env.example.test"
 
 
 def test_explicit_config_key_overrides_matching_env_value(monkeypatch):
     _write_config(
         "terminal:\n"
-        "  backend: docker\n"
-        "  docker_image: config/image:1\n"
+        "  backend: ssh\n"
+        "  ssh_host: config.example.test\n"
     )
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "env/image:2")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "env.example.test")
 
     config = terminal_tool._get_env_config()
 
-    assert config["env_type"] == "docker"
-    assert config["docker_image"] == "config/image:1"
+    assert config["env_type"] == "ssh"
+    assert config["ssh_host"] == "config.example.test"
+    assert os.environ["TERMINAL_SSH_HOST"] == "config.example.test"
+
+
+def test_retired_docker_config_keys_stay_inert(monkeypatch):
+    """Legacy docker keys in a user's config.yaml bridge nothing after the
+    built-in docker retirement (c7442dd1745, #708) — no zombie env writes."""
+    _write_config(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_image: gone/image:1\n"
+        "  docker_volumes:\n"
+        "    - /gone/vol:/data\n"
+    )
+    monkeypatch.delenv("TERMINAL_DOCKER_IMAGE", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "docker"  # backend string still passes through
+    assert "docker_image" not in config
+    assert "docker_volumes" not in config
+    assert "TERMINAL_DOCKER_IMAGE" not in os.environ
+    assert "TERMINAL_DOCKER_VOLUMES" not in os.environ
 
 
 def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):

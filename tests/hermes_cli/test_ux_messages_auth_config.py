@@ -97,7 +97,7 @@ def test_no_provider_configured_points_at_model_login_and_auth_add(monkeypatch, 
 
     msg = str(excinfo.value)
     assert excinfo.value.code == "no_provider_configured"
-    assert "`hermes model`" in msg and "`/login`" in msg and "`hermes auth add <provider>`" in msg
+    assert "`hermes model`" in msg and "`hermes auth add <provider>`" in msg
     assert "~/.hermes/.env" not in msg or display_hermes_home() == "~/.hermes"
     assert f"{display_hermes_home()}/.env" in msg
     assert "inference provider" not in msg
@@ -111,10 +111,11 @@ class TestSignInFailureCopy:
         from hermes_cli.auth_error_copy import sign_in_failure_lines
 
         lines = sign_in_failure_lines(httpx.ConnectError("[Errno -2] Name or service not known"),
-                                      service_host="portal.nousresearch.com")
+                                      service_host="auth.minimax.io",
+                                      retry_command="hermes auth add minimax")
 
         assert lines[0].startswith("Could not sign in")
-        assert "portal.nousresearch.com" in lines[0] and "`hermes portal`" in lines[0]
+        assert "auth.minimax.io" in lines[0] and "`hermes auth add minimax`" in lines[0]
         assert "Errno" not in lines[0]
         assert any(line.strip().startswith("Details:") for line in lines[1:])
 
@@ -151,7 +152,7 @@ class TestAuthCommandsCopy:
 
         from agent.credential_pool import AUTH_TYPE_OAUTH
 
-        matched = SimpleNamespace(id="abc", label="device-code", source="device_code", provider="nous",
+        matched = SimpleNamespace(id="abc", label="device-code", source="device_code", provider="openai-codex",
                                   auth_type=AUTH_TYPE_OAUTH, refresh_token="rt", last_status="ok")
 
         class _Pool:
@@ -164,11 +165,11 @@ class TestAuthCommandsCopy:
 
         monkeypatch.setattr(auth_commands, "load_pool", lambda _provider: _Pool())
         with pytest.raises(SystemExit) as excinfo:
-            auth_commands.auth_refresh_command(SimpleNamespace(provider="nous", target=None))
+            auth_commands.auth_refresh_command(SimpleNamespace(provider="openai-codex", target=None))
 
         msg = str(excinfo.value)
         assert "refresh_failed" not in msg and "status now" not in msg
-        assert "`hermes auth add nous --type oauth`" in msg
+        assert "`hermes auth add openai-codex --type oauth`" in msg
 
 
 # ── cli-24: /model onto a provider without credentials ───────────────────────────────────────

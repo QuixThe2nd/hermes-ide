@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — yapılandırma kaydedilemedi)\n_(sonraki mesajda etkili)_"
     set_session:               "🧠 ✓ Akıl yürütme gücü `{effort}` olarak ayarlandı (yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)\n_(sonraki mesajda etkili)_"
 
-  draining:         "⏳ {count} aktif ajanın duraklaması isteniyor, ardından yeniden başlatılıyor..."
+  draining:         "♻ Gateway yeniden başlatılıyor..."
   goal_cleared:     "✓ Hedef temizlendi."
   no_active_goal:   "Aktif hedef yok."
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ Temizlik sonrası başlık boş — oturum başlıksız başlatıldı."
     tip:                   "\n✦ İpucu: {tip}"
 
+  incognito:
+    status_on:             "🕵️ Bu oturum gizli (incognito): harici bellek çağrısı, kuyruktaki ön getirme, tamamlanan turların saklanması ve sınırsız geçmiş geri doldurma devre dışı bırakıldı."
+    status_off:            "Bu oturum gizli değil. Yeni bir gizli oturum başlatmak için /incognito kullan."
+    note:                  "🕵️ Gizli oturum: harici bellek yok, önceki geçmiş yok. /new normal bir oturum başlatır."
+    write_failed:          "⚠️ Yeni oturum başlatıldı ancak gizlilik bayrağı kalıcı olarak kaydedilemedi — bu oturum gizli DEĞİL. Lütfen tekrar dene."
+
   restart:
     in_progress:           "⏳ Gateway yeniden başlatma zaten sürüyor..."
     restarting:            "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."
+    forwarded:            "♻ Gateway yeniden başlatması en yeni nesle iletildi (PID {pid})..."
 
   resume:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
@@ -212,6 +219,15 @@ Future messages in this room will use that transcript until `/reset` or another 
 **Etkin modüller:** {modules_count}/5
 Mevcut bildirim kanalları asla üzerine yazılmaz.
 Yeniden eşitleme en fazla saatte bir otomatik çalışır."
+
+  set_notify:
+    save_failed:           "Bildirim kanalı kaydedilemedi: {error}"
+    success:               "✅ Gateway yaşam döngüsü bildirimleri **{name}** olarak ayarlandı (ID: {chat_id}).\nGateway kapanma/başlatma duyuruları buraya gönderilecek."
+
+  clear_notify:
+    failed:                "Bildirim kanalı temizlenemedi: {error}"
+    success:               "✅ Bildirim kanalı temizlendi.\nBir bildirim kanalı ayarlanana kadar gateway yaşam döngüsü duyuruları atlanır."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Yeniden eşitleme en fazla saatte bir otomatik çalışır."
     mode_all:              "⚙️ Araç ilerlemesi: **ALL** — her araç çağrısı gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
     mode_verbose:          "⚙️ Araç ilerlemesi: **VERBOSE** — her araç çağrısı tüm argümanlarıyla gösterilir."
     mode_log:              "⚙️ Araç ilerlemesi: **LOG** — sohbette sessiz; araç çağrıları ~/.hermes/logs/tool_calls.log dosyasına yazılır."
+    mode_compact:          "⚙️ Araç ilerlemesi: **COMPACT** — araç başına tek satır: `name({full JSON args})`."
+    mode_describe:         "⚙️ Araç ilerlemesi: **DESCRIBE** — ham komut/kod yerine her araç çağrısının ne için olduğunu söyleyen tek kısa satır."
     saved_suffix:          "_(**{platform}** için kaydedildi — sonraki mesajda geçerli olur)_"
     save_failed:           "_(yapılandırmaya kaydedilemedi: {error})_"
 

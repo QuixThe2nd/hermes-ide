@@ -42,14 +42,23 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
                 if not messages:
                     self.send_error(404)
                     return
+                # Conversation identity is the stable original first user row (the
+                # explicit child goal / parent query), never the mutable last row:
+                # a child's post-answer follow-up (e.g. the pre_turn_end continuation
+                # nudge) carries neither marker nor tool rows.
                 users = [str(m.get("content", "")) for m in messages if m["role"] == "user"]
-                worker = next((w for w in workers if w in users[-1]), None)
+                worker = next((w for w in workers if w in users[0]), None)
                 results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+                established_child = worker and any(m["role"] == "assistant" for m in messages)
                 message: dict[str, Any]
-                if worker:
+                if worker and not established_child:
                     with lock:
                         children.append(worker)
                     barrier.wait(timeout=20)
+                    message = {"role": "assistant", "content": worker + "_COMPLETE"}
+                elif worker:
+                    # An established child's follow-up gets its own fixture token
+                    # again: not a second arrival, never holds the barrier.
                     message = {"role": "assistant", "content": worker + "_COMPLETE"}
                 elif results:
                     with lock:

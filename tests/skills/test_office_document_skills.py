@@ -8,8 +8,10 @@ not snapshots of skill content.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -140,10 +142,22 @@ def test_skill_has_tests(name):
     assert list(tests_dir.glob("test_*.py")), f"{name}: no test files in tests/"
 
 
-def test_docs_pages_generated():
-    """Each bundled office skill has a generated docs-site page."""
-    docs_dir = REPO / "website" / "docs" / "user-guide" / "skills" / "bundled" / "productivity"
+def test_office_skills_are_listed_by_the_public_skills_listing():
+    """The generated docs page is gone with the site; what makes a shipped
+    office skill user-visible now is the public listing the agent and the
+    user actually query (tools/skills_tool.py, the same path the `skills`
+    tool serves). A skill the listing won't surface is one no session can
+    load, however complete its directory is."""
+    from tools.skills_tool import skills_list
+
+    with patch("tools.skills_tool.SKILLS_DIR", SKILLS):
+        listing = json.loads(skills_list())
+
+    assert listing["success"] is True
+    listed = {skill["name"]: skill for skill in listing["skills"]}
     for name in OFFICE_SKILLS:
-        assert (docs_dir / f"productivity-{name}.md").exists(), (
-            f"missing generated docs page for {name}; run website/scripts/generate-skill-docs.py"
+        assert name in listed, (
+            f"{name} ships in skills/productivity/ but the public skills "
+            "listing does not surface it — no session can ever load it"
         )
+        assert listed[name]["category"] == "productivity"

@@ -67,9 +67,9 @@ class TestProfileCopyExclusions:
 
     @pytest.mark.parametrize("excluded", [".hermes-runtime", "node"])
     def test_export_excludes_managed_runtimes(self, excluded):
-        from hermes_cli.profiles import _DEFAULT_EXPORT_EXCLUDE_ROOT
+        from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
 
-        assert excluded in _DEFAULT_EXPORT_EXCLUDE_ROOT
+        assert excluded in DEFAULT_EXPORT_EXCLUDE_ROOT
 
     @pytest.mark.parametrize("excluded", [".hermes-runtime", "node"])
     def test_distribution_excludes_managed_runtimes(self, excluded):

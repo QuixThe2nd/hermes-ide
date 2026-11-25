@@ -31,7 +31,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     set_session:               "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
 
-  draining:         "⏳ Ag iarraidh ar {count} gníomhaire(í) gníomhach sos a ghlacadh, ansin atosú..."
+  draining:         "♻ Ag atosú gateway..."
   goal_cleared:     "✓ Sprioc glanta."
   no_active_goal:   "Níl aon sprioc ghníomhach ann."
   config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
@@ -150,9 +150,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
     tip:                   "\n✦ Leid: {tip}"
 
+  incognito:
+    status_on:             "🕵️ Tá an seisiún seo faoi rún: tá athghairm chuimhne sheachtrach, réamhfháil scuáilithe, coimeád na n-imirtí críochnaithe, agus lionrú na staire gan teorainn faoi chois."
+    status_off:            "Níl an seisiún seo faoi rún. Bain úsáid as /incognito chun seisiún nua faoi rún a thosú."
+    note:                  "🕵️ Seisiún faoi rún: gan chuimhne sheachtrach, gan stair roimhe seo. Tosclaíonn /new seisiún gnách."
+    write_failed:          "⚠️ Thosaigh seisiún nua, ach níorbh fhéidir bratach an rúin a shábháil — NÍL an seisiún seo faoi rún. Bain triail eile as."
+
   restart:
     in_progress:           "⏳ Tá atosú gateway ar siúl cheana féin..."
     restarting:            "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
+    forwarded:            "♻ Cuireadh atosú an gateway ar aghaidh chuig an ghlúin is déanaí (PID {pid})..."
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
@@ -216,6 +223,15 @@ Rith `/sethomeserver confirm` chun é a bhogadh go gild `{guild_id}`. Ní scrios
 **Modúil chumasaithe:** {modules_count}/5
 Ní forscríobhtar cainéil fógartha atá ann cheana riamh.
 Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a mhéad."
+
+  set_notify:
+    save_failed:           "Theip ar shábháil an chainéil fógraí: {error}"
+    success:               "✅ Socraíodh fógraí timthriall saoil an gateway ar **{name}** (ID: {chat_id}).\nSeachtfar fógraí múchadh/tosú an gateway anseo."
+
+  clear_notify:
+    failed:                "Theip ar ghlanadh an chainéil fógraí: {error}"
+    success:               "✅ Glanadh an cainéal fógraí.\nDéantar fógraí timthriall saoil an gateway a ligean thart go dtí go socraítear cainéal fógraí."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -293,6 +309,8 @@ Ritheann athshioncronú go huathoibríoch uair amháin in aghaidh na huaire ar a
     mode_all:              "⚙️ Dul chun cinn uirlise: **GACH CEANN** — taispeántar gach glao uirlise (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
     mode_verbose:          "⚙️ Dul chun cinn uirlise: **BÉALSCAOILTE** — gach glao uirlise le hargóintí iomlána."
     mode_log:              "⚙️ Dul chun cinn uirlise: **LOG** — ciúin sa chomhrá; scríobhtar glaonna uirlise chuig ~/.hermes/logs/tool_calls.log."
+    mode_compact:          "⚙️ Dul chun cinn uirlise: **DLÚTH** — líne amháin in aghaidh na huirlise: `name({full JSON args})`."
+    mode_describe:         "⚙️ Dul chun cinn uirlise: **CUR SÍOS** — líne ghearr amháin a deir cén chaoi a dtéann gach glao uirlise i bhfeidhm, in ionad an orduithe/cóid amh."
     saved_suffix:          "_(sábháilte do **{platform}** — éifeachtach ón gcéad teachtaireacht eile)_"
     save_failed:           "_(níorbh fhéidir sábháil sa chumraíocht: {error})_"
 

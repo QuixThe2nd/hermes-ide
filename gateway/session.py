@@ -10,6 +10,7 @@ Handles:
 
 import asyncio
 import logging
+import math
 import os
 import json
 import threading
@@ -19,6 +20,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Any
 from gateway.session_transcript import SessionTranscriptMixin, TranscriptReadError
+from gateway.session_lifecycle import auto_continue_freshness_window
+from gateway.session_persistence import _DB_UNPINNED
 
 logger = logging.getLogger(__name__)
 
@@ -26,35 +29,6 @@ logger = logging.getLogger(__name__)
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
-
-
-# Default auto-continue freshness window in seconds (1 hour).  A session
-# interrupted by a restart is only auto-resumed — and only returned by
-# ``get_or_create_session`` — while it stays within this window of when
-# ``resume_pending`` was marked.  ``gateway/run.py`` bridges
-# ``config.yaml`` ``agent.gateway_auto_continue_freshness`` into
-# ``HERMES_AUTO_CONTINUE_FRESHNESS`` at startup.
-_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
-
-
-def auto_continue_freshness_window() -> float:
-    """Return the configured auto-continue freshness window in seconds.
-
-    Single source of truth for both the resume scheduler (``gateway/run.py``)
-    and the routing-time zombie gate in ``get_or_create_session``.  Reads
-    ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
-    ``agent.gateway_auto_continue_freshness`` at gateway startup) and falls
-    back to the module default when unset or malformed.  A non-positive value
-    disables the freshness gate (restores the pre-fix "always fresh" behaviour
-    for users who want to opt out).
-    """
-    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
-    if raw is None or raw == "":
-        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
 
 
 from .config import (
@@ -1235,13 +1209,6 @@ class AsyncSessionStore:
         return _offloaded
 
 
-# Sentinel for "no explicit SessionDB has been pinned on this store", so the
-# ``_db`` property can distinguish "resolve from the active profile scope"
-# from a deliberate ``store._db = None`` (which disables the DB and selects
-# the JSONL fallback).  A plain ``None`` cannot express both.
-_DB_UNPINNED = object()
-
-
 class SessionStore(SessionTranscriptMixin):
     """
     Manages session storage and retrieval.
@@ -1559,7 +1526,9 @@ class SessionStore(SessionTranscriptMixin):
         if not isinstance(row, dict) or not row.get("id"):
             return None
         started_at = row.get("started_at")
-        if not_after is not None and started_at is not None and float(started_at) > float(not_after):
+        # ``ts`` is ``int(time.time())`` while ``started_at`` is a REAL, so compare whole seconds:
+        # a row minted in the same second as the flush is still a valid origin.
+        if not_after is not None and started_at is not None and math.floor(float(started_at)) > int(not_after):
             return None
         return str(row["id"]), db
 
@@ -4181,3 +4150,23 @@ def build_session_context(
         context.updated_at = session_entry.updated_at
     
     return context
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+_PLUGIN_COMPAT_LAZY = {
+    'extract_api_content_sidecar': ('agent.turn_context', 'extract_api_content_sidecar'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

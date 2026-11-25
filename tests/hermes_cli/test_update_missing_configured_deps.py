@@ -43,7 +43,9 @@ def test_configured_features_probe_reads_the_fresh_target_interpreter(tmp_path, 
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text(
-        "platforms:\n  feishu:\n    enabled: true\n    extra:\n      app_id: cli_x\n      app_secret: y\n",
+        "platforms:\n  matrix:\n    enabled: true\n"
+        "    token: syt_aBcDeFgHiJkLmNoPqRsTuVwXyZ\n"
+        "    extra:\n      homeserver: https://matrix.org\n",
         encoding="utf-8")
     env = {**os.environ, "HERMES_HOME": str(home)}
     monkeypatch.setattr(main_install_repair, "_resolve_install_target_python", lambda *a, **k: Path(sys.executable))
@@ -52,12 +54,14 @@ def test_configured_features_probe_reads_the_fresh_target_interpreter(tmp_path, 
     def probe(python, script, *args, env=None, prelude=""):
         return real_probe(python, prelude + script, *args, env=env)
 
+    # Matrix's passive registry check_fn is pm.available('matrix'); stubbing it in
+    # the child only proves the verdict comes from the fresh interpreter.
     monkeypatch.setattr(main_install_repair, "_venv_probe",
-                        lambda p, s, *a, env=None: probe(p, s, *a, env=env, prelude="import sys; sys.modules['lark_oapi'] = None\n"))
+                        lambda p, s, *a, env=None: probe(p, s, *a, env=env, prelude="import pm; pm.available = lambda *_a, **_k: False\n"))
     missing = main_install_repair._configured_features_missing_deps(["uv", "pip"], env=env)
-    assert [feature for feature, _hint in missing] == ["Feishu / Lark"]
+    assert [feature for feature, _hint in missing] == ["Matrix"]
 
-    child_only_present = "import tools.lazy_deps as ld; ld.is_available = lambda *_a, **_k: True\n"
+    child_only_present = "import pm; pm.available = lambda *_a, **_k: True\n"
     monkeypatch.setattr(main_install_repair, "_venv_probe",
                         lambda p, s, *a, env=None: probe(p, s, *a, env=env, prelude=child_only_present))
     assert main_install_repair._configured_features_missing_deps(["uv", "pip"], env=env) == []

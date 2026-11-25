@@ -67,6 +67,37 @@ def test_api_key_providers_expose_a_credential_env_var():
             assert d.api_key_env_vars, f"{d.slug} is api_key but exposes no env var"
 
 
+def test_overlay_only_providers_expose_their_overlay_env_vars():
+    """A provider whose only metadata source is a Hermes overlay (no PROVIDER_REGISTRY
+    entry, no ProviderProfile) must surface the overlay's ``extra_env_vars`` as its
+    credential vars — an api_key descriptor with no env var is a keys-tab provider the
+    GUI cannot configure.
+
+    Regression: fireworks' provider plugin was deleted in #719 ("keep only the LiteLLM
+    model provider") but its OpenAI-compatible endpoint and the advertised
+    FIREWORKS_API_KEY remain, so the overlay is the one source left.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.provider_catalog import _is_url_var
+    from hermes_cli.providers import HERMES_OVERLAYS
+    from providers import list_providers
+
+    profiled = {p.name for p in list_providers()}
+    checked = 0
+    for slug, overlay in HERMES_OVERLAYS.items():
+        if slug in PROVIDER_REGISTRY or slug in profiled:
+            continue
+        if overlay.auth_type != "api_key" or not overlay.extra_env_vars:
+            continue
+        d = provider_catalog_by_slug().get(slug)
+        if d is None:
+            continue  # not part of the hermes model universe; the catalog lists CANONICAL_PROVIDERS only
+        assert d.api_key_env_vars == tuple(v for v in overlay.extra_env_vars if not _is_url_var(v)), (
+            f"{slug} must expose exactly its overlay's credential env vars"
+        )
+        checked += 1
+    assert checked >= 1, "no overlay-only provider found — the test lost its subject"
+
 
 
 def test_tab_for_auth_type_helper():

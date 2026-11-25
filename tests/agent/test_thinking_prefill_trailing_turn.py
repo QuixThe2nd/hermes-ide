@@ -131,7 +131,7 @@ class TestThinkingPrefillTrailingTurn:
         """The prefill stub carries the model's reasoning in its reasoning fields only: its
         ``content`` stays empty when appended, and no transcript row ever stores the
         chain-of-thought as an ordinary reply (#111761)."""
-        import agent.turn_empty_response as ter
+        import agent.conversation_loop as cl
 
         reasoning = "Let me work through the request step by step."
         loop_agent.client.chat.completions.create.side_effect = [
@@ -139,14 +139,14 @@ class TestThinkingPrefillTrailingTurn:
             _final_response(),
         ]
         appended = []
-        real_append = ter.append_message
+        real_append = cl.append_message
 
         def spy(messages, msg, *args, **kwargs):
             appended.append(dict(msg))
             return real_append(messages, msg, *args, **kwargs)
 
         with (
-            patch.object(ter, "append_message", spy),
+            patch.object(cl, "append_message", spy),
             patch.object(loop_agent, "_persist_session"),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),

@@ -1668,6 +1668,11 @@ class TestMultiplexBackgroundScope:
 
         from plugins.memory.hindsight.embedded import _embedded_profile_env_path, _load_simple_env
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "user-home"))
+        # The provider refuses to spawn the embedded daemon as root
+        # (PostgreSQL initdb refuses root). The daemon start is fully mocked
+        # here, so the guard's reason doesn't apply — run the scoped-thread
+        # path on root hosts too instead of silently testing nothing.
+        monkeypatch.setattr(os, "geteuid", lambda: 1000)
         def start(cfg, **kwargs):
             created.append(_load_simple_env(_embedded_profile_env_path(cfg))["HINDSIGHT_API_LLM_API_KEY"])
             return "http://127.0.0.1:9158"

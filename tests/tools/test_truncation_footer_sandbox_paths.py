@@ -16,21 +16,41 @@ def _footer_path(text: str) -> str:
 
 
 def test_truncation_footers_render_the_sandbox_visible_cache_path(tmp_path, monkeypatch):
+    from agent import terminal_env_registry as reg
+    from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+    class _RootHermesBox(TerminalEnvironmentProvider):
+        name = "rootbox"
+
+        @property
+        def cache_path_base(self):
+            return "/root/.hermes"
+
+        def is_available(self):
+            return True
+
+        def create_environment(self, *, cwd, timeout, task_id="default", **kwargs):
+            raise AssertionError("classification-only provider")
+
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    body = "\n".join(f"row {i}" for i in range(5000))
+    reg._reset_for_tests()
+    try:
+        reg.register_provider(_RootHermesBox())
+        monkeypatch.setenv("TERMINAL_ENV", "rootbox")
+        body = "\n".join(f"row {i}" for i in range(5000))
 
-    web_out, _ = web_tools_truncate._truncate_with_footer(body, "https://example.com/doc", 3000)
-    snap_out = browser_tool_snapshot._truncate_snapshot(body, 3000)
-    deleg_out, _ = delegate_tool_results._trim_summary_with_footer(body, 3000, 0)
+        web_out, _ = web_tools_truncate._truncate_with_footer(body, "https://example.com/doc", 3000)
+        snap_out = browser_tool_snapshot._truncate_snapshot(body, 3000)
+        deleg_out, _ = delegate_tool_results._trim_summary_with_footer(body, 3000, 0)
 
-    for text, subdir in ((web_out, "cache/web"), (snap_out, "cache/web"), (deleg_out, "cache/delegation")):
-        path = _footer_path(text)
-        assert path.startswith(f"/root/.hermes/{subdir}/"), path
-        # The bytes still live on the host under HERMES_HOME; only the rendered path is translated.
-        assert os.path.exists(str(home / subdir / os.path.basename(path)))
-
+        for text, subdir in ((web_out, "cache/web"), (snap_out, "cache/web"), (deleg_out, "cache/delegation")):
+            path = _footer_path(text)
+            assert path.startswith(f"/root/.hermes/{subdir}/"), path
+            # The bytes still live on the host under HERMES_HOME; only the rendered path is translated.
+            assert os.path.exists(str(home / subdir / os.path.basename(path)))
+    finally:
+        reg._reset_for_tests()
 
 def test_local_backend_footer_keeps_the_host_path(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"

@@ -488,6 +488,21 @@ def _resolve_single_delivery_target(
         if resolution_error:
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
             return None
+        if (
+            not thread_id
+            and platform_key == "slack"
+            and origin
+            and str(origin.get("platform", "")).lower() == platform_key
+            and str(origin.get("chat_id", "")) == str(chat_id)
+        ):
+            # Slack thread-per-message session keys: an explicit slack:<chat> target
+            # addressed back to the origin's own chat re-attaches the origin thread so the
+            # delivery lands where a reply to the creating message would — otherwise it
+            # lands top-level while the session keeps keying the thread. Explicit
+            # slack:chat:thread wins; affinity is Slack-only (a Discord/other explicit
+            # target is addressed exactly as written — Discord forum ids are addressing,
+            # not session keying) and never crosses platform or chat.
+            thread_id = origin.get("thread_id")
         return {
             "platform": platform_name,
             "chat_id": chat_id,

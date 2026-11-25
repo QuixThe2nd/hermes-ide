@@ -135,8 +135,8 @@ class _Runner(_Bare):
     def _peek_session_state(self, key):
         return None
 
-    def _running_agent_ids(self):
-        return set()
+    def _running_agent_items(self):
+        return []
 
     def _spawn_release_thread(self, *a, **k):
         pass

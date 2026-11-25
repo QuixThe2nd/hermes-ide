@@ -40,30 +40,32 @@ class TestRegisterServerTools:
     def test_colliding_static_toolset_name_merges_both_tool_sets(self, mock_registry):
         """An MCP server named after a built-in toolset must not be shadowed.
 
-        Regression: an MCP server registered as `homeassistant` (colliding
-        with the static `homeassistant` toolset) had its tools silently
-        dropped because get_toolset() returned the static definition without
-        consulting the alias registered by _register_server_tools().
+        Regression: an MCP server registered under a static toolset's name
+        (originally `homeassistant`, retired with the HA adapter in #571;
+        `cronjob` exercises the same collision on a surviving toolset) had
+        its tools silently dropped because get_toolset() returned the static
+        definition without consulting the alias registered by
+        _register_server_tools().
         """
         from toolsets import TOOLSETS, get_toolset, resolve_toolset
 
-        assert "homeassistant" in TOOLSETS  # collision premise
-        static_tools = set(TOOLSETS["homeassistant"]["tools"])
+        assert "cronjob" in TOOLSETS  # collision premise
+        static_tools = set(TOOLSETS["cronjob"]["tools"])
 
-        server = MCPServerTask("homeassistant")
-        server._tools = [_make_mcp_tool("get_entities", "List HA entities")]
+        server = MCPServerTask("cronjob")
+        server._tools = [_make_mcp_tool("list_jobs", "List cron jobs")]
         server.session = MagicMock()
 
         with patch("tools.registry.registry", mock_registry):
-            registered = _register_server_tools("homeassistant", server, {})
-            assert "mcp__homeassistant__get_entities" in registered
+            registered = _register_server_tools("cronjob", server, {})
+            assert "mcp__cronjob__list_jobs" in registered
 
-            ts = get_toolset("homeassistant")
+            ts = get_toolset("cronjob")
             # Static built-ins are still present...
             assert static_tools <= set(ts["tools"])
             # ...and the MCP server's tools are no longer shadowed.
-            assert "mcp__homeassistant__get_entities" in ts["tools"]
-            assert "mcp__homeassistant__get_entities" in resolve_toolset("homeassistant")
+            assert "mcp__cronjob__list_jobs" in ts["tools"]
+            assert "mcp__cronjob__list_jobs" in resolve_toolset("cronjob")
 
 
 class TestRefreshTools:

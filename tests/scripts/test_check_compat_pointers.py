@@ -35,8 +35,10 @@ def test_py_files_prunes_dependency_trees_before_descent(tmp_path, monkeypatch):
     visited = []
     real_walk = os.walk
 
-    def tracking_walk(root):
-        for dirpath, dirnames, filenames in real_walk(root):
+    def tracking_walk(root, *args, **kwargs):
+        # The scanner walks with onerror=fail; the tracker must forward
+        # every argument or the walk itself is not what got measured.
+        for dirpath, dirnames, filenames in real_walk(root, *args, **kwargs):
             visited.append(Path(dirpath))
             yield dirpath, dirnames, filenames
 

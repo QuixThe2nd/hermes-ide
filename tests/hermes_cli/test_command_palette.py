@@ -18,7 +18,7 @@ class TestHelpSubgroups:
         assert "Background & Automation" in HELP_SESSION_SUBGROUPS
         # Representative members land in the right buckets.
         assert "compress" in HELP_SESSION_SUBGROUPS["Context"]
-        assert "goal" in HELP_SESSION_SUBGROUPS["Background & Automation"]
+        assert "subgoal" in HELP_SESSION_SUBGROUPS["Background & Automation"]
 
 
 class TestCommandPaletteFilter:

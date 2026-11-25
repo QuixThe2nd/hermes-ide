@@ -75,8 +75,10 @@ class TestExtensionHookDefaults:
         children = cli._build_tui_layout_children(
             sudo_widget="sudo",
             secret_widget="secret",
-            approval_widget="approval",
+            slash_confirm_widget="slash-confirm",
             clarify_widget="clarify",
+            model_picker_widget="model-picker",
+            command_palette_widget="palette",
             spinner_widget="spinner",
             spacer="spacer",
             status_bar="status",
@@ -84,14 +86,15 @@ class TestExtensionHookDefaults:
             image_bar="image-bar",
             input_area="input-area",
             input_rule_bot="bottom-rule",
-            voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
-        # First element is Window(height=0), rest are the named widgets
+        # First element is Window(height=0), rest are the named widgets in layout
+        # order (approval_widget/voice_status_bar retired with the approval
+        # subsystem, a51d5ec8d47).
         assert children[1:] == [
-            "sudo", "secret", "approval", "clarify", "spinner",
-            "spacer", "status", "top-rule", "image-bar", "input-area",
-            "bottom-rule", "voice-status", "completions-menu",
+            "sudo", "secret", "slash-confirm", "clarify", "model-picker",
+            "palette", "spinner", "spacer", "status", "top-rule", "image-bar",
+            "input-area", "bottom-rule", "completions-menu",
         ]
 
 
@@ -104,8 +107,10 @@ class TestExtensionHookSubclass:
         children = cli._build_tui_layout_children(
             sudo_widget="sudo",
             secret_widget="secret",
-            approval_widget="approval",
+            slash_confirm_widget="slash-confirm",
             clarify_widget="clarify",
+            model_picker_widget="model-picker",
+            command_palette_widget="palette",
             spinner_widget="spinner",
             spacer="spacer",
             status_bar="status",
@@ -113,7 +118,6 @@ class TestExtensionHookSubclass:
             image_bar="image-bar",
             input_area="input-area",
             input_rule_bot="bottom-rule",
-            voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
         # Extra widgets should appear between spacer and status bar

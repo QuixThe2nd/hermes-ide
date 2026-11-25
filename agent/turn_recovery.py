@@ -999,6 +999,7 @@ def reset_hint(api_error: Exception) -> str:
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
+    base_delay: float = 2.0, max_delay: float = 60.0,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
@@ -1034,7 +1035,7 @@ def compute_error_backoff(
             # past, which the parser clamps to 0.0) carries no usable wait —
             # treat it as absent so we never hot-loop the provider.
             _retry_after = None
-    wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+    wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=base_delay, max_delay=max_delay)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
     if _adaptive and _retry_after is None:
@@ -1118,7 +1119,7 @@ def classify_codex_soft_failure(agent: Any, response: Any) -> Tuple[Any, Dict[st
     exc = _CodexSoftFailure(_codex_soft_failure_error(response))
     classified = classify_api_error(
         exc, provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
-        base_url=str(getattr(agent, "base_url", "") or ""), api_key=getattr(agent, "api_key", None),
+        base_url=str(getattr(agent, "base_url", "") or ""),
     )
     return classified, agent._extract_api_error_context(exc)
 

@@ -26,6 +26,7 @@ from agent.turn_context import (
     compose_user_api_content,
     reanchor_current_turn_user_idx,
 )
+from agent.turn_empty_response import promote_reasoning_only_clean_stop
 from agent.turn_retry_state import TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.turn_control import is_gateway_restart_armed
@@ -49,16 +50,7 @@ from agent.message_sanitization import (
 # DEFAULT_DB_PATH = get_hermes_home() / "state.db" breaks tests that
 # monkeypatch get_hermes_home to return a str).
 _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH,
-    _estimate_tools_tokens_rough,
-    estimate_messages_tokens_rough,
-    estimate_request_tokens_rough,
-    get_context_length_from_provider_error,
-    is_output_cap_error,
-    parse_available_output_tokens_from_error,
-    save_context_length,
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 # Upstream moved the usage-anchor helpers out of model_metadata into their own
 # module; the fork loop keeps using them, so import them from the new home.
 from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
@@ -82,7 +74,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import failed_turn_notice, site_copy
+from agent.turn_failure_copy import CONTENT_POLICY_NEXT_STEPS, failed_turn_notice, invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -96,7 +88,7 @@ from agent.turn_preflight_gate import run_preflight_gate
 from agent.turn_request_assembly import (
     assemble_api_request, _send_copy_with_delegation_runtime_note,
 )
-from agent.turn_response_check import check_api_response
+from agent.turn_response_check import _derive_finish_reason, check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_timing import reset_turn_phase_times, timed_setup_exclusive
 from agent.turn_tool_round import run_tool_round
@@ -123,6 +115,8 @@ from agent.retry_utils import (  # noqa: F401
     zai_coding_overload_retry_ceiling)
 from agent.trajectory import has_incomplete_scratchpad  # noqa: F401
 from agent.turn_recovery import _image_error_max_dimension
+from agent.turn_truncation import (  # noqa: F401
+    CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage  # noqa: F401
 from hermes_constants import PARTIAL_STREAM_STUB_ID  # noqa: F401
 from utils import env_var_enabled  # noqa: F401
@@ -158,6 +152,11 @@ def _midturn_request_pressure_tokens(
     by orders of magnitude on a compacted session and fires a 600s local compression the main request never
     needed (#96995).
     """
+    # Function-local so tests can patch the defining module (facade-sibling seam
+    # convention); a top-level from-import would bind whatever was patched when
+    # run_agent.py:3979 first lazy-imported this module in the worker process.
+    from agent.model_metadata import _estimate_tools_tokens_rough
+
     try:
         from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
         native = estimate_native_responses_preflight_tokens(
@@ -1698,6 +1697,17 @@ def _run_conversation_inlined(
     resets it in its ``finally``). The trailing boundary export stays inside the inlined
     body; it never embeds images, so the slightly longer scope is behavior-neutral.
     """
+    # Function-local for the same patch-seam reason as _midturn_request_pressure_tokens:
+    # tests monkeypatch agent.model_metadata.* on the defining module, which a top-level
+    # from-import would capture or miss depending on worker test order.
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_request_tokens_rough,
+        get_context_length_from_provider_error,
+        is_output_cap_error,
+        parse_available_output_tokens_from_error,
+        save_context_length,
+    )
     from agent.turn_context import export_current_turn_boundary
 
     if moa_config is None:
@@ -2436,9 +2446,14 @@ def _run_conversation_inlined(
         # a thinking-only turn. Runs on the per-call copy only — the
         # stored conversation history keeps the reasoning block for the
         # UI transcript and session persistence.
+        _cross_protocol = agent.api_mode != "codex_responses"
         api_messages = agent._drop_thinking_only_and_merge_users(
             api_messages,
-            drop_codex_reasoning_items=agent.api_mode != "codex_responses",
+            drop_codex_reasoning_items=_cross_protocol,
+            # Off the Codex wire (e.g. after a reasoning-only stall fell over to a Chat
+            # Completions provider, #67321) the synthetic continuation nudge is Codex-only
+            # control text: drop it alongside the opaque replay state.
+            drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
         )
 
         # Normalize message whitespace and tool-call JSON for consistent
@@ -2582,6 +2597,9 @@ def _run_conversation_inlined(
         _anchored_pressure = anchored_context_tokens(
             messages, getattr(agent, "_usage_anchor", None)
         )
+        # Same flag the phase-loop assembly stamps (turn_request_assembly.py):
+        # consumers below skip the noisy-estimate defer for anchored figures.
+        agent._request_pressure_anchored = _anchored_pressure is not None
         if _anchored_pressure is not None:
             request_pressure_tokens = _anchored_pressure
         else:
@@ -2680,8 +2698,15 @@ def _run_conversation_inlined(
                 f"{_previous_preflight_pressure:,}",
                 f"{request_pressure_tokens:,}",
             )
-        _defer_preflight = getattr(
-            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+        # An anchored figure is real usage + delta: never deferred. Only a
+        # whole-context rough estimate waits for the provider's count — the
+        # same skip as the turn-prologue preflight and turn_preflight_gate.
+        _defer_preflight = (
+            (lambda _t: False)
+            if getattr(agent, "_request_pressure_anchored", False)
+            else getattr(
+                _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+            )
         )
         _compression_cooldown = getattr(
             _compressor, "get_active_compression_failure_cooldown", lambda: None
@@ -3569,15 +3594,24 @@ def _run_conversation_inlined(
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error("%sInvalid API response after %d retries.", agent.log_prefix, max_retries)
                         agent._persist_session(messages, conversation_history)
-                        _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
-                        return {
+                        # "model=<id>" is describe_invalid_response's OpenRouter
+                        # fallback, not a provider name.
+                        _label = (
+                            provider_label_for(agent.provider)
+                            if provider_name in ("Unknown", "") or provider_name.startswith("model=")
+                            else provider_name
+                        )
+                        _final_response = site_copy(
+                            "invalid_response", label=_label, attempts=max_retries, detail=_failure_hint,
+                        )
+                        return stamp_failure({
                             "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": _final_response,
-                            "failed": True  # Mark as failure for filtering
-                        }
+                            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
+                            "failed": True,  # Mark as failure for filtering
+                        }, invalid_response_failure_reason(response), True)
                     
                     # Backoff before retry — jittered exponential (configurable)
                     wait_time = jittered_backoff(
@@ -3633,30 +3667,12 @@ def _run_conversation_inlined(
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
-                    status = getattr(response, "status", None)
-                    if isinstance(status, str):
-                        status = status.strip().lower()
-                    incomplete_details = getattr(response, "incomplete_details", None)
-                    incomplete_reason = None
-                    if isinstance(incomplete_details, dict):
-                        incomplete_reason = incomplete_details.get("reason")
-                    else:
-                        incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if incomplete_reason is not None:
-                        incomplete_reason = str(incomplete_reason).strip().lower()
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        # Responses API max-output exhaustion is a normal
-                        # Codex incomplete turn.  Let the Codex-specific
-                        # continuation path below append the incomplete
-                        # assistant state and retry, instead of routing to
-                        # the generic chat-completions length rollback that
-                        # emits "Response truncated due to output length
-                        # limit" and stops gateway turns.
-                        finish_reason = "incomplete"
-                    elif status == "incomplete" and incomplete_reason == "content_filter":
-                        finish_reason = "content_filter"
-                    else:
-                        finish_reason = "stop"
+                    # Shared post-call owner (check_api_response calls the same
+                    # helper): derives status/incomplete_details and routes a
+                    # max_output_tokens-cut function_call to the length path
+                    # (#91770). chat-completions stays inline below because it
+                    # also binds assistant_message from its normalized result.
+                    finish_reason = _derive_finish_reason(agent, response, messages)
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
@@ -3767,7 +3783,7 @@ def _run_conversation_inlined(
                         "⚠️  The model declined to respond to this request "
                         "(safety refusal — not a Hermes/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
-                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        f"{CONTENT_POLICY_NEXT_STEPS}"
                     )
 
                     agent._cleanup_task_resources(effective_task_id)
@@ -4141,8 +4157,11 @@ def _run_conversation_inlined(
                                 "partial": True,
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
-
-                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
+                    # codex_responses joins here via the #91770 finish_reason reroute
+                    # above: its truncated tool calls get the same bounded boosted
+                    # retry; text-only Codex truncation never reaches "length" and
+                    # stays on the Codex incomplete continuation.
+                    if agent.api_mode in {"chat_completions", "anthropic_messages", "codex_responses"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
@@ -4192,25 +4211,28 @@ def _run_conversation_inlined(
                                     force=True,
                                 )
                             agent._cleanup_task_resources(effective_task_id)
-                            _final_response = (
-                                "Stream repeatedly dropped mid tool-call (network); "
-                                "the tool was not executed"
-                                if _is_stub_stall
-                                else "Response truncated due to output length limit"
-                            )
+                            if _is_stub_stall:
+                                _final_response = site_copy(
+                                    "stream_dropped_tool_call",
+                                    label=provider_label_for(agent.provider),
+                                )
+                                _failure = (FailoverReason.timeout.value, True)
+                            else:
+                                _final_response = site_copy("truncated")
+                                _failure = ("truncated", True)
                             # Prior successful tool batches (or injected tool
                             # errors) can leave a tool-result tail; this path
                             # never reaches finalize_turn (#48879 class).
                             close_interrupted_tool_sequence(messages, _final_response)
                             agent._persist_session(messages, conversation_history)
-                            return {
+                            return stamp_failure({
                                 "final_response": _final_response,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": _final_response,
-                            }
+                            }, *_failure)
 
                     # If we have prior messages, roll back to last complete state
                     if len(messages) > 1:
@@ -4568,6 +4590,16 @@ def _run_conversation_inlined(
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
                 else:
+                    # Usage-less provider: the rough estimate becomes the only
+                    # pressure signal — mirror turn_usage.record_response_usage so
+                    # the pre-API defer gate (#2153) stops waiting for a real
+                    # reading that will never arrive.
+                    _comp = agent.context_compressor
+                    if getattr(_comp, "awaiting_real_usage_after_compression", False):
+                        _comp.update_from_response({})
+                    _note_usage_less = getattr(_comp, "note_usage_less_response", None)
+                    if callable(_note_usage_less):
+                        _note_usage_less()
                     logger.info(
                         "API call #%d: model=%s provider=%s in=? out=? total=? "
                         "latency=%.1fs usage=unavailable",
@@ -5464,7 +5496,7 @@ def _run_conversation_inlined(
                         "(compression.enabled: false). Run /compress to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
-                    return {
+                    return stamp_failure({
                         "final_response": _final_response,
                         "messages": messages,
                         "completed": False,
@@ -5473,7 +5505,7 @@ def _run_conversation_inlined(
                         "partial": True,
                         "failed": True,
                         "compaction_disabled": True,
-                    }
+                    }, "context_overflow", False)
 
                 # ── Anthropic Sonnet long-context tier gate ───────────
                 # Anthropic returns HTTP 429 "Extra usage is required for
@@ -6449,7 +6481,7 @@ def _run_conversation_inlined(
                             "⚠️  The model provider's safety filter blocked this request "
                             "(not a Hermes/gateway failure).\n\n"
                             f"Provider message: {_nonretryable_summary}\n\n"
-                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                            f"{CONTENT_POLICY_NEXT_STEPS}"
                         )
                         return _content_policy_blocked_result(
                             messages,
@@ -6731,61 +6763,19 @@ def _run_conversation_inlined(
                         "billing_block": _billing_block,
                     }
 
-                # For rate limits, respect the Retry-After header if present
-                _retry_after = None
-                if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
-                            except (TypeError, ValueError):
-                                pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(
-                    retry_count,
+                from agent.turn_recovery import compute_error_backoff
+
+                wait_time = compute_error_backoff(
+                    agent,
+                    api_error,
+                    retry_count=retry_count,
+                    max_retries=max_retries,
+                    is_rate_limited=is_rate_limited,
+                    is_zai_coding_overload=_is_zai_coding_overload,
+                    base_url=_base,
+                    model=_model,
                     base_delay=agent._retry_base_delay,
                     max_delay=agent._retry_max_delay,
-                )
-                _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
-                    wait_time, _backoff_policy = adaptive_rate_limit_backoff(
-                        retry_count,
-                        base_url=str(_base),
-                        model=_model,
-                        error=api_error,
-                        default_wait=wait_time,
-                    )
-                if is_rate_limited or _is_zai_coding_overload:
-                    _policy_note = ""
-                    if _backoff_policy == "zai_coding_overload_long":
-                        _policy_note = " (Z.AI Coding overload adaptive long backoff)"
-                    elif _backoff_policy == "zai_coding_overload_short":
-                        _policy_note = " (Z.AI Coding overload adaptive short retry)"
-                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
-                    _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
-                    # Normal retries are buffered to avoid noisy transient chatter. Long
-                    # Z.AI Coding waits are different: they can last minutes, so surface
-                    # progress immediately instead of making the TUI look frozen.
-                    if _backoff_policy == "zai_coding_overload_long":
-                        agent._emit_status(_rate_limit_status)
-                    else:
-                        agent._buffer_status(_rate_limit_status)
-                else:
-                    agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
-                logger.warning(
-                    "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
-                    wait_time,
-                    retry_count,
-                    max_retries,
-                    agent._client_log_context(),
-                    _backoff_policy or "default",
-                    api_error,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
                 # instead of blocking the entire wait_time in one sleep() call
@@ -7075,167 +7065,27 @@ def _run_conversation_inlined(
             agent._incomplete_scratchpad_retries = 0
 
             if agent.api_mode == "codex_responses" and finish_reason == "incomplete":
-                agent._codex_incomplete_retries += 1
-
-                interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                interim_has_content = bool((interim_msg.get("content") or "").strip())
-                interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
-                interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
-                interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
-
-                if (
-                    interim_has_content
-                    or interim_has_reasoning
-                    or interim_has_codex_reasoning
-                    or interim_has_codex_message_items
-                ):
-                    last_msg = messages[-1] if messages else None
-                    # Duplicate detection: compare only visible content
-                    # (content + reasoning).  Opaque provider state
-                    # (encrypted reasoning items, message item ids/phases)
-                    # drifts per continuation even when the visible output
-                    # is identical, so including it in the comparison defeats
-                    # dedup and causes message storms (#52711).
-                    last_interim_visible = (
-                        agent._interim_assistant_visible_text(last_msg)
-                        if isinstance(last_msg, dict)
-                        else ""
-                    )
-                    current_interim_visible = agent._interim_assistant_visible_text(interim_msg)
-                    if last_interim_visible or current_interim_visible:
-                        same_visible_output = last_interim_visible == current_interim_visible
-                    else:
-                        # Preserve the existing reasoning-only behavior when
-                        # neither response has text eligible for interim delivery.
-                        same_visible_output = (
-                            (last_msg.get("content") or "") == (interim_msg.get("content") or "")
-                            and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
-                        ) if isinstance(last_msg, dict) else False
-                    visible_duplicate = (
-                        isinstance(last_msg, dict)
-                        and last_msg.get("role") == "assistant"
-                        and last_msg.get("finish_reason") == "incomplete"
-                        and same_visible_output
-                    )
-                    if visible_duplicate:
-                        # Update replay state in-place so the latest provider
-                        # payload is preserved without re-emitting identical
-                        # user-visible commentary.
-                        for _key in (
-                            "content",
-                            "reasoning",
-                            "reasoning_content",
-                            "reasoning_details",
-                            "codex_reasoning_items",
-                            "codex_message_items",
-                        ):
-                            if _key in interim_msg:
-                                if _key == "codex_reasoning_items":
-                                    # Merge instead of overwrite: a native
-                                    # compaction checkpoint captured on the
-                                    # earlier incomplete response is the only
-                                    # copy — the continuation won't re-emit
-                                    # it. See merge_interim_reasoning_items.
-                                    from agent.native_compaction import (
-                                        merge_interim_reasoning_items,
-                                    )
-                                    last_msg[_key] = merge_interim_reasoning_items(
-                                        last_msg.get(_key), interim_msg[_key]
-                                    )
-                                else:
-                                    last_msg[_key] = interim_msg[_key]
-                    else:
-                        append_message(messages, interim_msg)
-                        agent._emit_interim_assistant_message(interim_msg)
-
-                if agent._codex_incomplete_retries < 3:
-                    # When the interim message has nothing the Responses
-                    # input converter will replay (no visible content, no
-                    # encrypted reasoning items, no replayable message
-                    # items — plain-text reasoning only), a bare retry is
-                    # byte-identical to the request that just came back
-                    # incomplete and fails the same way every time
-                    # (observed with grok-4.20 on xai-oauth, whose
-                    # reasoning items lack encrypted_content).  Append a
-                    # user-role nudge so the retry actually differs and
-                    # explicitly asks for the final answer.
-                    interim_replayable = (
-                        interim_has_content
-                        or interim_has_codex_reasoning
-                        or interim_has_codex_message_items
-                    )
-                    # A replayable interim is not the same thing as a retry
-                    # that DIFFERS.  When the interim replays but carries no
-                    # new instruction, the continuation is byte-identical to
-                    # the request that just failed and returns the same empty
-                    # response until the budget is gone.  Live case (gpt-5.6
-                    # on the Codex backend, Aug 2026): the model answers with
-                    # a server-side ``compaction`` checkpoint and no message.
-                    # The checkpoint lands in ``codex_reasoning_items``, so
-                    # ``interim_replayable`` is True and no nudge is added —
-                    # meanwhile the checkpoint makes the wire converter prune
-                    # every pre-checkpoint item, so all three attempts send
-                    # the same checkpoint + retained user messages and end on
-                    # an empty assistant turn with nothing to answer.  The
-                    # provider's own prefix cache reports 99-100% on the
-                    # repeats, and the turn dies with "Codex response
-                    # remained incomplete after 3 continuation attempts",
-                    # losing the whole turn's work.
-                    #
-                    # One bare retry is still worth trying (the model often
-                    # just needs another turn).  Once THAT has also come back
-                    # incomplete, a bare retry is proven not to work for this
-                    # turn, so every remaining attempt carries the nudge.
-                    if not interim_replayable or agent._codex_incomplete_retries >= 2:
-                        _last_msg = messages[-1] if messages else None
-                        _already_nudged = (
-                            isinstance(_last_msg, dict)
-                            and _last_msg.get("role") == "user"
-                            and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
-                        )
-                        # Alternation guard: the nudge is a user-role message,
-                        # so it may only follow an assistant message. When the
-                        # interim was too empty to append (no content AND no
-                        # reasoning), the last message is still the prior
-                        # user/tool turn — appending the nudge there would
-                        # create a user→user / tool→user sequence that strict
-                        # providers reject.
-                        _last_is_assistant = (
-                            isinstance(_last_msg, dict)
-                            and _last_msg.get("role") == "assistant"
-                        )
-                        if not _already_nudged and _last_is_assistant:
-                            append_message(messages, {
-                                "role": "user",
-                                "content": _CODEX_INCOMPLETE_NUDGE,
-                            })
-                    if not agent.quiet_mode:
-                        agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
-                    # Surface the continuation on the live spinner/status line
-                    # (CLI/TUI/Desktop) and gateway heartbeat: each of these
-                    # retries can spend minutes waiting on the provider, and
-                    # without a distinct notice the user only sees a generic
-                    # thinking spinner ("infinite thinking", #64434).
-                    agent._emit_wait_notice(
-                        f"↻ model returned reasoning with no final answer — "
-                        f"asking it to continue "
-                        f"({agent._codex_incomplete_retries}/3)"
-                    )
-                    agent._session_messages = messages
+                # Bounded continuation AND the reasoning-only stall ladder (#67321) live in
+                # turn_truncation.continue_codex_incomplete: streak counting with visible-partial
+                # resets, fallback handoff with exactly one grace call, and the terminal sentinel.
+                _codex_result = continue_codex_incomplete(
+                    agent, assistant_message, finish_reason, messages=messages,
+                    conversation_history=conversation_history, api_call_count=api_call_count,
+                    response=response,
+                )
+                if _codex_result is CODEX_FALLBACK_ACTIVATED:
+                    # The failover rewrote the Model:/Provider: identity on the cached system
+                    # prompt; rebind it so the next iteration's request is rebuilt with the new
+                    # identity.
+                    active_system_prompt = _sync_failover_system_message(
+                        agent, api_messages, active_system_prompt)
                     continue
-
-                agent._codex_incomplete_retries = 0
-                agent._persist_session(messages, conversation_history)
-                return {
-                    "final_response": "Codex response remained incomplete after 3 continuation attempts",
-                    "messages": messages,
-                    "api_calls": api_call_count,
-                    "completed": False,
-                    "partial": True,
-                    "error": "Codex response remained incomplete after 3 continuation attempts",
-                }
+                if _codex_result is not None:
+                    return _codex_result
+                continue
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
+                agent._codex_reasoning_only_streak = 0
             
             # Check for tool calls
             if assistant_message.tool_calls:
@@ -7394,19 +7244,19 @@ def _run_conversation_inlined(
                         )
                         agent._invalid_json_retries = 0
                         agent._cleanup_task_resources(effective_task_id)
-                        _final_response = "Response truncated due to output length limit"
+                        _final_response = site_copy("truncated")
                         # Same tool-tail close as interrupt / invalid-tool
                         # exhaustion — this path never reaches finalize_turn.
                         close_interrupted_tool_sequence(messages, _final_response)
                         agent._persist_session(messages, conversation_history)
-                        return {
+                        return stamp_failure({
                             "final_response": _final_response,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": _final_response,
-                        }
+                        }, "truncated", True)
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
@@ -7938,6 +7788,20 @@ def _run_conversation_inlined(
                 # chokepoint below, after final_msg is built, so it catches
                 # every path that reaches turn finalization, not just this one.)
                 final_response = assistant_message.content or ""
+
+                # Reasoning-only clean stop: the promotion (and its stall warning)
+                # lives in the empty-response recovery phase
+                # (turn_empty_response.promote_reasoning_only_clean_stop); the loop
+                # only orchestrates. The promoted text is RETURNED as the answer but
+                # never written into the assistant row's ``content`` (#111761); the
+                # row carries it as the ``api_content`` sidecar, so the next turn
+                # still replays it byte-identically. (Tool calls already branched.)
+                _promoted = promote_reasoning_only_clean_stop(
+                    agent, assistant_message, finish_reason,
+                    content=assistant_message.content,
+                    api_call_count=api_call_count, messages=messages,
+                )
+                final_response = _promoted or assistant_message.content or ""
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -8342,6 +8206,7 @@ def _run_conversation_inlined(
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
+                    promoted_reasoning_announces_action,
                     trailing_continue_intent,
                 )
 
@@ -8355,12 +8220,20 @@ def _run_conversation_inlined(
                 # continuation path and counter (max 2 per turn), so the
                 # alternation-safe interim-assistant + user-nudge mechanism —
                 # not a new parallel one — carries the recovery.
+                # Promoted reasoning gets the broader first-person-plan tail
+                # detector: with tools offered and zero tool calls, chain-of-
+                # thought ending on "Let me batch the terminal calls..." is a
+                # stalled model, and returning it as the answer aborts the tool
+                # loop while reporting "complete" (#111761). Same cap, so a
+                # model that never acts still ends after 2 nudges.
+                _stall_text = agent._strip_think_blocks(final_response or "")
                 _stall_continue_intent = (
                     bool(getattr(agent, "_stall_guards", True))
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
-                    and trailing_continue_intent(
-                        agent._strip_think_blocks(final_response or "")
+                    and (
+                        trailing_continue_intent(_stall_text)
+                        or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
                     )
                 )
                 if _stall_continue_intent or (
@@ -8382,6 +8255,11 @@ def _run_conversation_inlined(
                         )
                     codex_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    if _promoted:
+                        # Same sidecar as the final row: the wire copy must
+                        # carry the promoted text, not only ``reasoning_content``,
+                        # or the continuation replays an empty assistant turn.
+                        interim_msg["api_content"] = final_response
                     append_message(messages, interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
 
@@ -8412,6 +8290,11 @@ def _run_conversation_inlined(
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                if _promoted:
+                    # Replay sidecar only: ``content`` stays empty so the row is
+                    # never mistaken for a real reply; ``build_api_messages``
+                    # substitutes ``api_content`` on the wire.
+                    final_msg["api_content"] = final_response
 
                 # ── Dropped tool-call recovery (copilot/Claude) ────────
                 # Some providers (observed: claude-opus-4.8 / claude-sonnet-4.5

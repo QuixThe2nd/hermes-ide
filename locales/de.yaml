@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — Konfiguration konnte nicht gespeichert werden)\n_(wird mit der nächsten Nachricht wirksam)_"
     set_session:               "🧠 ✓ Reasoning-Stärke auf `{effort}` gesetzt (nur Sitzung — `--global` hinzufügen, um zu speichern)\n_(wird mit der nächsten Nachricht wirksam)_"
 
-  draining:         "⏳ Bitte {count} aktive(n) Agent(en) um Pause, dann Neustart..."
+  draining:         "♻ Gateway wird neu gestartet..."
   goal_cleared:     "✓ Ziel gelöscht."
   no_active_goal:   "Kein aktives Ziel."
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ Titel ist nach Bereinigung leer — Sitzung ohne Titel gestartet."
     tip:                   "\n✦ Tipp: {tip}"
 
+  incognito:
+    status_on:             "🕵️ Diese Sitzung ist inkognito: Abruf aus externem Gedächtnis, Prefetch aus der Warteschlange, Aufbewahrung abgeschlossener Runden und unbegrenztes Nachladen des Verlaufs sind deaktiviert."
+    status_off:            "Diese Sitzung ist nicht inkognito. Verwenden Sie /incognito, um eine neue inkognito-Sitzung zu starten."
+    note:                  "🕵️ Inkognito-Sitzung: kein externes Gedächtnis, kein früherer Verlauf. /new startet eine normale Sitzung."
+    write_failed:          "⚠️ Neue Sitzung gestartet, aber die Inkognito-Kennzeichnung konnte nicht gespeichert werden — diese Sitzung ist NICHT inkognito. Bitte erneut versuchen."
+
   restart:
     in_progress:           "⏳ Gateway-Neustart läuft bereits..."
     restarting:            "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."
+    forwarded:            "♻ Gateway-Neustart an die neueste Generation weitergeleitet (PID {pid})..."
 
   resume:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
@@ -212,6 +219,15 @@ Führe `/sethomeserver confirm` aus, um ihn zur Guild `{guild_id}` zu verschiebe
 **Aktivierte Module:** {modules_count}/5
 Bestehende Benachrichtigungskanäle werden nie überschrieben.
 Re-Syncs laufen automatisch höchstens einmal pro Stunde."
+
+  set_notify:
+    save_failed:           "Benachrichtigungskanal konnte nicht gespeichert werden: {error}"
+    success:               "✅ Gateway-Lebenszyklus-Benachrichtigungen auf **{name}** gesetzt (ID: {chat_id}).\nBenachrichtigungen zum Herunterfahren/Starten des Gateways werden hier zugestellt."
+
+  clear_notify:
+    failed:                "Benachrichtigungskanal konnte nicht geleert werden: {error}"
+    success:               "✅ Benachrichtigungskanal geleert.\nGateway-Lebenszyklus-Benachrichtigungen werden übersprungen, bis ein Benachrichtigungskanal gesetzt ist."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Re-Syncs laufen automatisch höchstens einmal pro Stunde."
     mode_all:              "⚙️ Tool-Fortschritt: **ALL** — jeder Tool-Aufruf wird angezeigt (Vorschaulänge: `display.tool_preview_length`, Standard 40)."
     mode_verbose:          "⚙️ Tool-Fortschritt: **VERBOSE** — jeder Tool-Aufruf mit vollständigen Argumenten."
     mode_log:              "⚙️ Tool-Fortschritt: **LOG** — still im Chat; Tool-Aufrufe werden in ~/.hermes/logs/tool_calls.log geschrieben."
+    mode_compact:          "⚙️ Tool-Fortschritt: **COMPACT** — eine Zeile pro Tool: `name({full JSON args})`."
+    mode_describe:         "⚙️ Tool-Fortschritt: **DESCRIBE** — eine kurze Zeile, die den Zweck jedes Tool-Aufrufs beschreibt, statt des rohen Befehls/Codes."
     saved_suffix:          "_(für **{platform}** gespeichert — wird ab nächster Nachricht wirksam)_"
     save_failed:           "_(konnte nicht in der Konfiguration gespeichert werden: {error})_"
 

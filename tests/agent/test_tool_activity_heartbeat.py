@@ -315,7 +315,11 @@ def test_heartbeat_exits_once_worker_tid_is_interrupted():
 
 def test_sequential_timeout_stops_abandoned_workers_heartbeat(monkeypatch):
     """After the sequential deadline abandons a non-cooperative tool, no more
-    ``tool running:`` stamps arrive — the timed-out tool no longer fakes liveness (#111922)."""
+    ``executing tool:`` stamps arrive — the timed-out tool no longer fakes liveness (#111922).
+
+    Uses a deadline-bound tool name: ``terminal`` is exempt from the generic
+    deadline by design (it supervises its own child timeout), so the
+    sequential poll loop would never abandon it."""
     import agent.tool_executor as te
 
     monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
@@ -325,7 +329,7 @@ def test_sequential_timeout_stops_abandoned_workers_heartbeat(monkeypatch):
     # The middleware's execution seam: ``_run_with_activity_heartbeat`` around ``execute`` on the worker.
     monkeypatch.setattr(
         te, "_run_agent_tool_execution_middleware",
-        lambda agent, execute, function_name="terminal", **kw: te._ManagedToolResult(
+        lambda agent, execute, function_name="web_search", **kw: te._ManagedToolResult(
             result=te._run_with_activity_heartbeat(agent, function_name, lambda: execute({})),
             args={}, middleware_trace=[], blocked=False, dispatched=True,
         ),
@@ -350,13 +354,13 @@ def test_sequential_timeout_stops_abandoned_workers_heartbeat(monkeypatch):
     release = threading.Event()
     try:
         managed = te._run_sequential_tool_execution_middleware(
-            agent, function_name="terminal", function_args={}, effective_task_id="t",
+            agent, function_name="web_search", function_args={}, effective_task_id="t",
             tool_call_id="tc1", execute=lambda args: release.wait() or "late",
         )
         abandoned_at = time.monotonic()
         assert isinstance(managed.result, te._ToolTimeoutResult)
         time.sleep(0.3)  # several heartbeat intervals past abandonment
-        late = [d for ts, d in agent.stamps if ts > abandoned_at + 0.06 and d.startswith("tool running:")]
+        late = [d for ts, d in agent.stamps if ts > abandoned_at + 0.06 and d.startswith("executing tool:")]
         assert not late, f"abandoned tool kept stamping activity: {late[:3]}"
     finally:
         release.set()

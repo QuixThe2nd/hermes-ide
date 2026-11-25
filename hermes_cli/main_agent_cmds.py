@@ -139,6 +139,10 @@ def cmd_monitoring(args):
               f"(optional extra: hermes-agent[otlp])")
         print("\n  Scope: gateway service health + redacted diagnostics only.")
         print("  No prompts, messages, tool args/results, usage analytics, or traces.")
+        print("  Relay's platform gauges project Hermes Agent-owned Relay transport health,")
+        print("  not the authoritative shared connector/platform state (each connector")
+        print("  owns that). Terminal cron events request a best-effort flush of")
+        print("  up to one second; a failed flush never fails the run (fail-open).")
         return
 
     print(f"Unknown monitoring action: {action}", file=sys.stderr)

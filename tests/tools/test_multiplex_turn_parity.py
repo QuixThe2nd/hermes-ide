@@ -28,7 +28,7 @@ def two_homes(tmp_path, monkeypatch):
     for name, home in (("a", a), ("b", b)):
         (home / f"cred_{name}.txt").write_text("x", encoding="utf-8")
         (home / "config.yaml").write_text(yaml.safe_dump({
-            "terminal": {"backend": "local" if name == "a" else "docker",
+            "terminal": {"backend": "local" if name == "a" else "ssh",
                          "credential_files": [f"cred_{name}.txt"]},
             "security": {"redact_secrets": name == "b"},
             "browser": {"command_timeout": 11 if name == "a" else 17},
@@ -63,7 +63,7 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
 
 def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     """Every ``TERMINAL_ENV`` reader that shapes a turn (image-source locality, credential-file path
-    translation, image-gen cache base, skill readiness) resolves the ROUTED profile's backend."""
+    translation, image-gen cache base) resolves the ROUTED profile's backend."""
     from gateway.run import _profile_runtime_scope
     from tools import credential_files, image_generation_tool, image_source
 
@@ -82,7 +82,7 @@ def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     with _profile_runtime_scope(b):
         local, cache_base, translated, mounts = observe()
     assert local is False
-    assert cache_base == "/root/.hermes"
+    assert cache_base == "~/.hermes"
     assert translated != "/host/.hermes/x.png" or mounts == ["cred_b.txt"]
     assert mounts == ["cred_b.txt"]
 

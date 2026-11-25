@@ -1,0 +1,802 @@
+{
+ "cases": [
+  {
+   "name": "ra_numeric_string",
+   "op": "parse_retry_after",
+   "raw": "30",
+   "expect": {
+    "wait": 30.0
+   }
+  },
+  {
+   "name": "ra_int",
+   "op": "parse_retry_after",
+   "raw": 30,
+   "expect": {
+    "wait": 30.0
+   }
+  },
+  {
+   "name": "ra_float",
+   "op": "parse_retry_after",
+   "raw": 30.5,
+   "expect": {
+    "wait": 30.5
+   }
+  },
+  {
+   "name": "ra_padded_string",
+   "op": "parse_retry_after",
+   "raw": " 30 ",
+   "expect": {
+    "wait": 30.0
+   }
+  },
+  {
+   "name": "ra_zero",
+   "op": "parse_retry_after",
+   "raw": "0",
+   "expect": {
+    "wait": 0.0
+   }
+  },
+  {
+   "name": "ra_negative_clamped",
+   "op": "parse_retry_after",
+   "raw": -5,
+   "expect": {
+    "wait": 0.0
+   }
+  },
+  {
+   "name": "ra_empty",
+   "op": "parse_retry_after",
+   "raw": "",
+   "expect": {
+    "wait": null
+   }
+  },
+  {
+   "name": "ra_garbage",
+   "op": "parse_retry_after",
+   "raw": "abc",
+   "expect": {
+    "wait": null
+   }
+  },
+  {
+   "name": "ra_none",
+   "op": "parse_retry_after",
+   "raw": null,
+   "expect": {
+    "wait": null
+   }
+  },
+  {
+   "name": "ra_bool_is_none",
+   "op": "parse_retry_after",
+   "raw": true,
+   "expect": {
+    "wait": null
+   }
+  },
+  {
+   "name": "ra_headers_canonical",
+   "op": "parse_retry_after",
+   "raw": {
+    "Retry-After": "17"
+   },
+   "expect": {
+    "wait": 17.0
+   }
+  },
+  {
+   "name": "ra_headers_lowercase",
+   "op": "parse_retry_after",
+   "raw": {
+    "retry-after": "19"
+   },
+   "expect": {
+    "wait": 19.0
+   }
+  },
+  {
+   "name": "ra_headers_missing",
+   "op": "parse_retry_after",
+   "raw": {
+    "Content-Type": "application/json"
+   },
+   "expect": {
+    "wait": null
+   }
+  },
+  {
+   "name": "ra_http_date_past_clamped",
+   "op": "parse_retry_after",
+   "raw": "Wed, 21 Oct 2015 07:28:00 GMT",
+   "expect": {
+    "wait": 0.0
+   }
+  },
+  {
+   "name": "ra_http_date_future",
+   "op": "parse_retry_after",
+   "raw": "Mon, 30 Nov 2026 12:00:00 GMT",
+   "expect": {
+    "wait": 518400.0
+   }
+  },
+  {
+   "name": "ra_http_date_future_offset",
+   "op": "parse_retry_after",
+   "raw": "Mon, 30 Nov 2026 12:00:00 +0000",
+   "expect": {
+    "wait": 518400.0
+   }
+  },
+  {
+   "name": "base_attempt1",
+   "op": "jittered_base",
+   "attempt": 1,
+   "base_delay": 5,
+   "max_delay": 120,
+   "expect": {
+    "base": 5.0
+   }
+  },
+  {
+   "name": "base_attempt2",
+   "op": "jittered_base",
+   "attempt": 2,
+   "base_delay": 5,
+   "max_delay": 120,
+   "expect": {
+    "base": 10.0
+   }
+  },
+  {
+   "name": "base_attempt4",
+   "op": "jittered_base",
+   "attempt": 4,
+   "base_delay": 5,
+   "max_delay": 120,
+   "expect": {
+    "base": 40.0
+   }
+  },
+  {
+   "name": "base_attempt6_capped",
+   "op": "jittered_base",
+   "attempt": 6,
+   "base_delay": 5,
+   "max_delay": 120,
+   "expect": {
+    "base": 120.0
+   }
+  },
+  {
+   "name": "base_equal_max",
+   "op": "jittered_base",
+   "attempt": 1,
+   "base_delay": 5,
+   "max_delay": 5,
+   "expect": {
+    "base": 5.0
+   }
+  },
+  {
+   "name": "base_zero_base_saturates_max",
+   "op": "jittered_base",
+   "attempt": 3,
+   "base_delay": 0,
+   "max_delay": 120,
+   "expect": {
+    "base": 120.0
+   }
+  },
+  {
+   "name": "base_exponent63_saturates",
+   "op": "jittered_base",
+   "attempt": 70,
+   "base_delay": 5,
+   "max_delay": 120,
+   "expect": {
+    "base": 120.0
+   }
+  },
+  {
+   "name": "base_defaults_a1",
+   "op": "jittered_base",
+   "attempt": 1,
+   "base_delay": 2,
+   "max_delay": 60,
+   "expect": {
+    "base": 2.0
+   }
+  },
+  {
+   "name": "base_defaults_a5",
+   "op": "jittered_base",
+   "attempt": 5,
+   "base_delay": 2,
+   "max_delay": 60,
+   "expect": {
+    "base": 32.0
+   }
+  },
+  {
+   "name": "base_defaults_a7_capped",
+   "op": "jittered_base",
+   "attempt": 7,
+   "base_delay": 2,
+   "max_delay": 60,
+   "expect": {
+    "base": 60.0
+   }
+  },
+  {
+   "name": "bounds_half",
+   "op": "jitter_bounds",
+   "attempt": 2,
+   "base_delay": 5,
+   "max_delay": 120,
+   "jitter_ratio": 0.5,
+   "expect": {
+    "lo": 10,
+    "hi": 15.0
+   }
+  },
+  {
+   "name": "bounds_light",
+   "op": "jitter_bounds",
+   "attempt": 1,
+   "base_delay": 2,
+   "max_delay": 60,
+   "jitter_ratio": 0.2,
+   "expect": {
+    "lo": 2,
+    "hi": 2.4
+   }
+  },
+  {
+   "name": "bounds_capped",
+   "op": "jitter_bounds",
+   "attempt": 6,
+   "base_delay": 5,
+   "max_delay": 120,
+   "jitter_ratio": 0.5,
+   "expect": {
+    "lo": 120,
+    "hi": 180.0
+   }
+  },
+  {
+   "name": "bounds_zero_ratio",
+   "op": "jitter_bounds",
+   "attempt": 3,
+   "base_delay": 5,
+   "max_delay": 120,
+   "jitter_ratio": 0.0,
+   "expect": {
+    "lo": 20,
+    "hi": 20.0
+   }
+  },
+  {
+   "name": "zai_full_match",
+   "op": "zai_overload",
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "status_code": 429,
+   "text": "code 1305: service may be temporarily overloaded",
+   "expect": {
+    "overload": true
+   }
+  },
+  {
+   "name": "zai_temporarily_overloaded_only",
+   "op": "zai_overload",
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "status_code": 429,
+   "text": "service may be temporarily overloaded",
+   "expect": {
+    "overload": true
+   }
+  },
+  {
+   "name": "zai_model_variant",
+   "op": "zai_overload",
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "GLM-5.2-Flash",
+   "status_code": 429,
+   "text": "1305",
+   "expect": {
+    "overload": true
+   }
+  },
+  {
+   "name": "zai_no_marker",
+   "op": "zai_overload",
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "status_code": 429,
+   "text": "too many requests",
+   "expect": {
+    "overload": false
+   }
+  },
+  {
+   "name": "zai_wrong_url",
+   "op": "zai_overload",
+   "base_url": "https://open.bigmodel.cn/api/paas/v4",
+   "model": "glm-5.2",
+   "status_code": 429,
+   "text": "1305",
+   "expect": {
+    "overload": false
+   }
+  },
+  {
+   "name": "zai_wrong_model",
+   "op": "zai_overload",
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-4.7",
+   "status_code": 429,
+   "text": "1305",
+   "expect": {
+    "overload": false
+   }
+  },
+  {
+   "name": "zai_wrong_status",
+   "op": "zai_overload",
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "status_code": 500,
+   "text": "1305",
+   "expect": {
+    "overload": false
+   }
+  },
+  {
+   "name": "policy_not_zai_default",
+   "op": "adaptive_policy",
+   "attempt": 2,
+   "zai": false,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 4.0,
+    "policy": null
+   }
+  },
+  {
+   "name": "policy_short_a1",
+   "op": "adaptive_policy",
+   "attempt": 1,
+   "zai": true,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 4.0,
+    "policy": "zai_coding_overload_short"
+   }
+  },
+  {
+   "name": "policy_short_a3",
+   "op": "adaptive_policy",
+   "attempt": 3,
+   "zai": true,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 4.0,
+    "policy": "zai_coding_overload_short"
+   }
+  },
+  {
+   "name": "policy_long_a4",
+   "op": "adaptive_policy",
+   "attempt": 4,
+   "zai": true,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 30.0,
+    "policy": "zai_coding_overload_long"
+   }
+  },
+  {
+   "name": "policy_long_a5",
+   "op": "adaptive_policy",
+   "attempt": 5,
+   "zai": true,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 60.0,
+    "policy": "zai_coding_overload_long"
+   }
+  },
+  {
+   "name": "policy_long_a8_last",
+   "op": "adaptive_policy",
+   "attempt": 8,
+   "zai": true,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 120.0,
+    "policy": "zai_coding_overload_long"
+   }
+  },
+  {
+   "name": "policy_long_clamped",
+   "op": "adaptive_policy",
+   "attempt": 12,
+   "zai": true,
+   "default_wait": 4.0,
+   "expect": {
+    "wait": 120.0,
+    "policy": "zai_coding_overload_long"
+   }
+  },
+  {
+   "name": "policy_short_custom_ceiling",
+   "op": "adaptive_policy",
+   "attempt": 6,
+   "zai": true,
+   "default_wait": 4.0,
+   "short_attempts": 5,
+   "expect": {
+    "wait": 30.0,
+    "policy": "zai_coding_overload_long"
+   }
+  },
+  {
+   "name": "ceiling_default",
+   "op": "zai_ceiling",
+   "expect": {
+    "ceiling": 8
+   }
+  },
+  {
+   "name": "ceiling_custom",
+   "op": "zai_ceiling",
+   "short_attempts": 5,
+   "expect": {
+    "ceiling": 10
+   }
+  },
+  {
+   "name": "window_9h",
+   "op": "format_reset_window",
+   "seconds": 31000,
+   "expect": {
+    "window": "~9h"
+   }
+  },
+  {
+   "name": "window_1h",
+   "op": "format_reset_window",
+   "seconds": 3600,
+   "expect": {
+    "window": "~1h"
+   }
+  },
+  {
+   "name": "window_ceil_2h",
+   "op": "format_reset_window",
+   "seconds": 3601,
+   "expect": {
+    "window": "~2h"
+   }
+  },
+  {
+   "name": "window_2min",
+   "op": "format_reset_window",
+   "seconds": 120,
+   "expect": {
+    "window": "~2 min"
+   }
+  },
+  {
+   "name": "window_60min",
+   "op": "format_reset_window",
+   "seconds": 3599,
+   "expect": {
+    "window": "~60 min"
+   }
+  },
+  {
+   "name": "window_1min",
+   "op": "format_reset_window",
+   "seconds": 59,
+   "expect": {
+    "window": "~1 min"
+   }
+  },
+  {
+   "name": "delay_quota_ms",
+   "op": "reset_delay_from_message",
+   "message": "{\"error\": {\"metadata\": {\"quotaResetDelay\": 1500ms}}}",
+   "expect": {
+    "seconds": 1.5
+   }
+  },
+  {
+   "name": "delay_quota_s",
+   "op": "reset_delay_from_message",
+   "message": "quotaResetDelay: 30s",
+   "expect": {
+    "seconds": 30.0
+   }
+  },
+  {
+   "name": "delay_retry_after_words",
+   "op": "reset_delay_from_message",
+   "message": "Please retry after 30 seconds",
+   "expect": {
+    "seconds": 30.0
+   }
+  },
+  {
+   "name": "delay_retry_bare",
+   "op": "reset_delay_from_message",
+   "message": "retry 45s",
+   "expect": {
+    "seconds": 45.0
+   }
+  },
+  {
+   "name": "delay_field",
+   "op": "reset_delay_from_message",
+   "message": "{'resets_in_seconds': 30995}",
+   "expect": {
+    "seconds": 30995.0
+   }
+  },
+  {
+   "name": "delay_resets_hr_min",
+   "op": "reset_delay_from_message",
+   "message": "Resets in 4hr 5min",
+   "expect": {
+    "seconds": 14700.0
+   }
+  },
+  {
+   "name": "delay_resets_words",
+   "op": "reset_delay_from_message",
+   "message": "resets in 2 hours 5 minutes",
+   "expect": {
+    "seconds": 7500.0
+   }
+  },
+  {
+   "name": "delay_resets_seconds",
+   "op": "reset_delay_from_message",
+   "message": "resets in 30s",
+   "expect": {
+    "seconds": 30.0
+   }
+  },
+  {
+   "name": "delay_retry_beats_resets",
+   "op": "reset_delay_from_message",
+   "message": "retry after 30s; usage resets in 4hr",
+   "expect": {
+    "seconds": 30.0
+   }
+  },
+  {
+   "name": "delay_quota_beats_retry",
+   "op": "reset_delay_from_message",
+   "message": "quotaResetDelay: 200ms; retry after 30s",
+   "expect": {
+    "seconds": 0.2
+   }
+  },
+  {
+   "name": "delay_resets_no_numbers",
+   "op": "reset_delay_from_message",
+   "message": "usage resets in",
+   "expect": {
+    "seconds": null
+   }
+  },
+  {
+   "name": "delay_empty",
+   "op": "reset_delay_from_message",
+   "message": "",
+   "expect": {
+    "seconds": null
+   }
+  },
+  {
+   "name": "delay_no_grammar",
+   "op": "reset_delay_from_message",
+   "message": "plain provider error text",
+   "expect": {
+    "seconds": null
+   }
+  },
+  {
+   "name": "surface_plain_5xx_backoff",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after_via": "none",
+   "is_rate_limited": false,
+   "status_code": 520,
+   "expect": {
+    "wait": 2.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_plain_ra_long_emit",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after": 90,
+   "retry_after_via": "header",
+   "is_rate_limited": false,
+   "status_code": 520,
+   "expect": {
+    "wait": 90.0,
+    "surface": "emit"
+   }
+  },
+  {
+   "name": "surface_plain_ra_short_buffer",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after": 30,
+   "retry_after_via": "header",
+   "is_rate_limited": false,
+   "status_code": 503,
+   "expect": {
+    "wait": 30.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_ra_capped_600",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after": 700,
+   "retry_after_via": "header",
+   "is_rate_limited": false,
+   "status_code": 524,
+   "expect": {
+    "wait": 600,
+    "surface": "emit"
+   }
+  },
+  {
+   "name": "surface_ra_zero_is_absent",
+   "op": "surface",
+   "retry_count": 2,
+   "retry_after": 0,
+   "retry_after_via": "header",
+   "is_rate_limited": false,
+   "status_code": 503,
+   "expect": {
+    "wait": 4.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_ra_nested_body",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after": 45,
+   "retry_after_via": "body_nested",
+   "is_rate_limited": false,
+   "status_code": 429,
+   "expect": {
+    "wait": 45.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_ra_top_body",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after": 45,
+   "retry_after_via": "body_top",
+   "is_rate_limited": false,
+   "status_code": 429,
+   "expect": {
+    "wait": 45.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_backoff_saturates",
+   "op": "surface",
+   "retry_count": 6,
+   "retry_after_via": "none",
+   "is_rate_limited": false,
+   "status_code": 500,
+   "expect": {
+    "wait": 60.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_rate_limited_default",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after_via": "none",
+   "is_rate_limited": true,
+   "status_code": 429,
+   "expect": {
+    "wait": 2.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_rate_limited_with_long_ra_buffers",
+   "op": "surface",
+   "retry_count": 1,
+   "retry_after": 200,
+   "retry_after_via": "header",
+   "is_rate_limited": true,
+   "status_code": 429,
+   "expect": {
+    "wait": 200.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_zai_short",
+   "op": "surface",
+   "retry_count": 2,
+   "retry_after_via": "none",
+   "is_rate_limited": false,
+   "zai": true,
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "expect": {
+    "wait": 4.0,
+    "surface": "buffer"
+   }
+  },
+  {
+   "name": "surface_zai_long_emits",
+   "op": "surface",
+   "retry_count": 4,
+   "retry_after_via": "none",
+   "is_rate_limited": false,
+   "zai": true,
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "expect": {
+    "wait": 30.0,
+    "surface": "emit"
+   }
+  },
+  {
+   "name": "surface_zai_long_last_emits",
+   "op": "surface",
+   "retry_count": 8,
+   "retry_after_via": "none",
+   "is_rate_limited": false,
+   "zai": true,
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "expect": {
+    "wait": 120.0,
+    "surface": "emit"
+   }
+  },
+  {
+   "name": "surface_zai_rate_limited_both",
+   "op": "surface",
+   "retry_count": 5,
+   "retry_after_via": "none",
+   "is_rate_limited": true,
+   "zai": true,
+   "base_url": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+   "model": "glm-5.2",
+   "expect": {
+    "wait": 60.0,
+    "surface": "emit"
+   }
+  }
+ ]
+}

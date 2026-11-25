@@ -87,13 +87,12 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
 ):
     """Leak matrix through the REAL gateway boundary: a routed local profile
     with its own cwd must be seen as such by every terminal.* consumer —
-    terminal_tool config, container key resolution, docker media translation,
-    file_tools/runtime_cwd cwd anchors, and env_probe backend checks — with none
-    of launch profile A's docker policy showing through."""
+    terminal_tool config, container key resolution, file_tools/runtime_cwd
+    cwd anchors, and env_probe backend checks — with none of launch profile
+    A's backend policy showing through."""
     import gateway.run as gw
     import tools.terminal_tool as tt
     from agent import runtime_cwd
-    from gateway.platforms import base as gbase
     from tools import env_probe, file_tools_paths
 
     b_cwd = tmp_path / "b-work"
@@ -107,38 +106,31 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
         cfg = tt._get_env_config()
         assert cfg["env_type"] == "local"
         assert cfg["cwd"] == str(b_cwd)
-        assert cfg["docker_volumes"] == []
-        assert cfg["docker_shared_container_key"] == ""
+        assert cfg["ssh_host"] == ""
         assert tt._resolve_container_task_id(None) == "default"
-        assert gbase._parse_docker_volume_mounts() == []
-        assert not any(
-            "alpha-shared" in c for c in gbase._docker_sandbox_dir_candidates("agent:bee:x")
-        )
         assert file_tools_paths._configured_terminal_cwd() == str(b_cwd)
         assert runtime_cwd.resolve_agent_cwd() == b_cwd
         # env_probe bails out with "" for remote backends; a local profile
-        # must not be treated as remote just because the launch env is docker.
+        # must not be treated as remote just because the launch env isn't.
         assert env_probe._resolve_terminal_backend() == "local"
     assert get_terminal_scope() is None
     # Process env untouched — the launch profile's own turns are unchanged.
-    assert os.environ["TERMINAL_DOCKER_VOLUMES"] == _LAUNCH_VOLUMES
+    assert os.environ["TERMINAL_SSH_HOST"] == "10.10.0.103"
 
 
 def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
-    """#101132/#95470: a docker profile that does NOT set docker_volumes or
-    docker_shared_container_key must not inherit the launch profile's."""
+    """#101132/#95470: a profile that omits terminal keys gets the config
+    defaults, never the launch profile's bridged env values."""
     import gateway.run as gw
     import tools.terminal_tool as tt
 
-    home = _profile(tmp_path, "bee", "terminal:\n  backend: docker\n")
+    home = _profile(tmp_path, "bee", "terminal:\n  backend: ssh\n")
     with gw._profile_runtime_scope(home):
         cfg = tt._get_env_config()
-        assert cfg["env_type"] == "docker"
-        assert cfg["docker_volumes"] == []
-        assert cfg["docker_shared_container_key"] == ""
+        assert cfg["env_type"] == "ssh"
         assert cfg["ssh_host"] == ""
         assert cfg["cwd"] != _LAUNCH_CWD
-    assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"])  # A unchanged
+    assert os.environ["TERMINAL_SSH_HOST"] == "10.10.0.103"  # A unchanged
 
 
 def test_malformed_profile_config_refuses_execution(tmp_path):
@@ -169,45 +161,40 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
     assert get_terminal_scope() is None
 
 
-def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
-    """config.yaml list/dict terminal keys must be JSON so terminal_tool's
-    json.loads path succeeds. str() produces Python repr and drops the tool."""
+def test_list_and_dict_terminal_values_serialize_as_json_not_repr():
+    """Non-scalar terminal values must serialize as JSON text — Python repr
+    (str() of a list/dict) would break every json.loads consumer. The bridge
+    and the profile scope builder share this helper."""
+    from hermes_cli.config import _terminal_env_value
+
+    assert _terminal_env_value(["/tmp/a:/data"]) == '["/tmp/a:/data"]'
+    assert _terminal_env_value({"FOO": "bar"}) == '{"FOO": "bar"}'
+    assert _terminal_env_value("host.example.test") == "host.example.test"
+
+
+def test_retired_docker_list_keys_do_not_bridge_from_config(tmp_path):
+    """Legacy docker list/dict keys left in a profile's config.yaml bridge
+    nothing into the terminal scope after the backend retirement
+    (c7442dd1745, #708); the backend string still passes through."""
     from tools.terminal_scope import build_profile_terminal_scope
 
     home = _profile(
         tmp_path,
         "docker-lists",
-        "\n".join(
-            [
-                "terminal:",
-                "  backend: docker",
-                "  docker_forward_env:",
-                "    - EMAIL_HOME_ADDRESS",
-                "  docker_volumes:",
-                "    - /tmp/a:/data",
-                "  docker_env:",
-                "    FOO: bar",
-                "  docker_extra_args:",
-                "    - --network=host",
-                "",
-            ]
-        ),
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_forward_env:\n"
+        "    - EMAIL_HOME_ADDRESS\n"
+        "  docker_volumes:\n"
+        "    - /tmp/a:/data\n"
+        "  docker_env:\n"
+        "    FOO: bar\n",
     )
     scope = build_profile_terminal_scope(home)
-    assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
-    assert json.loads(scope["TERMINAL_DOCKER_VOLUMES"]) == ["/tmp/a:/data"]
-    assert json.loads(scope["TERMINAL_DOCKER_ENV"]) == {"FOO": "bar"}
-    assert json.loads(scope["TERMINAL_DOCKER_EXTRA_ARGS"]) == ["--network=host"]
-
-    import gateway.run as gw
-    import tools.terminal_tool as tt
-
-    with gw._profile_runtime_scope(home):
-        cfg = tt._get_env_config()
-        assert cfg["docker_forward_env"] == ["EMAIL_HOME_ADDRESS"]
-        assert cfg["docker_volumes"] == ["/tmp/a:/data"]
-        assert cfg["docker_env"] == {"FOO": "bar"}
-        assert cfg["docker_extra_args"] == ["--network=host"]
+    assert scope["TERMINAL_ENV"] == "docker"
+    assert "TERMINAL_DOCKER_FORWARD_ENV" not in scope
+    assert "TERMINAL_DOCKER_VOLUMES" not in scope
+    assert "TERMINAL_DOCKER_ENV" not in scope
 
 
 def test_dotenv_json_strings_stay_json_strings(tmp_path):

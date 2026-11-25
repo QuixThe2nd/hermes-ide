@@ -224,6 +224,7 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     import hermes_cli.session_lost_and_found as laf
 
     monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
+    monkeypatch.setattr(laf, "_last_cli_refusal", {"reason": "missing"})
     with pytest.raises(SessionRecoverySourceError) as excinfo:
         recover_session_database(
             source,
@@ -235,6 +236,43 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     assert "sessions" in message and "messages" in message
     assert "sqlite3" in message
     assert ".recover" in message
+    assert not output.exists()
+
+
+def test_unsafe_sqlite3_cli_names_the_wal_reset_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLI on PATH but unsafe for salvage (WAL-reset bug) must name the version requirement."""
+    source = tmp_path / "schemaless.db"
+    output = tmp_path / "schemaless-recovered.db"
+    _make_schema_unreadable_source(source)
+
+    import hermes_cli.session_lost_and_found as laf
+
+    monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
+    monkeypatch.setattr(
+        laf, "_last_cli_refusal",
+        {
+            "reason": "wal_reset_vulnerable",
+            "binary": "/usr/bin/sqlite3",
+            "version": "3.45.1",
+            "detail": "reports version 3.45.1, which has " + laf._WAL_RESET_VULNERABLE_GUIDANCE,
+        },
+    )
+    with pytest.raises(SessionRecoverySourceError) as excinfo:
+        recover_session_database(
+            source,
+            output,
+            work_dir=tmp_path,
+            allow_partial=True,
+        )
+    message = str(excinfo.value)
+    # The unsafe-CLI refusal is its own failure class: it must name the WAL-reset bug and
+    # the fixed version to install, not the generic .recover guidance.
+    assert "WAL-reset" in message
+    assert "3.51.3" in message
+    assert "sessions" in message and "messages" in message
     assert not output.exists()
 
 

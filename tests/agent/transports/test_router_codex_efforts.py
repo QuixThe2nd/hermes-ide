@@ -1,29 +1,63 @@
-"""Router catalog-declared reasoning-effort clamping on the codex transport.
+"""Gateway-declared reasoning-effort vocabularies on the codex transport.
 
-Ramp Router (api.router.com) validates ``reasoning.effort`` against each
-model's published vocabulary — HTTP 400 ``invalid-argument`` on an
-unsupported level, and 400 ``unsupported_parameter`` when a non-reasoning
-model receives any reasoning field (both verified live, Aug 2026). The
-router profile declares each model's vocabulary from its cached catalog via
-``ProviderProfile.supported_reasoning_efforts``; these tests pin how the
-codex transport consumes that declaration.
+A gateway that validates ``reasoning.effort`` per model — Ramp Router
+(api.router.com) was the motivating vendor — 400s on an unsupported level and
+on any reasoning field for a non-reasoning model. The vendor-agnostic seam is
+``ProviderProfile.supported_reasoning_efforts`` (providers/base.py): a
+registered profile declares each model's vocabulary and the Responses
+transport clamps onto it. Router's bundled plugin — the ``/v1/models`` effort
+parser, its disk mirror, the background warmer, and the credentialed catalog
+fetch — was retired in db4ffa25327; what survives is this hook, the real
+provider registry, and the transport clamp pinned here through both.
 
-All tests seed the plugin's in-memory cache directly — no network.
+Tri-state declaration (providers/base.py):
+
+- non-empty tuple — clamp onto it (nearest weaker, never escalate);
+- ``()`` — the model takes no reasoning field; the transport omits it;
+- ``None`` — unknown/undeclared: the default route vocabulary applies.
+
+``DECLARED`` deliberately disagrees with every transport default for the
+same request — it has ``minimal`` (which the legacy codex ladder lacks) and
+stops below ``xhigh`` — so a declaration that is silently ignored cannot
+reproduce the asserted outcomes. No network: fixture profiles count (and
+raise on) any catalog fetch on the request hot path, because the resolver's
+fail-open ``except`` would swallow the raise alone.
 """
-
-import sys
 
 import pytest
 
+import agent.model_metadata
 from agent.transports import get_transport
+from providers import get_provider_profile
+from providers.base import ProviderProfile
+
+DECLARED_HOST = "https://gw-clamp.test/v1"
+FOREIGN_HOST = "https://generic.example.com/v1"
+DECLARED = ("minimal", "low", "medium", "high")
 
 
-def _router_plugin_module():
-    from providers import get_provider_profile
+class _GatewayProfile(ProviderProfile):
+    """Minimal externally-provided gateway profile: a per-model declaration.
 
-    profile = get_provider_profile("router")
-    assert profile is not None, "router profile must be registered"
-    return profile, sys.modules[type(profile).__module__]
+    Below the public integration boundary the same way the retired Router
+    plugin was above it: a real ``ProviderProfile`` registered through the
+    normal ``providers.register_provider`` seam, consulted by the real
+    transport. ``fetch_models`` doubles as the hot-path tripwire, counting
+    before it raises so the observation survives an exception-catching
+    lookup.
+    """
+
+    def __init__(self, efforts_by_model, name="effort-gw"):
+        super().__init__(name=name, api_mode="codex_responses")
+        self._efforts_by_model = efforts_by_model
+        self.fetch_calls = 0
+
+    def supported_reasoning_efforts(self, model):
+        return self._efforts_by_model.get(model)
+
+    def fetch_models(self, **_kwargs):
+        self.fetch_calls += 1
+        raise AssertionError("request hot path fetched the provider catalog")
 
 
 @pytest.fixture
@@ -33,203 +67,188 @@ def transport():
 
 
 @pytest.fixture
-def seeded_catalog(monkeypatch):
-    """Seed the router efforts cache with catalog-shaped verdicts."""
-    profile, mod = _router_plugin_module()
-    monkeypatch.setattr(mod, "_efforts_cache", {
-        # grok via Router: no "none", no "max" (live catalog shape)
-        "grok-4.6": ["minimal", "low", "medium", "high", "xhigh"],
-        # non-reasoning model: any reasoning field 400s
-        "gpt-4.1-mini": [],
-        # full ladder including max
-        "accounts/fireworks/models/kimi-k3": [
-            "minimal", "low", "medium", "high", "xhigh", "max",
-        ],
-    })
-    monkeypatch.setattr(mod, "_disk_checked", True)
+def registered():
+    """Register profiles for one test and restore the registry afterwards."""
+    import providers as _providers
+
+    _providers._discover_providers()
+    snapshot = (dict(_providers._REGISTRY), dict(_providers._ALIASES), _providers._PROVIDER_LIST_CACHE)
+    yield _providers.register_provider
+    _providers._REGISTRY.clear()
+    _providers._REGISTRY.update(snapshot[0])
+    _providers._ALIASES.clear()
+    _providers._ALIASES.update(snapshot[1])
+    _providers._PROVIDER_LIST_CACHE = snapshot[2]
+
+
+def _gateway(registered, efforts):
+    profile = _GatewayProfile(efforts)
+    registered(profile)
     return profile
 
 
+def _build(transport, model, *, effort="max", provider="effort-gw",
+           base_url=DECLARED_HOST, gw=None, **params):
+    """One real ``build_kwargs`` request; a registered profile must resolve
+    its declaration without fetching the catalog on the hot path."""
+    kwargs = transport.build_kwargs(
+        model=model,
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=[],
+        base_url=base_url,
+        session_id="sid",
+        provider=provider,
+        reasoning_config=None if effort is None else {"effort": effort},
+        **params,
+    )
+    if gw is not None:
+        assert gw.fetch_calls == 0, "request hot path fetched the provider catalog"
+    return kwargs
+
+
 class TestProfileContract:
-    def test_declared_vocabulary(self, seeded_catalog):
-        assert seeded_catalog.supported_reasoning_efforts("grok-4.6") == (
-            "minimal", "low", "medium", "high", "xhigh",
-        )
+    def test_declared_vocabulary_resolves_through_the_real_registry(self, registered):
+        registered(_GatewayProfile({
+            "gw-reasoner": DECLARED,
+            "gw-vision": (),
+        }))
+        profile = get_provider_profile("effort-gw")
+        assert profile is not None, "registered profile must resolve by name"
+        assert profile.supported_reasoning_efforts("gw-reasoner") == DECLARED
+        # () is definitive (non-reasoning), unknown model and the base-class
+        # default are None (undeclared -> transport keeps its own vocabulary).
+        assert profile.supported_reasoning_efforts("gw-vision") == ()
+        assert profile.supported_reasoning_efforts("some-byok-route") is None
+        assert ProviderProfile(name="bare").supported_reasoning_efforts("gw-reasoner") is None
 
-    def test_non_reasoning_model_is_definitive_empty(self, seeded_catalog):
-        assert seeded_catalog.supported_reasoning_efforts("gpt-4.1-mini") == ()
+    def test_fetch_tripwire_counts_a_forced_fetch(self, registered):
+        # Alive control for the zero-fetch asserts in ``_build``: a forced
+        # fetch must be counted (and raise) even where a lookup catches
+        # exceptions, or "no fetch happened" would prove nothing.
+        gw = _gateway(registered, {"gw-reasoner": DECLARED})
+        with pytest.raises(AssertionError):
+            gw.fetch_models()
+        assert gw.fetch_calls == 1
 
-    def test_unknown_model_is_none(self, seeded_catalog):
-        assert seeded_catalog.supported_reasoning_efforts("some-byok-route") is None
-
-    def test_cold_cache_is_none_and_never_blocks(self, monkeypatch):
-        profile, mod = _router_plugin_module()
-        monkeypatch.setattr(mod, "_efforts_cache", None)
-        monkeypatch.setattr(mod, "_disk_checked", True)
-        monkeypatch.setattr(mod, "_warm_efforts_async", lambda: None)
-        assert profile.supported_reasoning_efforts("grok-4.6") is None
-
-    def test_parse_efforts_catalog_shapes(self):
-        _, mod = _router_plugin_module()
-        parsed = mod._parse_efforts([
-            {
-                "id": "grok-4.6",
-                "router": {"capabilities": {"reasoning": {
-                    "supported": True,
-                    "efforts": [{"value": "low"}, {"value": "high"}],
-                }}},
-            },
-            {
-                "id": "gpt-4.1",
-                "router": {"capabilities": {"reasoning": {"supported": False, "efforts": []}}},
-            },
-            # reasoning supported but vocabulary unpublished -> omitted (unknown)
-            {
-                "id": "mystery-model",
-                "router": {"capabilities": {"reasoning": {"supported": True, "efforts": []}}},
-            },
-            # no router metadata at all -> omitted
-            {"id": "bare-model"},
-        ])
-        assert parsed == {"grok-4.6": ["low", "high"], "gpt-4.1": []}
+    def test_unregistered_provider_is_none_and_keeps_default_behavior(self, transport):
+        assert get_provider_profile("never-registered") is None
+        kw = _build(transport, "some-byok-route", provider="never-registered",
+                    base_url=FOREIGN_HOST)
+        # No declaration -> the default codex vocabulary (legacy ladder has
+        # xhigh but no max: max clamps to xhigh).
+        assert kw["reasoning"]["effort"] == "xhigh"
 
 
 class TestTransportClamp:
-    def _kwargs(self, transport, model, reasoning_config=None):
-        return transport.build_kwargs(
-            model=model,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            base_url="https://api.router.com/v1",
-            session_id="sid",
-            provider="router",
-            reasoning_config=reasoning_config,
-        )
+    def test_clamps_to_declared_vocabulary(self, transport, registered):
+        gw = _gateway(registered, {"gw-reasoner": DECLARED})
+        # "max" is above the declaration's ceiling -> nearest weaker is high,
+        # not the default ladder's xhigh: an ignored declaration fails this.
+        kw = _build(transport, "gw-reasoner", gw=gw)
+        assert kw["reasoning"]["effort"] == "high"
 
-    def test_clamps_to_catalog_vocabulary(self, transport, seeded_catalog):
-        # grok-4.6 via Router has no "max" — nearest weaker supported is xhigh.
-        kw = self._kwargs(transport, "grok-4.6", {"effort": "max"})
-        assert kw["reasoning"]["effort"] == "xhigh"
+    def test_supported_effort_passes_through(self, transport, registered):
+        gw = _gateway(registered, {"gw-reasoner": DECLARED})
+        # "minimal" is declared but absent from every transport default: it
+        # reaches the wire only when the declaration was actually consulted.
+        kw = _build(transport, "gw-reasoner", effort="minimal", gw=gw)
+        assert kw["reasoning"]["effort"] == "minimal"
 
-    def test_supported_effort_passes_through(self, transport, seeded_catalog):
-        kw = self._kwargs(
-            transport, "accounts/fireworks/models/kimi-k3", {"effort": "max"}
-        )
-        assert kw["reasoning"]["effort"] == "max"
-
-    def test_non_reasoning_model_suppresses_reasoning(self, transport, seeded_catalog):
+    def test_non_reasoning_model_suppresses_reasoning(self, transport, registered):
+        gw = _gateway(registered, {"gw-vision": ()})
         # Default reasoning_config is enabled — the () verdict must strip the
-        # reasoning field entirely (Router 400s rather than ignoring it).
-        kw = self._kwargs(transport, "gpt-4.1-mini")
+        # reasoning field entirely (the gateway 400s rather than ignoring it).
+        kw = _build(transport, "gw-vision", effort=None, gw=gw)
         assert "reasoning" not in kw
         assert kw.get("include") == []
 
-    def test_unknown_model_falls_back_to_codex_default(self, transport, seeded_catalog):
-        # Not in the catalog -> default codex vocabulary applies (legacy has
-        # xhigh but no max: max clamps to xhigh, medium is untouched).
-        kw = self._kwargs(transport, "some-byok-route", {"effort": "max"})
+    def test_unknown_model_falls_back_to_codex_default(self, transport, registered):
+        gw = _gateway(registered, {"gw-reasoner": DECLARED})
+        # Not in the declaration -> None -> default codex vocabulary (legacy
+        # has xhigh but no max: max clamps to xhigh, medium is untouched).
+        kw = _build(transport, "some-byok-route", gw=gw)
         assert kw["reasoning"]["effort"] == "xhigh"
-        kw = self._kwargs(transport, "some-byok-route", {"effort": "medium"})
+        kw = _build(transport, "some-byok-route", effort="medium", gw=gw)
         assert kw["reasoning"]["effort"] == "medium"
 
-    def test_cold_cache_keeps_default_behavior(self, transport, monkeypatch):
-        _, mod = _router_plugin_module()
-        monkeypatch.setattr(mod, "_efforts_cache", None)
-        monkeypatch.setattr(mod, "_disk_checked", True)
-        monkeypatch.setattr(mod, "_warm_efforts_async", lambda: None)
-        kw = self._kwargs(transport, "grok-4.6", {"effort": "xhigh"})
-        # Cold cache -> no declaration -> default codex vocabulary (xhigh ok).
+    def test_unrecognized_declared_levels_are_dropped_at_clamp(self, transport, registered):
+        # The retired ingest dropped unknown vendor tiers at parse time; the
+        # surviving policy is clamp-time: only recognized ladder levels clamp,
+        # so a new tier in the declaration is ignored, not sent.
+        gw = _gateway(registered, {"future-model": ("low", "hyperthink", "high")})
+        kw = _build(transport, "future-model", gw=gw)
+        assert kw["reasoning"]["effort"] == "high"
+
+    def test_fully_unrecognized_declaration_passes_the_request_through(
+        self, transport, registered
+    ):
+        # A declaration with no recognized level cannot clamp; the transport
+        # fails open and forwards the requested level verbatim instead of
+        # suppressing reasoning or silently substituting the route default.
+        gw = _gateway(registered, {"alien-model": ("hyperthink", "galaxy")})
+        kw = _build(transport, "alien-model", gw=gw)
+        assert kw["reasoning"]["effort"] == "max"
+
+    def test_undeclared_route_never_blocks_and_never_fetches(self, transport, registered):
+        # Cold/empty declaration -> None -> default vocabulary, and the
+        # request hot path must not fetch the provider catalog.
+        gw = _gateway(registered, {})
+        kw = _build(transport, "gw-reasoner", effort="xhigh", gw=gw)
         assert kw["reasoning"]["effort"] == "xhigh"
 
-    def test_other_providers_unaffected(self, transport, seeded_catalog):
-        kw = transport.build_kwargs(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            base_url="https://generic.example.com/v1",
-            session_id="sid",
-            provider="some-other-provider",
-            reasoning_config={"effort": "medium"},
-        )
-        # The router catalog's () verdict for gpt-4.1-mini must not leak
-        # into other providers' requests.
+
+class TestRouteIsolation:
+    def test_other_providers_unaffected(self, transport, registered):
+        gw = _gateway(registered, {"gw-vision": ()})
+        kw = _build(transport, "gw-vision", effort="medium", provider="other-relay",
+                    base_url=FOREIGN_HOST, gw=gw)
+        # The declaration's () verdict for gw-vision must not leak into other
+        # providers' requests.
         assert kw["reasoning"]["effort"] == "medium"
+
+    def test_declared_vocab_cannot_hijack_native_codex_backend(self, transport, registered):
+        gw = _gateway(registered, {"gpt-5.4": ()})
+        kw = _build(transport, "gpt-5.4", provider="openai-codex",
+                    base_url="https://chatgpt.com/backend-api/codex",
+                    is_codex_backend=True, gw=gw)
+        # The native route keeps its own per-model ladder (gpt-5.4 -> legacy,
+        # max clamps to xhigh); a profile declaration never suppresses it.
+        assert kw["reasoning"]["effort"] == "xhigh"
 
 
 class TestHostResolvedProfile:
-    def test_named_custom_provider_at_router_host_gets_the_clamp(
-        self, transport, seeded_catalog
+    # The declared-host and foreign-host rows issue the identical request
+    # (model gw-reasoner, effort max); only the endpoint host differs, and
+    # the outcomes must differ with it: the vocabulary follows the host
+    # mapping, not the config-entry name.
+
+    def test_named_custom_route_at_declared_host_gets_the_vocabulary(
+        self, transport, registered, monkeypatch
     ):
-        # A providers.my-proxy entry pointed at api.router.com rides the same
-        # host mandate onto this transport under the runtime's ``custom:<name>``
-        # identity; the vocabulary must follow the host, not the config-entry
-        # name — and not the generic custom declaration either.
-        kw = transport.build_kwargs(
-            model="grok-4.6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            base_url="https://api.router.com/v1",
-            session_id="sid",
-            provider="custom:my-proxy",
-            reasoning_config={"effort": "max"},
-        )
-        assert kw["reasoning"]["effort"] == "xhigh"
+        # A ``custom:<name>`` entry pointed at a host whose profile is
+        # registered rides the host mapping onto this transport, clamping
+        # "max" to the declaration's high — where both the generic custom
+        # declaration (max passes) and the default ladder (xhigh) would not.
+        gw = _gateway(registered, {"gw-reasoner": DECLARED})
+        monkeypatch.setitem(agent.model_metadata._URL_TO_PROVIDER, "gw-clamp.test", "effort-gw")
+        kw = _build(transport, "gw-reasoner", provider="custom:my-proxy", gw=gw)
+        assert kw["reasoning"]["effort"] == "high"
 
-    def test_foreign_host_does_not_borrow_the_router_vocabulary(
-        self, transport, seeded_catalog
+    def test_generic_custom_route_keeps_openai_compat_vocabulary(self, transport):
+        # Shipped custom declaration: an undiscoverable endpoint's ceiling is
+        # the widest OpenAI-compat set, so a configured "max" is not demoted.
+        kw = _build(transport, "some-relay-model", provider="custom:my-relay",
+                    base_url=FOREIGN_HOST)
+        assert kw["reasoning"]["effort"] == "max"
+
+    def test_foreign_host_does_not_borrow_the_declared_vocabulary(
+        self, transport, registered, monkeypatch
     ):
-        kw = transport.build_kwargs(
-            model="grok-4.6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[],
-            base_url="https://generic.example.com/v1",
-            session_id="sid",
-            provider="my-proxy",
-            reasoning_config={"effort": "max"},
-        )
-        # Default codex vocabulary applies (legacy: no max -> xhigh).
+        gw = _gateway(registered, {"gw-reasoner": DECLARED})
+        monkeypatch.setitem(agent.model_metadata._URL_TO_PROVIDER, "gw-clamp.test", "effort-gw")
+        kw = _build(transport, "gw-reasoner", provider="my-proxy",
+                    base_url=FOREIGN_HOST, gw=gw)
+        # No host match and "my-proxy" is unregistered -> default codex
+        # vocabulary (legacy: no max -> xhigh), unlike the declared host's
+        # "high" for the identical request.
         assert kw["reasoning"]["effort"] == "xhigh"
-
-
-class TestCatalogIngestValidation:
-    def test_unrecognized_effort_levels_are_dropped_at_ingest(self):
-        _, mod = _router_plugin_module()
-        parsed = mod._parse_efforts([
-            {
-                "id": "future-model",
-                "router": {"capabilities": {"reasoning": {
-                    "supported": True,
-                    "efforts": [
-                        {"value": "low"},
-                        {"value": "hyperthink"},  # a new vendor tier
-                        {"value": "high"},
-                    ],
-                }}},
-            },
-            {
-                # every level unknown -> omitted entirely (unknown model), so
-                # the transport keeps its defaults instead of suppressing or
-                # passing garbage through.
-                "id": "alien-model",
-                "router": {"capabilities": {"reasoning": {
-                    "supported": True,
-                    "efforts": [{"value": "hyperthink"}, {"value": "galaxy"}],
-                }}},
-            },
-        ])
-        assert parsed == {"future-model": ["low", "high"]}
-
-    def test_fetch_models_dedupes_while_preserving_catalog_order(self, monkeypatch):
-        profile, mod = _router_plugin_module()
-        monkeypatch.setattr(mod, "_disk_path", lambda: None)
-        monkeypatch.setattr(
-            mod,
-            "_fetch_catalog_items",
-            lambda **_kwargs: [
-                {"id": "b"},
-                {"id": "a"},
-                {"id": "b"},
-                {"id": "c"},
-            ],
-        )
-        assert profile.fetch_models() == ["b", "a", "c"]

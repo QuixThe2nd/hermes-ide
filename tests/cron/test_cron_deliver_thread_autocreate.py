@@ -35,7 +35,7 @@ from cron.scheduler import (
 from gateway.config import Platform, PlatformConfig
 from tools.cronjob_tools import _mode_guidance_notes
 
-# Fixture parent chats — deliberately unlike any real platform id.
+# Fixture parent ids — Discord origin chat plus a Slack parent for explicit cross-platform thread:slack: targets.
 DISCORD_PARENT = "1549999999999999999"
 SLACK_PARENT = "C0TESTTEST"
 
@@ -394,7 +394,7 @@ class TestFailureLaneNeverAutoCreates:
 # ---------------------------------------------------------------------------
 
 
-def _preflight(job, *, connected=(Platform.DISCORD, Platform.SLACK)):
+def _preflight(job, *, connected=(Platform.DISCORD,)):
     """Run the pre-dispatch delivery check against a fake gateway config."""
     config = MagicMock()
     config.get_connected_platforms.return_value = list(connected)
@@ -408,8 +408,14 @@ class TestPreflightDelivery:
         through preflight so first delivery can mint and persist the thread."""
         assert _preflight(_job()) is None
 
-    def test_explicit_platform_parent_passes(self):
-        assert _preflight(_job(deliver=f"thread:slack:{SLACK_PARENT}")) is None
+    def test_explicit_platform_parent_passes(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
+        assert (
+            _preflight(
+                _job(deliver=f"thread:slack:{SLACK_PARENT}"), connected=(Platform.RELAY,)
+            )
+            is None
+        )
 
     def test_concrete_four_segment_token_passes(self):
         """The already-concrete form names a real thread — a plain concrete

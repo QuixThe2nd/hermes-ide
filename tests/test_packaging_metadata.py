@@ -46,14 +46,22 @@ def test_packaging_declared_as_core_dependency():
     )
 
 
-def test_faster_whisper_is_not_a_base_dependency():
+def test_faster_whisper_is_not_declared_anywhere():
+    """3695ba63b0e removed the speech surface: no ``stt-whisper`` extra and
+    no faster-whisper distribution in core or optional dependencies. The
+    dep is heavy and audio-optional; a reintroduction (or a stale extra a
+    hash-verified lock sync would fail on) is caught here, not at install
+    time."""
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    deps = data["project"]["dependencies"]
+    core = data["project"]["dependencies"]
+    extras = data["project"].get("optional-dependencies", {})
 
-    assert not any(dep.startswith("faster-whisper") for dep in deps)
+    assert "stt-whisper" not in extras
 
-    stt_extra = data["project"]["optional-dependencies"]["stt-whisper"]
-    assert any(dep.startswith("faster-whisper") for dep in stt_extra)
+    declared = [*core, *(dep for specs in extras.values() for dep in specs)]
+    assert not any(
+        _distribution_name(dep) == "faster-whisper" for dep in declared
+    ), "faster-whisper must not be a declared dependency (speech was removed)"
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in

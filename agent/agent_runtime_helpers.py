@@ -82,7 +82,11 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "tour", "gui_tour", "delegate_agent", "delegate_task"}
+    # Canonical names only: the loop canonicalizes legacy aliases (todo →
+    # todo_list, tour → gui_tour) at parse time, so holding the old names here
+    # double-emits the post hook for the canonical tool via the bridge path
+    # (c1762ff11c7).
+    {"todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour", "delegate_agent", "delegate_task"}
 )
 
 _TRAJECTORY_SYSTEM_PROMPT = load("trajectory_system")
@@ -1009,6 +1013,15 @@ def _merge_user_content(prev_content: Any, cur_content: Any) -> Any:
 _UNMERGEABLE = object()
 
 
+# Transcript-private flag carried by the system-produced Codex incomplete nudge row
+# (#67321 companion, set in turn_truncation.continue_codex_incomplete). The drop below
+# keys on it — string equality with the nudge literal cannot distinguish the synthetic
+# row from a genuine user message whose text is byte-identical. `_`-prefixed: wire
+# transports strip it, SessionDB projection never persists it (same contract as
+# `_length_continuation_nudge`).
+_CODEX_INCOMPLETE_NUDGE_FLAG = "_codex_incomplete_nudge"
+
+
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]], *, drop_codex_reasoning_items: bool = True,
     drop_nudge_marker: Optional[str] = None,
@@ -1017,15 +1030,19 @@ def drop_thinking_only_and_merge_users(
     per-call ``api_messages`` copy only (``agent.messages`` is never mutated). Drop-and-merge
     (not stub text) keeps history honest and preserves role alternation.
 
-    ``drop_nudge_marker`` (#67321): user rows equal to the marker — the synthetic Codex
-    continuation nudge — are dropped too once the turn has crossed to a non-Codex provider;
-    doing it in this pass keeps alternation valid when the nudge sat between dropped
-    reasoning-only interims and a tool result rather than next to the user's message."""
+    ``drop_nudge_marker`` (#67321): when set — the turn has crossed to a non-Codex
+    provider — user rows tagged ``_codex_incomplete_nudge``, the system-produced Codex
+    continuation nudge, are dropped too; doing it in this pass keeps alternation valid
+    when the nudge sat between dropped reasoning-only interims and a tool result rather
+    than next to the user's message. The drop is STRUCTURAL, never by content: a genuine
+    user message whose text is byte-identical to the nudge literal survives untouched.
+    The flag never survives a wire transport or a SessionDB round-trip, so a reloaded
+    nudge row is indistinguishable from user text and is equally preserved."""
     if not messages:
         return messages
     kept = [
         m for m in messages
-        if not (drop_nudge_marker is not None and m.get("role") == "user" and m.get("content") == drop_nudge_marker)
+        if not (drop_nudge_marker is not None and m.get("role") == "user" and m.get(_CODEX_INCOMPLETE_NUDGE_FLAG))
         and not _ra().AIAgent._is_thinking_only_assistant(m, drop_codex_reasoning_items=drop_codex_reasoning_items)
     ]
     dropped = len(messages) - len(kept)
@@ -3458,6 +3475,11 @@ __all__ = [
 
 def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     """Return True when an agent-level tool path emits its own post hook."""
+    # The ownership set holds canonical names only; legacy aliases (todo →
+    # todo_list, tour → gui_tour) resolve to the same inline tool. Lazy import:
+    # model_tools sits above this module in the dependency chain.
+    from model_tools import _LEGACY_TOOL_ALIASES
+    function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
         return True
     if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:

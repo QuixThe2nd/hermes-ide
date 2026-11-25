@@ -1,12 +1,8 @@
 """Tests for the shared interactive-prompt formatting cores in BasePlatformAdapter.
 
-Covers ``_format_exec_approval`` (template-attr driven exec-approval text),
-``_format_choice_page`` (picker pagination core), ``_truncate_preview``, and
-byte-parity of the rewired adapters (feishu/matrix) against their
-historical inline formatting.
+Covers ``_format_choice_page`` (picker pagination core) and byte-parity of the
+rewired adapters (feishu/matrix) against their historical inline formatting.
 """
-
-import html as _html
 
 from gateway.platforms.base import BasePlatformAdapter
 
@@ -31,56 +27,6 @@ class _DefaultAdapter(BasePlatformAdapter):
     async def send(self, *a, **k):  # pragma: no cover - not used
         raise NotImplementedError
 
-
-class TestTruncatePreview:
-    def test_short_text_unchanged(self):
-        assert BasePlatformAdapter._truncate_preview("abc", 10) == "abc"
-
-    def test_exact_budget_unchanged(self):
-        assert BasePlatformAdapter._truncate_preview("x" * 10, 10) == "x" * 10
-
-    def test_ea_fit_measures_the_escaped_rendering(self):
-        """An escaping platform's budget applies to the wire payload, never to raw chars."""
-        class _Html(_DefaultAdapter):
-            def _ea_escape(self, text):
-                return _html.escape(text)
-
-        adapter = _bare(_Html)
-        assert adapter._ea_fit("&" * 100, 20) == "&&&&..."  # 4 x "&amp;" == 20 escaped chars
-        assert adapter._ea_fit("&" * 4, 20) == "&" * 4  # fits once escaped → untouched
-
-
-class TestFormatExecApproval:
-    def test_default_template(self, monkeypatch):
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 300)
-        ad = _bare(_DefaultAdapter)
-        text = ad._format_exec_approval("rm -rf /", "scary")
-        assert text == (
-            "⚠️ Hermes wants to run a command that needs your OK\n\n"
-            "```\nrm -rf /\n```\n"
-            "Why it was flagged: scary\n\n"
-            "If you don't answer within 5 minutes it will NOT run."
-        )
-
-    def test_deadline_line_tracks_configured_timeout(self, monkeypatch):
-        """The card must say how long the user has and that silence means NO — for any timeout."""
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 90)
-        text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
-        assert "within 90 seconds it will NOT run" in text
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 7200)
-        text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
-        assert "within 2 hours it will NOT run" in text
-
-
-    def test_escape_hook_applied_to_command_and_reason(self):
-        class Escaping(_DefaultAdapter):
-            def _ea_escape(self, text: str) -> str:
-                return _html.escape(text)
-
-        ad = _bare(Escaping)
-        text = ad._format_exec_approval("echo <hi>", "a & b")
-        assert "echo &lt;hi&gt;" in text
-        assert "a &amp; b" in text
 
 
 class TestFormatChoicePage:

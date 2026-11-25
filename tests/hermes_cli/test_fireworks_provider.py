@@ -21,7 +21,6 @@ if "dotenv" not in sys.modules:
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
 
-from hermes_cli.auth import resolve_api_key_provider_credentials
 from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS, normalize_provider
 
 
@@ -132,44 +131,6 @@ class TestFireworksDoctor:
 
         assert "vendor-prefixed" not in out
         assert "vendor/model slug" not in out
-
-
-class TestFireworksCredentials:
-    def test_resolves_default_base_url(self, monkeypatch):
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        creds = resolve_api_key_provider_credentials("fireworks")
-        assert creds["api_key"] == "fw_test_key"
-        assert creds["base_url"] == "https://api.fireworks.ai/inference/v1"
-
-class TestFireworksAuxiliary:
-    """resolve_provider_client wires the BYOK key and PAYG-safe aux model."""
-
-    def _resolve(self, name):
-        from unittest.mock import patch
-
-        from agent.auxiliary_client import resolve_provider_client
-
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = object()
-            client, model = resolve_provider_client(name)
-        return client, model, mock_openai.call_args.kwargs
-
-    def test_client_sends_attribution_headers(self, monkeypatch):
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        client, model, kwargs = self._resolve("fireworks")
-        assert client is not None
-        headers = kwargs.get("default_headers", {})
-        assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
-        assert headers["X-Title"] == "Hermes Agent"
-        assert kwargs["base_url"] == "https://api.fireworks.ai/inference/v1"
-
-    def test_client_sends_hermes_user_agent(self, monkeypatch):
-        """The profile's User-Agent survives the generic default_headers
-        fallback and reaches OpenAI client construction."""
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        _client, _model, kwargs = self._resolve("fireworks")
-        headers = kwargs.get("default_headers", {})
-        assert headers["User-Agent"].startswith("HermesAgent/")
 
 
 class TestFireworksModelMetadata:

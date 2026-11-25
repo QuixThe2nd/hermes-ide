@@ -53,7 +53,9 @@ def test_exhausted_recurring_job_trigger_is_refused(tmp_cron_dir):
 
 def test_wedged_claimed_oneshot_remains_triggerable(tmp_cron_dir):
     now = datetime.now(timezone.utc)
-    job = create_job("wedged", "in 30m", repeat=2)
+    # A valid single-run one-shot (917582b35be: creating repeat>1 one-shots is
+    # refused) — the wedged-claim scenario does not need extra occurrences.
+    job = create_job("wedged", "in 30m", repeat=1)
     record = get_job(job["id"])
     record.update({
         "run_claim": {"at": now.isoformat(), "by": "dead-worker"},
@@ -111,7 +113,13 @@ def test_update_cannot_reactivate_terminal_record(tmp_cron_dir):
 def test_rearm_completed_oneshot_restores_schedule_and_preserves_history(tmp_cron_dir):
     from cron.jobs import rearm_oneshot
 
-    job = create_job("done", "in 30m", repeat=3)
+    # 917582b35be refuses CREATING repeat>1 one-shots, so seed the legacy
+    # persisted shape (a jobs.json record from before the ban) after a valid
+    # single-run create; the real run/transition API below is unchanged.
+    job = create_job("done", "in 30m", repeat=1)
+    record = get_job(job["id"])
+    record["repeat"] = {"times": 3, "completed": 0}
+    save_jobs([record])
     mark_job_run(job["id"], success=True)
     finished = get_job(job["id"])
     run_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()

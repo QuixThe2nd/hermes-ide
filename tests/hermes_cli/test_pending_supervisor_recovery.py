@@ -13,7 +13,14 @@ def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path
     stopped = []
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kw: [123] if failure == "running" and not stopped else [])
     monkeypatch.setattr(gateway, "kill_gateway_processes", lambda **kw: stopped.append(True))
-    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda **kw: None)
+    # Current flow restarts systemd units first, then hands manual gateways to
+    # the drain-or-signal triage instead of kill_gateway_processes (#613).
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda **kw: [])
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **kw: [])
+    monkeypatch.setattr(
+        fleet, "_drain_or_signal_gateway_for_update",
+        lambda pid, budget, label: stopped.append(True) or True,
+    )
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", ["systemctl", "--user"]),))
     monkeypatch.setattr(fleet._time, "sleep", lambda _: None)

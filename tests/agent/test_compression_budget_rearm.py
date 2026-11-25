@@ -206,7 +206,7 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
             side_effect=_next_estimate,
         ),
         patch(
-            "agent.conversation_loop._estimate_tools_tokens_rough",
+            "agent.model_metadata._estimate_tools_tokens_rough",
             return_value=0,
         ),
         patch.object(agent, "_compress_context", side_effect=_fake_compress),

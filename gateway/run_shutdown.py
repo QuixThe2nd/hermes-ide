@@ -124,6 +124,18 @@ def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
 
 
+def _interrupt_tool_reason(reason: str) -> str:
+    """System tool-cancellation category for a shutdown-path interrupt reason.
+
+    Distinct from the user-facing message ("Gateway shutting down") and slug-safe
+    for ``interrupt_issuer`` attribution (#112647).
+    """
+    normalized = (reason or "").lower()
+    if "restart" in normalized:
+        return "gateway restart"
+    return "gateway shutdown"
+
+
 class GatewayShutdownMixin:
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -280,7 +292,7 @@ class GatewayShutdownMixin:
                 continue
             seen.add(id(agent))
             try:
-                request_hard_interrupt(agent, reason)
+                request_hard_interrupt(agent, reason, tool_reason=_interrupt_tool_reason(reason))
                 interrupted += 1
             except Exception as exc:
                 logger.debug(
@@ -392,32 +404,45 @@ class GatewayShutdownMixin:
         return max_restarts, window_seconds, max_gap_seconds
 
     def _scale_to_zero_active_messaging_platforms(self) -> list:
-        """ENABLED platforms that count for the relay-only arm gate (D1/F6).
+        """Return every enabled or live messaging platform across served profiles.
 
-        Two filters, both load-bearing:
-        - enabled only: config.platforms is pre-seeded with disabled
-          placeholders for the full platform catalog (the F25 bug).
-        - MESSAGING only: non-messaging surfaces must not disarm scale-to-zero.
-          The api_server is a loopback listener force-enabled by the presence
-          of API_SERVER_KEY (which the Docker stage2 hook now generates for
-          every container, so hosted instances ALWAYS have it enabled) — it
-          holds no outbound socket. Counting it made
-          messaging_is_relay_only_or_absent False on every hosted instance,
-          silently disarming the feature.
-          Mirrors the non-messaging exclusion set used for handoff eligibility
-          (see the `messaging_platforms` computation in _connect_platforms).
+        ``self.config`` belongs to the launch profile, while ``_profile_adapters`` holds
+        live adapters for multiplexed secondary profiles. A direct secondary connection
+        must block suspension just like a direct primary connection. A secondary adapter
+        parked in ``_profile_failed_platforms`` (popped from ``_profile_adapters`` while a
+        retryable fatal reconnects) is still served: suspending mid-reconnect would leave
+        that reconnect unable to complete, so pending reconnects count as active too.
+
+        config.platforms is pre-seeded with disabled placeholders, and the api_server is
+        force-enabled on every hosted container (counting it silently disarmed the feature).
         """
-        if not self.config:
-            return []
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        active = []
+
+        def add_platform(platform: Platform) -> None:
+            if platform not in non_messaging and platform not in active:
+                active.append(platform)
+
         try:
-            return [
-                p
-                for p, pc in self.config.platforms.items()
-                if getattr(pc, "enabled", False) and p not in non_messaging
-            ]
-        except Exception:  # noqa: BLE001
-            return []
+            if self.config:
+                for platform, platform_config in self.config.platforms.items():
+                    if getattr(platform_config, "enabled", False):
+                        add_platform(platform)
+            for platform in getattr(self, "adapters", {}) or {}:
+                add_platform(platform)
+            for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
+                for platform in profile_adapters:
+                    add_platform(platform)
+            for profile_pending in (getattr(self, "_profile_failed_platforms", {}) or {}).values():
+                for platform in profile_pending or {}:
+                    add_platform(platform)
+        except Exception:  # noqa: BLE001 - unreadable state must keep the gateway awake
+            logger.debug(
+                "scale-to-zero: active messaging platforms unreadable — staying awake",
+                exc_info=True,
+            )
+            return ["<unavailable>"]
+        return active
 
     @staticmethod
     def _relay_wake_url_or_none():
@@ -570,67 +595,50 @@ class GatewayShutdownMixin:
         return self.adapters.get(Platform.RELAY)
 
     async def _scale_to_zero_watcher(self, interval: float = 30.0) -> None:
-        """Watch for idle, drive the relay dormant, then self-suspend the machine.
-
-        Started ONLY when _scale_to_zero_should_arm() (opted in via the Labs
-        HERMES_SCALE_TO_ZERO stamp + relay-only/absent messaging + a wakeUrl).
-        On a sustained idle window it runs the DORMANT sequence (D12/F12/F14):
-          - mark runtime status `draining` (composes with the existing state
-            machine, §3.4(6); does NOT set _running=False),
-          - relay adapter.go_dormant() — going_idle->ack + supervisor-preserving
-            socket close (NOT disconnect(), NOT the run.py stop path),
-          - deliberately NO mark_resume_pending (D13 — suspend preserves RAM),
-          - THEN suspend this machine through the local flaps socket
-            (gateway.scale_to_zero.suspend_self). The gateway owns the suspend
-            because Fly Proxy autostop judges idle on INBOUND connections only:
-            it cannot see an in-flight agent turn (outbound-only LLM traffic)
-            and, since the mid-2026 proxy change, an open outbound relay socket
-            no longer holds the machine awake — autostop:"suspend" would freeze
-            the machine mid-job or before the relay flip (the buffered-event
-            black hole). NAS therefore provisions scale-to-zero machines with
-            autostop:"off"; the suspend only ever happens HERE, strictly after
-            the idle predicate held and the dormant quiesce completed.
-        Autostart stays platform-side: the connector's wakeUrl poke (Fly-proxied)
-        wakes the machine, the preserved reconnect supervisor re-dials, and the
-        connector drains the buffered backlog. After driving dormant we set a
-        re-arm cooldown so a wake's drained backlog isn't immediately re-quiesced.
-        Off-Fly (no flaps socket / machine identity) the watcher does not quiesce
-        at all: the platform suspends on its own timer, so the gateway stays
-        connected and serving until the freeze lands.
-        """
+        """Watch for idle, drive the relay dormant, then self-suspend. On sustained idle: status
+        `draining` (NOT _running=False), relay go_dormant() (socket close, NOT disconnect()), no
+        mark_resume_pending (suspend preserves RAM), THEN suspend via the flaps socket — Fly autostop
+        sees only INBOUND connections and would freeze mid-job. Without a flaps socket NAS brokers
+        the stop through the stamped GATEWAY_RELAY_SLEEP_URL; with no lever at all the watcher
+        abstains."""
+        from gateway.scale_to_zero import messaging_is_relay_only_or_absent
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 if not self._running:
                     return
-                if time.time() < self._scale_to_zero_cooldown_until:
+                if time.time() < self._scale_to_zero_cooldown_until or not self._scale_to_zero_is_idle():
                     continue
-                if not self._scale_to_zero_is_idle():
+                # The arm gate ran once at boot. A direct adapter that came up since (profile
+                # reconcile hot-adding a secondary, a re-enabled platform) owns a socket no wake
+                # URL can revive, so the same gate is re-asked before every dormant sequence.
+                active = self._scale_to_zero_active_messaging_platforms()
+                if not messaging_is_relay_only_or_absent(active):
+                    if not self._scale_to_zero_direct_platform_logged:
+                        self._scale_to_zero_direct_platform_logged = True
+                        logger.info(
+                            "scale-to-zero: idle, but directly connected messaging platform(s) %s "
+                            "hold a live socket that a suspended instance cannot wake from — staying "
+                            "awake. Route them through the relay connector or disable them to allow "
+                            "suspend.",
+                            ", ".join(str(getattr(p, "value", p)) for p in active),
+                        )
                     continue
-                adapter = self._relay_adapter_for_dormancy()
-                if adapter is None:
-                    continue
-                go_dormant = getattr(adapter, "go_dormant", None)
+                self._scale_to_zero_direct_platform_logged = False
+                go_dormant = getattr(self._relay_adapter_for_dormancy(), "go_dormant", None)
                 if not callable(go_dormant):
                     continue
-                # Quiesce only when a suspend can follow it. Off-Fly the platform
-                # owns the freeze on its own timer, so this does not bring it any
-                # closer, and go_dormant()'s socket close arms the reconnect
-                # supervisor: it re-dials ~1.4s later and the drain clears the
-                # flip, every cooldown. The destination is then unflipped when the
-                # freeze lands, and inbound is dropped instead of buffered. Stay
-                # connected and let the connector's orphan detection adopt the
-                # destination once the platform freezes us.
-                from gateway.scale_to_zero import self_suspend_available
-
-                if not self_suspend_available():
+                # Quiesce only when a suspend can follow: otherwise the re-dial after the socket
+                # close just clears the flip again.
+                from gateway.scale_to_zero import suspend_available
+                if not suspend_available():
                     if not self._scale_to_zero_no_suspend_logged:
                         self._scale_to_zero_no_suspend_logged = True
                         logger.info(
-                            "scale-to-zero: idle, but this platform suspends on "
-                            "its own timer (no in-machine suspend API); staying "
-                            "connected rather than quiescing"
+                            "scale-to-zero: idle, but this platform offers no suspend lever (no "
+                            "in-machine API and no brokered sleep URL); staying connected rather "
+                            "than quiescing"
                         )
                     continue
                 logger.info(
@@ -638,32 +646,45 @@ class GatewayShutdownMixin:
                     "(relay buffered, socket closed) then self-suspending",
                     self._scale_to_zero_idle_timeout_seconds(),
                 )
-                try:
-                    self._update_runtime_status("draining")
-                except Exception:  # noqa: BLE001 - status is best-effort
-                    logger.debug("scale-to-zero: status mark failed", exc_info=True)
+                self._scale_to_zero_status("draining", "scale-to-zero: status mark failed")
+                # Both levers: the 1s dormant re-dial can beat either suspend and clear the flip.
+                # Held BEFORE go_dormant, whose close arms it.
+                if not self._scale_to_zero_hold_redial(True):
+                    # Without the hold the re-dial can clear the flip before the stop lands, so
+                    # refuse rather than suspend unprotected.
+                    logger.warning(
+                        "scale-to-zero: could not hold the relay re-dial — staying awake rather "
+                        "than suspending unprotected"
+                    )
+                    self._scale_to_zero_abandon_suspend()
+                    continue
                 dormant_ok = True
                 try:
                     result = go_dormant()
                     if asyncio.iscoroutine(result):
-                        await result
+                        result = await result
+                    # The going_idle ack. Without it inbound is NOT buffered, so suspending would
+                    # freeze a live destination: the whole bug.
+                    if result is not True:
+                        dormant_ok = False
+                        logger.warning(
+                            "scale-to-zero: connector did not ack going_idle — staying awake "
+                            "rather than freezing a live destination"
+                        )
                 except Exception:  # noqa: BLE001 - dormancy is best-effort
                     dormant_ok = False
                     logger.debug("scale-to-zero: go_dormant failed", exc_info=True)
-                # 0.F: after a wake the drained inbound updates _last_inbound_at,
-                # but give it a window so we don't immediately re-go-dormant on the
-                # same idle reading before traffic lands.
+                # After a wake the drained inbound updates _last_inbound_at; give it a window so we
+                # don't immediately re-go-dormant on the same idle reading before traffic lands.
                 self._scale_to_zero_cooldown_until = time.time() + max(interval, 60.0)
-                # Self-suspend ONLY after a clean quiesce: the relay flip must be
-                # set (buffered delivery + wake poke armed) before the freeze, or
-                # inbound events black-hole while we sleep. Re-check idle one last
-                # time — inbound may have landed during the quiesce await.
+                # Suspend ONLY after an ACKED quiesce (else inbound black-holes while we sleep), and
+                # re-check idle — inbound may have landed during the quiesce await.
                 if not dormant_ok:
+                    self._scale_to_zero_abandon_suspend()
                     continue
                 if not self._scale_to_zero_is_idle():
-                    logger.info(
-                        "scale-to-zero: inbound arrived during quiesce — skipping suspend"
-                    )
+                    logger.info("scale-to-zero: inbound arrived during quiesce — skipping suspend")
+                    self._scale_to_zero_abandon_suspend()
                     continue
                 await self._scale_to_zero_self_suspend()
             except asyncio.CancelledError:
@@ -672,30 +693,49 @@ class GatewayShutdownMixin:
                 logger.debug("scale-to-zero watcher iteration error", exc_info=True)
 
     async def _scale_to_zero_self_suspend(self) -> None:
-        """Suspend this Fly machine via the local flaps socket (fail-awake).
+        """Suspend this machine, in-guest where possible and via NAS otherwise (fail-awake).
 
-        Runs the blocking unix-socket call in a worker thread so the event loop
-        stays live right up to the kernel freeze. On success the process is
-        frozen shortly after — nothing meaningful runs until the wake resume.
-        Off-Fly (self_suspend_available() False) this is a silent no-op.
+        Called ONLY after a clean, acked go_dormant(), with the re-dial already held.
         """
-        from gateway.scale_to_zero import self_suspend_available, suspend_self
-
+        from gateway.scale_to_zero import (
+            brokered_sleep_url, request_brokered_suspend, self_suspend_available, suspend_self
+        )
         try:
-            if not self_suspend_available():
-                logger.debug(
-                    "scale-to-zero: flaps socket / machine identity absent — "
-                    "dormant without platform suspend"
-                )
-                return
-            accepted = await asyncio.to_thread(suspend_self)
+            if self_suspend_available():
+                accepted = await asyncio.to_thread(suspend_self)
+                lever = "self-suspend"
+                if accepted:
+                    # flaps answers seconds BEFORE the kernel freezes, so the fence has to span
+                    # that gap.
+                    await self._scale_to_zero_await_freeze_gap()
+                    self._scale_to_zero_hold_redial(False)
+                else:
+                    self._scale_to_zero_abandon_suspend()
+            else:
+                # No in-guest API (Azure ACA): NAS holds the credential for the stop verb and
+                # brokers it for us.
+                url = brokered_sleep_url()
+                if not url:
+                    # The watcher held on our behalf; nothing is coming to freeze the machine, so
+                    # a held supervisor would just stay offline.
+                    self._scale_to_zero_abandon_suspend()
+                    logger.debug(
+                        "scale-to-zero: no suspend lever available — dormant without platform suspend"
+                    )
+                    return
+                # The watcher already holds the supervisor across this call.
+                accepted = await asyncio.to_thread(request_brokered_suspend, url)
+                lever = "brokered suspend"
+                if not accepted:
+                    self._scale_to_zero_abandon_suspend()
             if not accepted:
                 logger.warning(
-                    "scale-to-zero: self-suspend not accepted — machine stays "
-                    "awake (fail-awake); will retry on the next idle window"
+                    "scale-to-zero: %s not accepted — machine stays awake (fail-awake); will "
+                    "retry on the next idle window", lever,
                 )
         except Exception:  # noqa: BLE001 - suspend is best-effort, never crash
             logger.debug("scale-to-zero: self-suspend failed", exc_info=True)
+            self._scale_to_zero_abandon_suspend()
 
     async def _scale_to_zero_await_freeze_gap(self) -> None:
         """Hold the re-dial fence across the flaps-2xx -> kernel-freeze gap.
@@ -1009,7 +1049,7 @@ class GatewayShutdownMixin:
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
             try:
-                request_hard_interrupt(agent, reason)
+                request_hard_interrupt(agent, reason, tool_reason=_interrupt_tool_reason(reason))
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
@@ -1513,7 +1553,7 @@ class GatewayShutdownMixin:
                 flush_agent_history_to_file(getattr(agent, "session_id", None), _session_messages)
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
-        for agent in active_agents.values():
+        for session_key, agent in active_agents.items():
             # Persist any in-flight transcript to the SQLite session store
             # before teardown (#13121).  An agent forcibly interrupted by the
             # drain-timeout escalation may never reach
@@ -1581,11 +1621,12 @@ class GatewayShutdownMixin:
                 session_id=getattr(agent, "session_id", None),
                 platform="gateway",
                 reason="shutdown",
+                session_key=session_key,
             )
             # Off-loop + bounded: a wedged memory provider here used to hang
             # the whole shutdown so SIGTERM never completed (#53175).
             await self._cleanup_agent_resources_off_loop(
-                agent, context="shutdown finalize"
+                agent, context="shutdown finalize", session_key=session_key
             )
 
     def _defer_agent_cleanup_until_future_done(
@@ -1629,95 +1670,61 @@ class GatewayShutdownMixin:
         task.add_done_callback(tasks.discard)
 
     async def _finalize_session_off_loop(
-        self,
-        *,
-        session_id: Any,
-        platform: str,
-        reason: str,
-        **extra: Any,
+        self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
     ) -> None:
-        """Run hermes_cli.lifecycle.finalize_session off the event loop, bounded.
-
-        finalize_session() invokes plugin ``on_session_finalize`` hooks
-        synchronously; a hook doing heavy blocking work (observability trace
-        export, network flush) on the event loop freezes heartbeats, adapters,
-        and the shutdown drain itself. Off-loop + ``wait_for`` keeps the loop
-        live; on timeout the worker thread is left to finish (or leak) on its
-        own and the caller proceeds — mirroring
-        ``_cleanup_agent_resources_off_loop`` (#53175).
-        """
+        """Run hermes_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
+        ``session_key`` lets an unscoped caller (shutdown) enter the owning profile's scope: plugin
+        ``on_session_finalize`` observers and the Relay coordinator (``current_profile_key``) resolve
+        profile state at call time."""
 
         def _call() -> None:
             from hermes_cli.lifecycle import finalize_session
-
-            finalize_session(
-                session_id=session_id,
-                platform=platform,
-                reason=reason,
-                **extra,
-            )
+            finalize_session(session_id=session_id, platform=platform, reason=reason, **extra)
 
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(_call),
+                self._run_in_executor_with_context(self._run_release_in_profile_scope, _call, (), session_key),
                 timeout=self._FINALIZE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Session finalize hooks (%s, reason=%s) exceeded %ss; "
-                "proceeding without blocking the event loop (the worker "
-                "thread is left to finish on its own).",
-                session_id,
-                reason,
-                self._FINALIZE_TIMEOUT_S,
+                "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
+                "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,
             )
         except Exception as finalize_exc:
-            logger.debug(
-                "Session finalize hooks (%s, reason=%s) failed: %s",
-                session_id,
-                reason,
-                finalize_exc,
-            )
+            logger.debug("Session finalize hooks (%s, reason=%s) failed: %s", session_id, reason, finalize_exc)
 
     async def _cleanup_agent_resources_off_loop(
-        self, agent: Any, *, context: str = ""
+        self, agent: Any, *, context: str = "", session_key: Optional[str] = None,
     ) -> None:
-        """Run _cleanup_agent_resources in a worker thread with a bounded wait.
+        """Run _cleanup_agent_resources in a worker thread, bounded; on timeout the worker is left alone.
 
-        Safe to await from coroutines on the gateway event loop: a slow or
-        wedged teardown (memory provider IO, subprocess close) can no longer
-        block message processing. On timeout the await is cancelled and the
-        worker thread is left to finish (or leak) on its own — the caller
-        proceeds regardless, exactly as the /new reset path does (#35994).
-        """
+        The teardown fires the memory-provider lifecycle hooks (``flush_pending`` → ``on_session_end`` →
+        ``shutdown`` → ``close``), which read credentials/home at call time. In-turn callers carry the
+        profile scope through ``_run_in_executor_with_context``; shutdown does not (it runs on the main
+        loop, outside any adapter handler), so under multiplexing ``on_session_end`` failed closed and the
+        session tail was never committed (#110622). ``_run_release_in_profile_scope`` enters the OWNING
+        profile's scope from ``session_key`` when the caller has none, exactly like cache eviction."""
         if agent is None:
             return
         if context.startswith("shutdown") or context == "session expiry":
-            try:
+            with suppress(Exception):
                 agent._end_session_on_close = False
-            except Exception:
-                pass
+        ctx_label = f" ({context})" if context else ""
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(
-                    self._cleanup_agent_resources, agent
+                    self._run_release_in_profile_scope, self._cleanup_agent_resources, (agent,), session_key,
                 ),
                 timeout=self._CLEANUP_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Agent resource cleanup%s exceeded %ss; proceeding without "
-                "blocking the event loop (the worker thread is left to finish "
-                "on its own). (#53175)",
-                f" ({context})" if context else "",
-                self._CLEANUP_TIMEOUT_S,
+                "Agent resource cleanup%s exceeded %ss; proceeding without blocking the event loop (the worker "
+                "thread is left to finish on its own). (#53175)", ctx_label, self._CLEANUP_TIMEOUT_S,
             )
         except Exception as cleanup_exc:
-            logger.warning(
-                "Agent resource cleanup%s failed: %s (#53175)",
-                f" ({context})" if context else "",
-                cleanup_exc,
-            )
+            logger.warning("Agent resource cleanup%s failed: %s (#53175)", ctx_label, cleanup_exc)
 
     def _cleanup_agent_resources(self, agent: Any) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""

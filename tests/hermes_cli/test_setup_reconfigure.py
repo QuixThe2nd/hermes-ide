@@ -165,38 +165,64 @@ class TestQuickFlag:
 
 
 class TestFreshInstall:
-    """On a fresh install (no active provider), flags are no-ops."""
+    """On a fresh install (no active provider), flags are no-ops. The first-time picker
+    offers exactly two modes, Full Setup and Blank Slate, since the Quick Setup (Nous
+    Portal) mode was retired with the portal paths (bdb18bf6c0d, #763); tests pick by
+    label, never by menu index."""
 
+    @staticmethod
+    def _pick_mode(fragment):
+        """prompt_choice side effect that selects a first-time mode by label and records
+        the menu the wizard actually offered."""
+        menus = []
+
+        def side_effect(question, choices, default=0, **kwargs):
+            menus.append(list(choices))
+            return next(i for i, label in enumerate(choices) if fragment in label)
+
+        return menus, side_effect
+
+    @staticmethod
+    def _assert_two_mode_menu(menus):
+        """Exactly Full Setup and Blank Slate — no retired Portal/Quick entry."""
+        (menu,) = menus
+        assert len(menu) == 2
+        assert "Full setup" in menu[0] and "Blank Slate" in menu[1]
+        assert not any("Portal" in label or "Quick" in label for label in menu)
 
     def test_reconfigure_on_fresh_install_falls_through(self, fresh_install):
+        """--reconfigure is a no-op on a fresh install: the first-time mode picker still
+        runs and the picked mode executes — Full Setup falls through to
+        ``_run_full_setup`` as a first-time run (is_existing=False)."""
         args = _make_setup_args(reconfigure=True)
+        menus, pick = self._pick_mode("Full setup")
 
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
-                first="hermes_cli.setup_quick._run_first_time_quick_setup",
+                prompt=("hermes_cli.setup.prompt_choice", {"side_effect": pick}),
+                full="hermes_cli.setup._run_full_setup",
+                summary="hermes_cli.setup._print_setup_summary",
             )
             from hermes_cli.setup import run_setup_wizard
-            from hermes_cli import setup as setup_mod
 
-            section_indexes = []
-            m["first"].side_effect = lambda *_args: section_indexes.append(
-                setup_mod._SETUP_NAVIGATION.get().section_index
-            )
             run_setup_wizard(args)
 
         m["prompt"].assert_called_once()
-        m["first"].assert_called_once()
-        assert section_indexes == [0]
+        self._assert_two_mode_menu(menus)
+        m["full"].assert_called_once()
+        assert m["full"].call_args.kwargs.get("is_existing") is False
 
     def test_blank_slate_runs_inside_navigation_step(self, fresh_install):
+        """Blank Slate (picked by label, not by menu index) still executes inside
+        navigation section 0, not before/after the wizard steps."""
         args = _make_setup_args()
+        menus, pick = self._pick_mode("Blank Slate")
 
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
+                prompt=("hermes_cli.setup.prompt_choice", {"side_effect": pick}),
                 blank="hermes_cli.setup_quick._run_blank_slate_setup",
             )
             from hermes_cli import setup as setup_mod
@@ -207,6 +233,7 @@ class TestFreshInstall:
             )
             setup_mod.run_setup_wizard(args)
 
+        self._assert_two_mode_menu(menus)
         m["blank"].assert_called_once()
         assert section_indexes == [0]
 

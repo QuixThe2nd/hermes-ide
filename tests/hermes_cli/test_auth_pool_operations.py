@@ -87,7 +87,6 @@ def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
 
 def test_add_priority_places_reauthenticated_row_in_multi_entry_pool(monkeypatch):
     rows = _rows()
-    rows[1]["source"] = "device_code"
     write_credential_pool("xai-oauth", rows)
     monkeypatch.setattr(auth_commands.auth_mod, "_xai_oauth_device_code_login", lambda **_kwargs: {
         "tokens": {
@@ -100,7 +99,11 @@ def test_add_priority_places_reauthenticated_row_in_multi_entry_pool(monkeypatch
     auth_commands.auth_add_command(SimpleNamespace(
         provider="xai-oauth", auth_type="oauth", priority=0, label="reauthenticated"))
     entries = read_credential_pool("xai-oauth")
-    assert [e["id"] for e in entries] == ["row1", "row0"]
+    # A re-login appends a distinct self-contained entry (never a singleton
+    # rotation) and --priority places it at the top of the pool.
+    assert [e["id"] for e in entries[1:]] == ["row0", "row1"]
+    assert entries[0]["label"] == "reauthenticated"
+    assert entries[0]["access_token"] == "fixture-renewed"
     assert entries[0]["priority"] == 0
 
 

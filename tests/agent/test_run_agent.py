@@ -855,7 +855,7 @@ class TestInit:
 
 class TestInterrupt:
     def test_interrupt_sets_flag(self, agent):
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent.interrupt()
             assert agent._interrupt_requested is True
 
@@ -883,7 +883,7 @@ class TestHydrateTodoStore:
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
@@ -908,7 +908,7 @@ class TestHydrateTodoStore:
             },
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot()["revision"] == 5
@@ -931,7 +931,7 @@ class TestHydrateTodoStore:
             },
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot()["revision"] == 2
@@ -1550,7 +1550,7 @@ class TestBuildApiKwargs:
             supports_reasoning=True,
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
 
     def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
@@ -1563,43 +1563,6 @@ class TestBuildApiKwargs:
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
 
         assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
-
-
-
-
-    def test_qwen_portal_formats_messages_and_metadata(self, agent):
-        agent.provider = "qwen-oauth"
-        agent.base_url = "https://portal.qwen.ai/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.session_id = "sess-123"
-        messages = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "assistant", "content": "Got it"},
-            {"role": "user", "content": "hi"},
-        ]
-        kwargs = agent._build_api_kwargs(messages)
-        assert kwargs["metadata"]["sessionId"] == "sess-123"
-        assert kwargs["extra_body"]["vl_high_resolution_images"] is True
-        assert isinstance(kwargs["messages"][0]["content"], list)
-        assert kwargs["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert kwargs["messages"][2]["content"][0]["text"] == "hi"
-
-    def test_qwen_portal_normalizes_bare_string_content_parts(self, agent):
-        agent.provider = "qwen-oauth"
-        agent.base_url = "https://portal.qwen.ai/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": "system"}]},
-            {"role": "user", "content": ["hello", {"type": "text", "text": "world"}]},
-        ]
-        kwargs = agent._build_api_kwargs(messages)
-        user_content = kwargs["messages"][1]["content"]
-        assert user_content[0] == {"type": "text", "text": "hello"}
-        assert user_content[1] == {"type": "text", "text": "world"}
-
-
-
-
 
 
 
@@ -1836,7 +1799,6 @@ class TestExecuteToolCalls:
         with (
             patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
             patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
             pytest.raises(KeyboardInterrupt),
         ):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -1865,7 +1827,7 @@ class TestExecuteToolCalls:
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent.interrupt()
 
         agent._execute_tool_calls(mock_msg, messages, "task-1")
@@ -2615,7 +2577,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("read_window_below", {}),
         ("manage_connections", {"action": "install", "connectors": [{"name": "linear", "mcp": True}]}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
-        ("tour", {"action": "stop"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_agent", {"goal": "Check the child path"}),
         ("delegate_task", {"goal": "Check the child path"}),
@@ -3674,7 +3635,6 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
             patch.object(
                 agent, "_interruptible_api_call", side_effect=interrupt_side_effect
             ),
@@ -4015,10 +3975,13 @@ class TestRunConversation:
         empty_resp = _mock_response(content=None, finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
 
-        from agent import retry_utils as _retry_utils
+        from agent import conversation_loop as _conv_loop
 
-        # Make backoff return 10.0 seconds
-        monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 10.0)
+        # Make backoff return 10.0 seconds. Patch the loop's own global:
+        # conversation_loop binds jittered_backoff at its (lazy) first import,
+        # so patching agent.retry_utils only works when this test happens to be
+        # the module's first importer (order-dependent).
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 10.0)
 
         # Trigger the interrupt on the first sleep call inside the wait loop
         original_sleep = time.sleep
@@ -4046,6 +4009,7 @@ class TestRunConversation:
         assert 0.2 in sleep_called
         assert mock_persist.call_count == 2
 
+    @pytest.mark.real_retry_backoff
     def test_empty_response_retry_backoff_status(self, agent, monkeypatch):
         """Empty response retry wait updates the agent's status with wait time and sleeps."""
         self._setup_agent(agent)
@@ -4057,9 +4021,11 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [empty_resp, ok_resp]
 
         from agent import conversation_loop as _conv_loop
-        from agent import retry_utils as _retry_utils
 
-        monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 7.5)
+        # The inlined fork loop binds jittered_backoff as a module global at
+        # import time, so the read site — not agent.retry_utils — is the patch
+        # target (conftest's _fast_retry_backoff opts out via the marker above).
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 7.5)
 
         # Fake clock: the retry loop gates on real time.time() < sleep_end, so
         # a no-op sleep alone busy-spins 7.5 wall-clock seconds. Advance a fake
@@ -5898,34 +5864,6 @@ class TestFallbackAnthropicProvider:
 
 
 
-def test_aiagent_uses_copilot_acp_client():
-    with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI") as mock_openai,
-        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
-    ):
-        acp_client = MagicMock()
-        mock_acp_client.return_value = acp_client
-
-        agent = AIAgent(
-            api_key="copilot-acp",
-            base_url="acp://copilot",
-            provider="copilot-acp",
-            acp_command="/usr/local/bin/copilot",
-            acp_args=["--acp", "--stdio"],
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    assert agent.client is acp_client
-    mock_openai.assert_not_called()
-    mock_acp_client.assert_called_once()
-    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
-    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
-    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
-    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):

@@ -152,7 +152,7 @@ def test_pricing_fetch_seeds_the_mirror(cold_process, offline, monkeypatch):
         lambda req, *, timeout: _response(_CATALOG),
     )
     models_pricing.fetch_models_with_pricing(
-        base_url="https://openrouter.ai/api/v1"
+        base_url="https://openrouter.ai/api"
     )
 
     cold_process()

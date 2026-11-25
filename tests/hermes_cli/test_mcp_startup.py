@@ -39,7 +39,7 @@ def _agent_args(**overrides) -> Namespace:
         "cron_command": None,
         "gateway_command": None,
         "mcp_action": None,
-        "tui": False,
+
     }
     base.update(overrides)
     return Namespace(**base)
@@ -103,18 +103,14 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         stop.set()
 
 
-def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
+def test_prepare_agent_startup_skips_discovery_for_commands_with_dedicated_startup(
     monkeypatch,
 ):
-    """Bare ``hermes`` / ``hermes chat`` on a TTY with ``display.interface:
-    tui`` resolves to the TUI via ``_resolve_use_tui``, but does NOT pass
-    ``--tui`` or ``HERMES_TUI``. Discovery must be skipped in the wrapper:
-    the TUI gateway owns it, and the wrapper would otherwise hold a dead
-    MCP server for the entire session (3 copies per TUI instance).
-    """
+    """acp / gateway run / cron run|tick own MCP discovery on their runtime
+    path. The wrapper must run neither background nor inline discovery for
+    them, or it would hold MCP server copies the runtime path replaces."""
     calls = {"background": 0, "inline": 0}
 
-    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
     monkeypatch.setattr(
         mcp_startup,
         "start_background_mcp_discovery",
@@ -146,7 +142,13 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
         ),
     )
 
-    main_mod._prepare_agent_startup(_agent_args(command=None))
+    main_mod._prepare_agent_startup(_agent_args(command="acp"))
+    main_mod._prepare_agent_startup(
+        _agent_args(command="gateway", gateway_command="run")
+    )
+    main_mod._prepare_agent_startup(
+        _agent_args(command="cron", cron_command="run")
+    )
 
     assert calls["background"] == 0
     assert calls["inline"] == 0
@@ -156,12 +158,10 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
     monkeypatch,
 ):
-    """Non-chat commands never launch the TUI, so they must keep their own
-    MCP discovery even when the ambient display config resolves to TUI —
-    ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
+    """Non-chat agent commands have no later bounded startup path of their
+    own, so they must keep inline MCP discovery in the wrapper."""
     calls = {"inline": 0}
 
-    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",

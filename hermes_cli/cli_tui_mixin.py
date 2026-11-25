@@ -1136,7 +1136,7 @@ class CLITuiMixin:
         supports active-turn redirect, else the legacy interrupt queue (older agents,
         multimodal follow-ups, or a turn that finished in the race).
         """
-        from cli import _ACCENT, _cprint, _hermes_home
+        from cli import _ACCENT, _RST, _cprint, _hermes_home
         redirected = False
         if not images and text:
             try:

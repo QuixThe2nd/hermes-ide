@@ -89,14 +89,14 @@ def _last_prompt(stub) -> dict:
 # Flat mode: run.py stamps NO thread_id -> the card posts at the DM root.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_exec_approval_flat_mode_posts_at_dm_root():
+async def test_prompt_flat_mode_posts_at_dm_root():
     """Flat-DM turn (reply_in_thread=false): run.py suppressed the synthetic
     anchor upstream, so prompt metadata has no thread_id and none appears on
     the wire — the card posts at the DM root."""
     adapter, stub = _wire("D1", "dm", scope_id="T1")
     md = {"message_id": "1700000000.000100", "scope_id": "T1"}
-    result = await adapter.send_exec_approval(
-        "D1", "rm -rf /tmp/x", "sess:1", description="deletes files", metadata=md
+    result = await adapter.send_slash_confirm(
+        "D1", "Reload MCP", "invalidates cache", "sess:1", "cf-1", metadata=md
     )
     assert result.success is True
     frame = _last_prompt(stub)
@@ -108,35 +108,12 @@ async def test_exec_approval_flat_mode_posts_at_dm_root():
     # Tenant scope is preserved untouched (egress routing must not break).
     assert meta.get("scope_id") == "T1"
 
-
 # ---------------------------------------------------------------------------
 # Thread-per-message mode, end-to-end placement contract: run.py stamps the
 # turn's thread (first turn: the triggering message's own ts) and the adapter
 # forwards prompt metadata UNTOUCHED — no re-derivation, no strip. Mixed
 # placement (progress threaded, card at root) was the 2026-07-27 regression.
 # ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_exec_approval_forwards_run_py_thread_stamp_untouched():
-    """The adapter must forward run.py's thread stamp verbatim: the approval
-    card posts INTO the stamped thread. Any adapter-side re-derivation or
-    strip exiled the card to the chat root (2026-07-27 report)."""
-    adapter, stub = _wire("D1", "dm", scope_id="T1")
-    md = {
-        "thread_id": "1700000000.000100",
-        "message_id": "1700000000.000100",
-        "scope_id": "T1",
-    }
-    result = await adapter.send_exec_approval(
-        "D1", "rm -rf /tmp/x", "sess:1", description="deletes files", metadata=md
-    )
-    assert result.success is True
-    frame = _last_prompt(stub)
-    meta = frame["metadata"] or {}
-    assert meta.get("thread_id") == "1700000000.000100", (
-        "first-turn self-anchor is the thread root; the prompt must honour it"
-    )
-    assert meta.get("scope_id") == "T1"
-
 
 @pytest.mark.asyncio
 async def test_clarify_forwards_run_py_thread_stamp_untouched():
@@ -173,7 +150,7 @@ async def test_slash_confirm_forwards_run_py_thread_stamp_untouched():
 # Regression guards: a REAL thread and non-DM / non-Slack chats are untouched
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_exec_approval_in_real_thread_keeps_thread_id():
+async def test_prompt_in_real_thread_keeps_thread_id():
     """A DM prompt raised inside a REAL thread (thread_id distinct from the
     triggering message ts) stays in that thread."""
     adapter, stub = _wire("D1", "dm", scope_id="T1")
@@ -182,13 +159,13 @@ async def test_exec_approval_in_real_thread_keeps_thread_id():
         "message_id": "1700000000.000100",
         "scope_id": "T1",
     }
-    await adapter.send_exec_approval("D1", "cmd", "s", metadata=md)
+    await adapter.send_slash_confirm("D1", "T", "m", "s", "cf-1", metadata=md)
     frame = _last_prompt(stub)
     assert frame["metadata"]["thread_id"] == "1699000000.999000"
 
 
 @pytest.mark.asyncio
-async def test_channel_approval_keeps_thread_id():
+async def test_channel_prompt_keeps_thread_id():
     """A Slack CHANNEL prompt keeps its thread_id (autoThread / real thread)."""
     adapter, stub = _wire("C1", "channel", scope_id="T1")
     md = {
@@ -196,18 +173,18 @@ async def test_channel_approval_keeps_thread_id():
         "message_id": "1700000000.000400",
         "scope_id": "T1",
     }
-    await adapter.send_exec_approval("C1", "cmd", "s", metadata=md)
+    await adapter.send_slash_confirm("C1", "T", "m", "s", "cf-1", metadata=md)
     frame = _last_prompt(stub)
     assert frame["metadata"]["thread_id"] == "1700000000.000400"
 
 
 @pytest.mark.asyncio
-async def test_non_slack_dm_approval_keeps_thread_id():
+async def test_non_slack_dm_prompt_keeps_thread_id():
     """A non-Slack relay DM keeps thread_id (its connector owns its own
     threading semantics)."""
     adapter, stub = _wire("dc1", "dm", platform=Platform.DISCORD)
     md = {"thread_id": "9000", "message_id": "9000"}
-    await adapter.send_exec_approval("dc1", "cmd", "s", metadata=md)
+    await adapter.send_slash_confirm("dc1", "T", "m", "s", "cf-1", metadata=md)
     frame = _last_prompt(stub)
     assert frame["metadata"]["thread_id"] == "9000"
 

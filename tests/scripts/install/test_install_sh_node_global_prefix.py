@@ -16,7 +16,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-NODE_BOOTSTRAP = REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
 
 
 def test_install_sh_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
@@ -40,19 +39,3 @@ def test_install_sh_repairs_existing_managed_node_on_rerun() -> None:
 
     # No-op guard so it's safe to call when there is no managed Node.
     assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
-
-
-def test_node_bootstrap_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
-    text = NODE_BOOTSTRAP.read_text()
-
-    assert "_nb_configure_npm_prefix()" in text
-    assert 'printf \'prefix=%s\\n\' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
-
-    # Runs at the top of ensure_node so existing managed installs are repaired
-    # even when a modern Node is already present (early return path).
-    ensure_node_body = text.split("ensure_node()", 1)[1]
-    assert "_nb_configure_npm_prefix" in ensure_node_body
-    assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
-    assert "heal_managed_node()" in text
-    assert "_nb_managed_tool_broken" in text
-    assert "for tool in node npm npx" in text

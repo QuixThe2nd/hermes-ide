@@ -224,7 +224,13 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
     only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
     ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
-    surface when a failure occurs (NS-788)."""
+    surface when a failure occurs (NS-788).
+
+    A logical platform the delivery registry doesn't list — relay-fronted slack, the one
+    retained identity after the native Slack adapter retired — passes only while a connected,
+    enabled relay explicitly fronts it (the ``GATEWAY_RELAY_PLATFORMS`` stamp, symmetric with
+    fire-time routing). For that name an unreadable gateway config fails CLOSED (no proof of
+    fronting), never fail-open."""
     deliver_value = _delivery._normalize_deliver_value(job.get("deliver", "local"))
     failure_deliver_value = _delivery._normalize_deliver_value(
         _delivery._delivery_lane_value(job, for_failure=True))
@@ -283,33 +289,59 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     if not platform_parts:
         return None
 
-    connected: Optional[set] = None
-    for platform_name in platform_parts:
-        if not _delivery._is_known_delivery_platform(platform_name):
+    unregistered = [
+        name for name in platform_parts
+        if not _delivery._is_known_delivery_platform(name)
+    ]
+    for name in unregistered:
+        if name.lower() != "slack":
+            # Not the retained relay identity: unknown — reject before any config
+            # read, so it can never ride the known-platform fail-open, not even
+            # when the relay stamp names it.
             return (
-                f"delivery platform '{platform_name}' is not a known cron "
+                f"delivery platform '{name}' is not a known cron "
                 "delivery target. Fix the job's `deliver` value or configure "
                 "the platform's gateway credentials."
             )
-        if connected is None:
-            try:
-                from gateway.config import load_gateway_config
-                gateway_config = load_gateway_config()
-                connected = {p.value for p in gateway_config.get_connected_platforms()}
-                connected |= _delivery._relay_fronted_delivery_platforms(connected)
-            except Exception:
-                logger.debug(
-                    "preflight: gateway config unavailable — skipping "
-                    "delivery credential check", exc_info=True)
-                return None  # fail-open
-        # Multiplex: a satellite served by the primary's adapters reads unconnected — no block.
-        if (
-            platform_name.lower() not in connected
-            # Multiplex escape hatch: a satellite profile whose deliveries are routed by the primary
-            # gateway's profile_routes is served by the primary's adapters, so its own unconnected reading
-            # is a false block (#97476).
-            and not _delivery_platform_routed_from_primary_gateway(platform_name)
-        ):
+
+    try:
+        from gateway.config import load_gateway_config
+        gateway_config = load_gateway_config()
+        connected = {p.value for p in gateway_config.get_connected_platforms()}
+    except Exception:
+        if unregistered:
+            # Relay-fronted slack among the targets: without the config read
+            # there is no connected, enabled relay fronting it — fail CLOSED.
+            logger.debug(
+                "preflight: gateway config unavailable — cannot verify relay "
+                "fronting for '%s'", unregistered[0], exc_info=True)
+            return (
+                f"delivery platform '{unregistered[0]}' is not a known cron "
+                "delivery target and its relay fronting could not be verified "
+                "(gateway config unreadable). Fix the job's `deliver` value or "
+                "configure the relay."
+            )
+        logger.debug(
+            "preflight: gateway config unavailable — skipping "
+            "delivery credential check", exc_info=True)
+        return None  # fail-open
+    relay_fronted = _delivery._relay_fronted_delivery_platforms(connected)
+    connected |= relay_fronted
+
+    for platform_name in platform_parts:
+        if platform_name in unregistered:
+            # Relay-fronted slack: only active fronting admits it — never native
+            # slack membership, never the primary-route override.
+            allowed = platform_name.lower() in relay_fronted
+        else:
+            # Multiplex escape hatch: a satellite profile whose deliveries are routed by the
+            # primary gateway's profile_routes is served by the primary's adapters, so its own
+            # unconnected reading is a false block (#97476).
+            allowed = (
+                platform_name.lower() in connected
+                or _delivery_platform_routed_from_primary_gateway(platform_name)
+            )
+        if not allowed:
             return (
                 f"delivery platform '{platform_name}' has no gateway "
                 "credentials configured (not connected). Configure it via "

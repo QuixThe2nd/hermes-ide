@@ -877,58 +877,6 @@ def test_pool_manual_entry_does_not_sync_back_to_singleton(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monkeypatch):
-    """Without explicit xai-oauth handling in ``resolve_provider_client``, an
-    xai-oauth main provider falls through to the generic ``oauth_external``
-    arm and returns ``(None, None)`` — silently re-routing every auxiliary
-    task (compression, curator, web extract, session search, ...) to
-    whatever Step-2 fallback chain the user has configured (OpenRouter,
-    Nous, etc.).  Users on xAI Grok OAuth would then see surprise charges
-    on those side providers for side tasks they thought were running on
-    their xAI subscription.
-
-    Pin the routing contract: ``resolve_provider_client("xai-oauth", model)``
-    must return a non-None client wrapping the xAI Responses API."""
-    from agent.auxiliary_client import (
-        CodexAuxiliaryClient,
-        resolve_provider_client,
-    )
-
-    hermes_home = tmp_path / "hermes"
-    fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
-    _setup_hermes_auth(hermes_home, access_token=fresh)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
-    monkeypatch.delenv("XAI_BASE_URL", raising=False)
-
-    client, model = resolve_provider_client("xai-oauth", model="grok-4")
-    assert client is not None, (
-        "xai-oauth must route to a Responses-API client; falling through to "
-        "the generic oauth_external branch silently swaps providers for "
-        "every auxiliary task."
-    )
-    assert isinstance(client, CodexAuxiliaryClient)
-    assert model == "grok-4"
-    # The wrapper preserves base_url + api_key so async wrappers and cache
-    # eviction can introspect them.  Pin both to the live xAI runtime.
-    assert str(client.base_url).rstrip("/") == DEFAULT_XAI_OAUTH_BASE_URL
-    assert client.api_key == fresh
-
-
-def test_auxiliary_client_xai_oauth_requires_explicit_model(tmp_path, monkeypatch):
-    """xAI's Responses API has no safe "cheap aux model" default —
-    pinning one would silently rot the same way Codex's did.  Callers
-    must pass an explicit model (auxiliary.<task>.model in config.yaml)."""
-    from agent.auxiliary_client import resolve_provider_client
-
-    hermes_home = tmp_path / "hermes"
-    fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
-    _setup_hermes_auth(hermes_home, access_token=fresh)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    client, model = resolve_provider_client("xai-oauth", model=None)
-    assert client is None
-    assert model is None
 
 
 # ---------------------------------------------------------------------------

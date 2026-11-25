@@ -80,6 +80,14 @@ class GatewayAgentCacheMixin:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+        # Provider-declared identity mappings (MemoryProvider.identity_signature)
+        # bust the cache under the ``memory.`` prefix: a writer-identity or
+        # alias-table change must rebuild the agent even when config.yaml is
+        # byte-identical.
+        for key, value in cls._memory_provider_identity_signature(
+            cfg_get(cfg, "memory", "provider")
+        ).items():
+            out[f"memory.{key}"] = value
 
         return out
 
@@ -733,6 +741,30 @@ class GatewayAgentCacheMixin:
             _process_baseline = getattr(
                 running_agent, "_gateway_turn_process_baseline", None
             )
+            # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
+            # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
+            # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
+            # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                _invoke_hook(
+                    "agent_loop_stopped",
+                    session_key=session_key,
+                    platform=source.platform.value if source.platform else "",
+                    reason=interrupt_reason,
+                    invalidation_reason=invalidation_reason,
+                )
+            except Exception:
+                logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+        # The turn's hard interrupt reaches only its in-turn children; background delegations were
+        # detached at dispatch and would otherwise run to completion and wake the session later.
+        # Each interrupted unit still returns as a completion (status=interrupted, partial output).
+        from tools.async_delegation import interrupt_for_session
+        interrupt_for_session(
+            session_key=session_key, reason=invalidation_reason,
+            parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
+
         # Bump the generation *before* scheduling the reap thread and capture
         # the post-bump value: task_id is session-scoped (task_id ==
         # session_id), so if a replacement turn claims this session and
@@ -777,7 +809,27 @@ class GatewayAgentCacheMixin:
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            parked = adapter.get_pending_message(session_key)  # consume
+            # A /stop-class interrupt discards a parked HUMAN follow-up (the user just
+            # canceled the session). A parked INTERNAL wake (delegation completion,
+            # context-card flush) is machine-originated work the gateway owes the
+            # session — the same invariant run_busy.py's overflow rule encodes — so it
+            # survives: restage it for the command drain to restart, or, when the
+            # discarded head was human, pull the oldest internal wake out of the
+            # overflow ahead of the humans queued before it.
+            if parked is not None and getattr(parked, "internal", False) \
+                    and not self._is_goal_continuation_event(parked):
+                adapter._pending_messages[session_key] = parked
+            elif parked is not None or self._overflow_queue(session_key):
+                overflow = self._overflow_queue(session_key) or ()
+                wake_idx = next(
+                    (i for i, queued in enumerate(overflow)
+                     if getattr(queued, "internal", False)
+                     and not self._is_goal_continuation_event(queued)),
+                    None,
+                )
+                if wake_idx is not None:
+                    adapter._pending_messages[session_key] = overflow.pop(wake_idx)
         if _iac_state is not None:
             _iac_state.persistent.pending_command_text = None
         if release_running_state:

@@ -163,10 +163,27 @@ class TestShellFileOpsCwdTracking:
     def test_container_hint_only_for_container_backends(self, tmp_path):
         """The in-container path hint misdirects on local/ssh backends (the cwd may
         be an explicit arg, a session ``cd`` or a deleted directory)."""
-        local = ShellFileOperations(_WrapperEnv("/nope/local", env_type="local")).read_file_raw("/x")
-        docker = ShellFileOperations(_WrapperEnv("/nope/docker", env_type="docker")).read_file_raw("/x")
-        assert "/workspace" not in local.error
-        assert "/workspace" in docker.error
+        from agent import terminal_env_registry as reg
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+        class _ContainerBox(TerminalEnvironmentProvider):
+            name = "containbox"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, *, cwd, timeout, task_id="default", **kwargs):
+                raise AssertionError("classification-only provider")
+
+        reg._reset_for_tests()
+        try:
+            reg.register_provider(_ContainerBox())
+            local = ShellFileOperations(_WrapperEnv("/nope/local", env_type="local")).read_file_raw("/x")
+            container = ShellFileOperations(_WrapperEnv("/nope/container", env_type="containbox")).read_file_raw("/x")
+            assert "/workspace" not in local.error
+            assert "/workspace" in container.error
+        finally:
+            reg._reset_for_tests()
 
     @pytest.mark.platforms("linux")
 

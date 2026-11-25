@@ -789,6 +789,7 @@ def sweep_failed_for_runtime(
             # The claim clears the stale error: this is a fresh attempt, and if
             # it is interrupted the next boot must see 'attempting' with no
             # proof of non-delivery, hence the marker.
+            flood_row = is_flood_error(last_error)
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET state='attempting', attempts=attempts+1, updated_at=?,

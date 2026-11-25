@@ -125,11 +125,6 @@ class TestArceeNormalization:
 
 class TestArceeURLMapping:
 
-    def test_provider_prefixes(self):
-        from agent.model_metadata import _PROVIDER_PREFIXES
-        assert "arcee" in _PROVIDER_PREFIXES
-        assert "arcee-ai" in _PROVIDER_PREFIXES
-        assert "arceeai" in _PROVIDER_PREFIXES
 
     def test_trajectory_compressor_detects_arcee(self):
         import trajectory_compressor as tc

@@ -75,12 +75,13 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
     root, _ = profiles
     monkeypatch.setattr(gateway_run, "_hermes_home", root)
     (root / "config.yaml").write_text(
+        "goals: {auto: {enabled: false}}\n"
         "display: {tool_progress: off, streaming: false" +
         ("}" if setting is None else f", suppress_warning_notifications: {str(setting).lower()}}}")
     )
-    from gateway.config import HomeChannel
+    from gateway.config import DeliveryTarget
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(
-        enabled=True, home_channel=HomeChannel(platform=Platform.DISCORD, chat_id="42", name="test"))})
+        enabled=True, notification_channel=DeliveryTarget(platform=Platform.DISCORD, chat_id="42", name="test"))})
     runner = GatewayRunner(config)
     adapter = RecordingAdapter()
     adapter.gateway_runner = runner
@@ -132,10 +133,12 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         assert len(calls) == 3, (calls, adapter.wire)
         expected = [f"result-{i}" for i in range(3)
                     if not (setting is True and original_authority[i][0])]
-        assert [row[0] for row in adapter.wire] == expected
+        # First line identifies the delivered turn; the always-on runtime footer
+        # ("0.1s · 1 call") trails the final message of a turn and is not the contract here.
+        assert [row[0].split("\n", 1)[0] for row in adapter.wire] == expected
         await adapter._process_message_background(events[3], key)
         assert len(calls) == 4
-        assert [row[0] for row in adapter.wire] == expected + ["result-3"]
+        assert [row[0].split("\n", 1)[0] for row in adapter.wire] == expected + ["result-3"]
         assert [(e.internal, e.allow_gateway_control) for e in events] == original_authority
         assert authorized[-1] == "42"  # next human still crosses authorization
         denied = MessageEvent(

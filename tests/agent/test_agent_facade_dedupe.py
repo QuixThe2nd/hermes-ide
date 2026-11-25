@@ -20,8 +20,6 @@ CONSOLIDATED_NAMES = (
     "_api_response_payload_for_hook",
     "get_rate_limit_state",
     "_capture_anthropic_response_headers",
-    "get_credits_state",
-    "get_credits_spent_micros",
     "_mask_api_key_for_logs",
     "_clean_error_message",
     "_neutralize_footer_paths",

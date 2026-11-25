@@ -171,6 +171,41 @@ def remove_node_symlinks(hermes_home: Path) -> list:
     candidates = (bin_dir / name for name in ("node", "npm", "npx") for bin_dir in _node_symlink_candidate_dirs())
     return _remove_each(candidates, _unlink_ours)
 
+def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
+    """Delete managed-runtime trees a PRE-SPLIT install left in HERMES_HOME.
+
+    Runtime artifacts are install-scoped now, so the current locations go
+    away with ``rmtree(project_root)``. But a checkout OUTSIDE the home
+    (the common case: ``~/src/hermes-agent``) used to put its node/uv
+    under ``$HERMES_HOME`` — that tree survives removing the checkout and
+    survives "keep my data" uninstalls, because it is not data.
+
+    Only the exact managed layout is removed: ``node/`` (a tree the
+    installer owned wholesale) and ``bin/uv`` (the single binary, NOT the
+    whole ``bin/`` dir — a user's own scripts can live there). Profile
+    state is never touched.
+    """
+    removed: list[Path] = []
+
+    node_tree = hermes_home / "node"
+    if node_tree.is_dir():
+        try:
+            shutil.rmtree(node_tree, ignore_errors=False)
+            removed.append(node_tree)
+        except Exception as e:
+            log_warn(f"Could not remove {node_tree}: {e}")
+
+    for uv_name in ("uv", "uv.exe"):
+        uv_binary = hermes_home / "bin" / uv_name
+        if uv_binary.is_file():
+            try:
+                uv_binary.unlink()
+                removed.append(uv_binary)
+            except Exception as e:
+                log_warn(f"Could not remove {uv_binary}: {e}")
+
+    return removed
+
 
 def uninstall_gateway_service():
     """Kill standalone gateways, then remove the per-platform service (systemd user+system /
@@ -511,6 +546,21 @@ def _perform_uninstall(
     # 4. Remove installation directory (code) — we may be running from inside it.
     log_info("Removing installation directory...")
     _rmtree_step(project_root)
+
+    # 4b. Remove managed-runtime trees a PRE-SPLIT install left in
+    #     HERMES_HOME. Current installs keep these inside the checkout, so
+    #     step 4 already removed them — but a checkout outside the home
+    #     (~/src/hermes-agent) used to leave its node/uv behind, surviving
+    #     both the checkout removal and a "keep my data" uninstall. They
+    #     are install tooling, not data, so removing them is correct in
+    #     either mode.
+    log_info("Removing managed runtime trees...")
+    removed_runtimes = remove_legacy_runtime_trees(hermes_home)
+    if removed_runtimes:
+        for path in removed_runtimes:
+            log_success(f"Removed {path}")
+    else:
+        log_info("No legacy runtime trees to remove")
 
     # 5. Optionally remove ~/.hermes/ data directory (and named profiles)
     if full_uninstall:

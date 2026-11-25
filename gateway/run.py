@@ -2340,12 +2340,14 @@ def _build_replay_entry(
     # api_content sidecar (persist-what-you-send, prompt-cache stability):
     # forward the exact bytes previously sent to the API for this message so
     # the agent's api_messages build can substitute them and keep the request
-    # prefix byte-stable across turns. Forward ONLY when this replay pipeline
-    # did not rewrite the content (timestamp injection, auto-continue strip,
-    # mirror prefix): a rewritten clean content means the pipeline decided
-    # different bytes must replay — resending the stored sidecar would
-    # reintroduce exactly what was stripped. Dropping it costs one cache
-    # boundary; resending stripped noise is a behavior regression.
+    # prefix byte-stable across turns. Preserve exact sent content unless
+    # cleanup rewrote the body: a rewritten clean content means the pipeline
+    # decided different bytes must replay — resending the stored sidecar
+    # would reintroduce exactly what was stripped. Timestamp-only rendering
+    # is checked separately by the history builder (exact rendered match or
+    # the normal "\n\n" context separator); the mirror rewrite pops the
+    # sidecar at its own site. Dropping it costs one cache boundary;
+    # resending stripped noise is a behavior regression.
     _sidecar = msg.get("api_content")
     if (
         role in ("user", "assistant")
@@ -2505,6 +2507,7 @@ def _build_gateway_agent_history(
     from hermes_time import get_timezone as _get_msg_tz
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
+        strip_leading_message_timestamps as _strip_msg_ts,
     )
 
     _msg_tz = _get_msg_tz()
@@ -2527,9 +2530,9 @@ def _build_gateway_agent_history(
             continue
 
         content = msg.get("content")
-        if inject_timestamps and role == "user" and isinstance(content, str):
-            content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
+            if inject_timestamps and isinstance(content, str):
+                content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
             observed_group_context.append(str(content).strip())
             continue
 
@@ -2543,25 +2546,45 @@ def _build_gateway_agent_history(
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
         elif content or _has_replayable_sidecar(role, content, msg):
+            replay_timestamp = msg.get("timestamp")
             # Strip gateway-injected auto-continue notes that were persisted
             # as part of user messages during interrupted turns.  Keep the
             # user's real text after the note, but never replay the recovery
             # instruction itself — that is what caused infinite re-execution
             # loops for interrupted long-running tools.
+            # Clean before rendering: a timestamp prefix hides recovery notes
+            # from the startswith-based stripper. Retain an embedded original time.
             if role == "user":
-                content = _strip_auto_continue_noise(content)
+                if isinstance(content, str):
+                    body, embedded_timestamp = _strip_msg_ts(content, tz=_msg_tz)
+                    clean_body = _strip_auto_continue_noise(body)
+                    if clean_body != body:
+                        content = clean_body
+                        if embedded_timestamp is not None:
+                            replay_timestamp = embedded_timestamp
                 if not content:
                     continue
-            # Simple text message - just need role and content.
-            if msg.get("mirror"):
-                mirror_src = msg.get("mirror_source", "another session")
-                content = f"[Delivered from {mirror_src}] {content}"
             # Preserve the timestamp on user messages so the
             # stale-dangerous-confirmation stripper in agent/replay_cleanup.py
             # can read it. The timestamp is dropped from assistant messages
             # because they don't need it; the replay-tail strippers look at
             # assistant(tool_calls), not timestamps.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
+            if inject_timestamps and role == "user" and isinstance(content, str):
+                rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
+                # Preserve only a sidecar matching the complete rendered message,
+                # optionally followed by the normal context separator. Cleanup
+                # above already invalidated sidecars containing stripped content.
+                sidecar = entry.get("api_content")
+                if rendered != content and sidecar and not (
+                    sidecar == rendered or sidecar.startswith(rendered + "\n\n")
+                ):
+                    entry.pop("api_content", None)
+                entry["content"] = rendered
+            if msg.get("mirror"):
+                mirror_src = msg.get("mirror_source", "another session")
+                entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
+                entry.pop("api_content", None)
             agent_history.append(entry)
 
     # Replay cleanup runs in the canonicalizer's fixed order (interrupted-block,
@@ -5512,6 +5535,46 @@ def _preserve_queued_followup_history_offset(
 
     merged = dict(followup_result)
     merged["history_offset"] = current_offset
+    return merged
+
+def _finish_queued_followup_result(
+    current_result: dict,
+    followup_result: dict,
+    *,
+    next_inbound_id: Optional[str],
+    next_display_kind: Optional[str],
+    next_display_metadata: Optional[Dict[str, Any]],
+    pending_event: Any,
+    platform: Any = None,
+    user_config: Any = None,
+) -> dict:
+    """Merge a drained queued follow-up into the chain result, terminal turn first.
+
+    The TERMINAL turn of a queued chain owns the presentation classification the outer
+    final send consumes: the ledger identity (``queued_terminal_inbound_id`` — keyed on
+    the last inbound message so a refused earlier reply is never overwritten by an
+    identical-text terminal reply), the display kind deciding whether a bare silence
+    marker may vanish (``queued_terminal_display_kind``), the notification category, and
+    the diagnostic mute verdict. A deeper recursion has already set its own keys, so the
+    whole block is filled only while ``queued_terminal_inbound_id`` is absent — the
+    innermost turn wins.
+    """
+    from gateway.warning_notifications import diagnostic_turn_muted
+
+    merged = _preserve_queued_followup_history_offset(current_result, followup_result)
+    if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+        merged = {
+            **merged,
+            "queued_terminal_inbound_id": next_inbound_id,
+            "queued_terminal_display_kind": next_display_kind,
+            "queued_terminal_notification_category": (
+                (pending_event.metadata or {}).get("notification_category", "result")
+                if pending_event is not None and pending_event.internal else "result"),
+            # Presentation snapshot for the outer frame's ``diagnostic_wake_muted`` gate:
+            # the terminal turn's own verdict, never the opening event's.
+            "_notification_reply_muted": diagnostic_turn_muted(
+                next_display_metadata, platform, user_config),
+        }
     return merged
 
 
@@ -11797,3 +11860,23 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+_PLUGIN_COMPAT_LAZY = {
+    'TurnRunner': ('gateway.run_turn_runner', 'TurnRunner'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----
