@@ -146,11 +146,11 @@ class TestWriteThroughPreservesSchema:
         from tools.registry import ToolRegistry
 
         monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
-        # Registration records per-server state in module globals (lazy tool names, trust
-        # levels, read-only hints...); isolate them so the probe server never leaks into
-        # later tests such as ``discover_mcp_tools() == []`` assertions.
+        # Registration records per-server state in module globals (lazy tool names,
+        # read-only hints...); isolate them so the probe server never leaks into later
+        # tests such as ``discover_mcp_tools() == []`` assertions.
         for attr in ("_lazy_server_tool_names", "_lazy_server_configs", "_lazy_server_fingerprints",
-                     "_mcp_tool_server_names", "_server_trust_levels", "_tool_read_only_hints"):
+                     "_mcp_tool_server_names", "_tool_read_only_hints"):
             monkeypatch.setattr(mt, attr, {})
         server = mt.MCPServerTask("probe_srv")
         server._tools = [
