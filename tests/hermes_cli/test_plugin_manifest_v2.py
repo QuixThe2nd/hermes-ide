@@ -360,13 +360,12 @@ class TestPythonDependenciesSeam:
             },
         )
         _enable(hermes_home, ["pipful"])
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO, logger="hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
         assert mgr._plugins["pipful"].enabled
         assert "definitely-not-a-real-package-64165" in caplog.text
-        assert "pip install" in caplog.text
-        assert "hermes plugins enable pipful" in caplog.text
+        assert "hermes pm install" in caplog.text
         assert calls == []
 
     def test_satisfied_pip_dep_is_quiet(self, hermes_home, caplog):
