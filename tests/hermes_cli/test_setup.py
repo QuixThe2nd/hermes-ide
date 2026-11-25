@@ -1,9 +1,8 @@
 """Tests for setup.py configuration flows."""
-import sys
 import os
-import json
-import types
+from pathlib import Path
 
+import pytest
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
@@ -27,16 +26,6 @@ def _clear_provider_env(monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
 
-
-def _clear_vercel_env(monkeypatch):
-    for key in (
-        "TERMINAL_VERCEL_RUNTIME",
-        "VERCEL_OIDC_TOKEN",
-        "VERCEL_TOKEN",
-        "VERCEL_PROJECT_ID",
-        "VERCEL_TEAM_ID",
-    ):
-        monkeypatch.delenv(key, raising=False)
 
 
 def _stub_tts(monkeypatch):
@@ -128,119 +117,75 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
 
 
-def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
+def test_local_backend_setup_routes_config_and_env(tmp_path, monkeypatch):
+    """Live routing contract for the surviving Local backend (the modal/vercel_sandbox
+    wizard flows were removed with the backends in c7442dd1745, #708): selecting Local
+    writes terminal.backend, defaults terminal.cwd, and persists TERMINAL_ENV."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
-    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     config = load_config()
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return 2
-        if question == "Select how Modal execution should be billed:":
-            return 1
+            return 0
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    prompt_values = iter(["token-id", "token-secret", ""])
-
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.managed_tool_gateway",
-        types.SimpleNamespace(
-            is_managed_tool_gateway_ready=lambda vendor: vendor == "modal",
-            resolve_managed_tool_gateway=lambda vendor: None,
-        ),
-    )
-    monkeypatch.setitem(sys.modules, "swe_rex", object())
 
     from hermes_cli.setup import setup_terminal_backend
 
     setup_terminal_backend(config)
 
-    assert config["terminal"]["backend"] == "modal"
-    assert config["terminal"]["modal_mode"] == "direct"
+    assert config["terminal"]["backend"] == "local"
+    assert isinstance(config["terminal"].get("cwd"), str) and config["terminal"]["cwd"]
+    assert os.environ["TERMINAL_ENV"] == "local"
 
 
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
 # _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
 
 
-def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
+def test_ssh_setup_replaces_retired_backend(tmp_path, monkeypatch):
+    """A legacy config naming a retired backend (c7442dd1745, #708) still loads; rerunning
+    the wizard and picking SSH replaces it and routes the connection fields to .env."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_vercel_env(monkeypatch)
-    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "old-oidc")
-    monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
     config = load_config()
+    config["terminal"]["backend"] = "vercel_sandbox"  # legacy value predating the strip
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return 5
+            return 1
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    prompt_values = iter(["python3.13", "yes", "2", "4096", "token", "project", "team"])
-
+    answers = iter(["myhost", "me", "2222", ""])
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *a, **kw: next(answers))
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
 
     from hermes_cli.setup import setup_terminal_backend
 
     setup_terminal_backend(config)
 
-    assert config["terminal"]["backend"] == "vercel_sandbox"
-    assert config["terminal"]["vercel_runtime"] == "python3.13"
-    assert config["terminal"]["container_disk"] == 51200
-    assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
-    assert "VERCEL_OIDC_TOKEN" not in os.environ
-    assert os.environ["VERCEL_TOKEN"] == "token"
-    assert os.environ["VERCEL_PROJECT_ID"] == "project"
-    assert os.environ["VERCEL_TEAM_ID"] == "team"
+    assert config["terminal"]["backend"] == "ssh"
+    assert os.environ["TERMINAL_ENV"] == "ssh"
+    assert os.environ["TERMINAL_SSH_HOST"] == "myhost"
+    assert os.environ["TERMINAL_SSH_USER"] == "me"
+    assert os.environ["TERMINAL_SSH_PORT"] == "2222"
 
 
-def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_vercel_env(monkeypatch)
-    project_root = tmp_path / "project"
-    nested = project_root / "app" / "src"
-    nested.mkdir(parents=True)
-    vercel_dir = project_root / ".vercel"
-    vercel_dir.mkdir()
-    (vercel_dir / "project.json").write_text(
-        json.dumps({"projectId": "linked-project", "orgId": "linked-team"}),
-        encoding="utf-8",
+def test_retired_backend_names_fail_closed_at_runtime():
+    """Unsupported-input safety vs retired modalities: a retired backend name surviving in a
+    legacy config must never execute — the requirement check rejects it and environment
+    creation raises, each naming the supported set (local, ssh)."""
+    from tools.terminal_tool_backends import (
+        _check_plugin_requirements, _create_environment, terminal_backend_unavailable_reason,
     )
-    monkeypatch.chdir(nested)
-    monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
-    config = load_config()
-    config["terminal"]["container_disk"] = 999
 
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select terminal backend:":
-            return 5
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    prompt_values = iter(["node24", "no", "1", "5120", "token", "", ""])
-    defaults = {}
-
-    def fake_prompt(message, default="", **kwargs):
-        defaults[message] = default
-        value = next(prompt_values)
-        return value or default
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
-
-    from hermes_cli.setup import setup_terminal_backend
-
-    setup_terminal_backend(config)
-
-    assert config["terminal"]["backend"] == "vercel_sandbox"
-    assert config["terminal"]["container_persistent"] is False
-    assert config["terminal"]["container_disk"] == 51200
-    assert "VERCEL_OIDC_TOKEN" not in os.environ
-    assert os.environ["VERCEL_TOKEN"] == "token"
-    assert os.environ["VERCEL_PROJECT_ID"] == "linked-project"
-    assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
-    assert defaults["    Vercel project ID"] == "linked-project"
-    assert defaults["    Vercel team ID"] == "linked-team"
+    for retired in ("modal", "docker", "daytona", "singularity", "vercel_sandbox"):
+        assert _check_plugin_requirements({"env_type": retired}) is False
+        reason = terminal_backend_unavailable_reason() or ""
+        assert "Unknown TERMINAL_ENV" in reason and retired in reason
+        with pytest.raises(ValueError) as excinfo:
+            _create_environment(retired, image="", cwd=".", timeout=5)
+        message = str(excinfo.value)
+        assert "Unknown environment type" in message
+        assert "'local'" in message and "'ssh'" in message
