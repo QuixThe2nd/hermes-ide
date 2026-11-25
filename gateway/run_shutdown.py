@@ -1553,7 +1553,7 @@ class GatewayShutdownMixin:
                 flush_agent_history_to_file(getattr(agent, "session_id", None), _session_messages)
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
-        for agent in active_agents.values():
+        for session_key, agent in active_agents.items():
             # Persist any in-flight transcript to the SQLite session store
             # before teardown (#13121).  An agent forcibly interrupted by the
             # drain-timeout escalation may never reach
@@ -1621,11 +1621,12 @@ class GatewayShutdownMixin:
                 session_id=getattr(agent, "session_id", None),
                 platform="gateway",
                 reason="shutdown",
+                session_key=session_key,
             )
             # Off-loop + bounded: a wedged memory provider here used to hang
             # the whole shutdown so SIGTERM never completed (#53175).
             await self._cleanup_agent_resources_off_loop(
-                agent, context="shutdown finalize"
+                agent, context="shutdown finalize", session_key=session_key
             )
 
     def _defer_agent_cleanup_until_future_done(
@@ -1669,95 +1670,61 @@ class GatewayShutdownMixin:
         task.add_done_callback(tasks.discard)
 
     async def _finalize_session_off_loop(
-        self,
-        *,
-        session_id: Any,
-        platform: str,
-        reason: str,
-        **extra: Any,
+        self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
     ) -> None:
-        """Run hermes_cli.lifecycle.finalize_session off the event loop, bounded.
-
-        finalize_session() invokes plugin ``on_session_finalize`` hooks
-        synchronously; a hook doing heavy blocking work (observability trace
-        export, network flush) on the event loop freezes heartbeats, adapters,
-        and the shutdown drain itself. Off-loop + ``wait_for`` keeps the loop
-        live; on timeout the worker thread is left to finish (or leak) on its
-        own and the caller proceeds — mirroring
-        ``_cleanup_agent_resources_off_loop`` (#53175).
-        """
+        """Run hermes_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
+        ``session_key`` lets an unscoped caller (shutdown) enter the owning profile's scope: plugin
+        ``on_session_finalize`` observers and the Relay coordinator (``current_profile_key``) resolve
+        profile state at call time."""
 
         def _call() -> None:
             from hermes_cli.lifecycle import finalize_session
-
-            finalize_session(
-                session_id=session_id,
-                platform=platform,
-                reason=reason,
-                **extra,
-            )
+            finalize_session(session_id=session_id, platform=platform, reason=reason, **extra)
 
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(_call),
+                self._run_in_executor_with_context(self._run_release_in_profile_scope, _call, (), session_key),
                 timeout=self._FINALIZE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Session finalize hooks (%s, reason=%s) exceeded %ss; "
-                "proceeding without blocking the event loop (the worker "
-                "thread is left to finish on its own).",
-                session_id,
-                reason,
-                self._FINALIZE_TIMEOUT_S,
+                "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
+                "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,
             )
         except Exception as finalize_exc:
-            logger.debug(
-                "Session finalize hooks (%s, reason=%s) failed: %s",
-                session_id,
-                reason,
-                finalize_exc,
-            )
+            logger.debug("Session finalize hooks (%s, reason=%s) failed: %s", session_id, reason, finalize_exc)
 
     async def _cleanup_agent_resources_off_loop(
-        self, agent: Any, *, context: str = ""
+        self, agent: Any, *, context: str = "", session_key: Optional[str] = None,
     ) -> None:
-        """Run _cleanup_agent_resources in a worker thread with a bounded wait.
+        """Run _cleanup_agent_resources in a worker thread, bounded; on timeout the worker is left alone.
 
-        Safe to await from coroutines on the gateway event loop: a slow or
-        wedged teardown (memory provider IO, subprocess close) can no longer
-        block message processing. On timeout the await is cancelled and the
-        worker thread is left to finish (or leak) on its own — the caller
-        proceeds regardless, exactly as the /new reset path does (#35994).
-        """
+        The teardown fires the memory-provider lifecycle hooks (``flush_pending`` → ``on_session_end`` →
+        ``shutdown`` → ``close``), which read credentials/home at call time. In-turn callers carry the
+        profile scope through ``_run_in_executor_with_context``; shutdown does not (it runs on the main
+        loop, outside any adapter handler), so under multiplexing ``on_session_end`` failed closed and the
+        session tail was never committed (#110622). ``_run_release_in_profile_scope`` enters the OWNING
+        profile's scope from ``session_key`` when the caller has none, exactly like cache eviction."""
         if agent is None:
             return
         if context.startswith("shutdown") or context == "session expiry":
-            try:
+            with suppress(Exception):
                 agent._end_session_on_close = False
-            except Exception:
-                pass
+        ctx_label = f" ({context})" if context else ""
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(
-                    self._cleanup_agent_resources, agent
+                    self._run_release_in_profile_scope, self._cleanup_agent_resources, (agent,), session_key,
                 ),
                 timeout=self._CLEANUP_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Agent resource cleanup%s exceeded %ss; proceeding without "
-                "blocking the event loop (the worker thread is left to finish "
-                "on its own). (#53175)",
-                f" ({context})" if context else "",
-                self._CLEANUP_TIMEOUT_S,
+                "Agent resource cleanup%s exceeded %ss; proceeding without blocking the event loop (the worker "
+                "thread is left to finish on its own). (#53175)", ctx_label, self._CLEANUP_TIMEOUT_S,
             )
         except Exception as cleanup_exc:
-            logger.warning(
-                "Agent resource cleanup%s failed: %s (#53175)",
-                f" ({context})" if context else "",
-                cleanup_exc,
-            )
+            logger.warning("Agent resource cleanup%s failed: %s (#53175)", ctx_label, cleanup_exc)
 
     def _cleanup_agent_resources(self, agent: Any) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""
