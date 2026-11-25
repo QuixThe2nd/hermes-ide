@@ -23,9 +23,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
-import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -35,6 +33,8 @@ import pytest
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+from run_agent import AIAgent  # noqa: E402 — needs the sys.path bootstrap above
 
 
 class _MockHandler(BaseHTTPRequestHandler):
@@ -121,57 +121,35 @@ def _text_resp(text: str) -> dict:
 
 @pytest.fixture()
 def agent_env():
-    """Spin up the mock provider + an isolated HERMES_HOME, yield (agent, helpers)."""
+    """Spin up the mock provider, yield (agent, helpers).
+
+    HERMES_HOME isolation comes from the autouse conftest sandbox. Do NOT
+    re-import the agent modules per test or create/delete a private home
+    here: the fresh import re-runs ``export_scratch_tmp_env()`` against the
+    private home (TMPDIR + tempfile's cached default then point into it) and
+    binds the process-global log handlers to it, so deleting the home
+    poisoned tempfile and logging state for every later test in the file.
+    """
     _MockHandler.captured_requests = []
     _MockHandler.response_queue = []
     srv = HTTPServer(("127.0.0.1", 0), _MockHandler)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-
-    test_home = tempfile.mkdtemp(prefix="hermes_e2e_47967_")
-    os.makedirs(os.path.join(test_home, ".hermes"))
-    prev_home = os.environ.get("HERMES_HOME")
-    os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
-
-    # Import fresh so the patched conversation_loop is exercised even when the
-    # module was imported earlier in the same worker.
-    saved_modules = dict(sys.modules)  # restored in finally — see below
-    for mod in list(sys.modules):
-        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
-            del sys.modules[mod]
-    from run_agent import AIAgent
-
-    agent = AIAgent(
-        api_key="test-key", base_url=f"http://127.0.0.1:{port}/v1",
-        provider="openai-compat", model="test-model",
-        max_iterations=10, enabled_toolsets=[],
-        quiet_mode=True, skip_context_files=True, skip_memory=True,
-        save_trajectories=False, platform="cli",
-    )
-    agent.valid_tool_names = {"terminal", "read_file", "write_file", "execute_code", "session_search"}
-
     try:
+        agent = AIAgent(
+            api_key="test-key", base_url=f"http://127.0.0.1:{port}/v1",
+            provider="openai-compat", model="test-model",
+            max_iterations=10, enabled_toolsets=[],
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+            save_trajectories=False, platform="cli",
+        )
+        agent.valid_tool_names = {"terminal", "read_file", "write_file", "execute_code", "session_search"}
         yield agent, _MockHandler
     finally:
         srv.shutdown()
-        shutil.rmtree(test_home, ignore_errors=True)
-        # Put the original module objects back: sibling test files hold module-level
-        # references into hermes_cli.*/tools.* and their monkeypatches would otherwise
-        # land on modules the app no longer imports.
-        sys.modules.clear()
-        sys.modules.update(saved_modules)
-        for _name, _mod in saved_modules.items():
-            _parent, _, _child = _name.rpartition(".")
-            if _parent and _parent in saved_modules:
-                try:
-                    setattr(saved_modules[_parent], _child, _mod)
-                except Exception:
-                    pass
-        if prev_home is None:
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = prev_home
+        srv.server_close()
+        t.join(timeout=5.0)
 
 
 def _tool_results(handler) -> list[str]:

@@ -135,3 +135,97 @@ def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeyp
     assert not any(m.get("codex_reasoning_items") for m in wire)
     roles = [m["role"] for m in wire]
     assert roles and all(a != b for a, b in zip(roles, roles[1:]))
+
+
+def _chat_answer(text="Chat answered."):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None),
+                                 finish_reason="stop")],
+        model="fallback/model", usage=None,
+    )
+
+
+def test_user_text_identical_to_codex_nudge_survives_normal_wire(monkeypatch):
+    """A genuine user message whose text is byte-identical to the Codex nudge literal
+    must reach a chat-completions provider untouched. The cross-protocol drop keys on
+    the transcript-private ``_codex_incomplete_nudge`` flag, never on content."""
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "chat_completions"
+    agent._disable_streaming = True  # the stub answer is a plain object, not a stream
+    wires = []
+
+    def _fake_api_call(api_kwargs):
+        wires.append(api_kwargs)
+        return _chat_answer()
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation(_CODEX_INCOMPLETE_NUDGE)
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Chat answered."
+    wire = [m for m in wires[0]["messages"] if m["role"] not in ("system", "developer")]
+    user_rows = [m for m in wire if m["role"] == "user"]
+    assert [m["content"] for m in user_rows] == [_CODEX_INCOMPLETE_NUDGE]
+    # Untouched means byte-exact and unmerged; no private marker rides the wire.
+    assert not any(m.get("_codex_incomplete_nudge") for m in wires[0]["messages"])
+
+
+def test_user_text_identical_to_codex_nudge_survives_cross_protocol_fallback_wire(monkeypatch):
+    """After a reasoning-only stall falls over to a Chat Completions provider, the
+    system-produced nudge row is dropped and the genuine user row with the SAME literal
+    text survives — exactly one copy on the wire, no opaque replay, roles alternating."""
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 6
+    agent.iteration_budget = run_agent.IterationBudget(6)
+
+    def _flip_to_chat(reason=None):
+        agent.api_mode = "chat_completions"
+        agent._disable_streaming = True  # the stub answer is a plain object, not a stream
+        return True
+
+    monkeypatch.setattr(agent, "_try_activate_fallback", _flip_to_chat)
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+        _chat_answer("Fallback answered."),
+    ]
+    wires = []
+
+    def _fake_api_call(api_kwargs):
+        wires.append((agent.api_mode, api_kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation(_CODEX_INCOMPLETE_NUDGE)
+
+    assert result["final_response"] == "Fallback answered."
+    assert [mode for mode, _ in wires] == ["codex_responses"] * 3 + ["chat_completions"]
+    # The pre-fallback transcript carried BOTH rows: the genuine user turn and the
+    # flag-tagged synthetic nudge. Only the flag tells them apart.
+    assert any(m.get("_codex_incomplete_nudge") for m in agent._session_messages)
+    wire = [m for m in wires[-1][1]["messages"] if m["role"] not in ("system", "developer")]
+    literal_rows = [m for m in wire if m.get("content") == _CODEX_INCOMPLETE_NUDGE]
+    assert [m["role"] for m in literal_rows] == ["user"]  # synthetic copy absent
+    assert not any(m.get("_codex_incomplete_nudge") for m in wires[-1][1]["messages"])
+    assert not any(m.get("codex_reasoning_items") for m in wire)
+    roles = [m["role"] for m in wire]
+    assert roles and all(a != b for a, b in zip(roles, roles[1:]))
+
+
+def test_flagged_nudge_row_never_serializes_private_marker_to_responses_wire():
+    """The Codex Responses converter emits fresh role/content items, so the
+    transcript-private flag cannot leak onto the one wire that still carries the nudge."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    items = _chat_messages_to_responses_input([
+        {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE, "_codex_incomplete_nudge": True},
+    ])
+
+    assert items and items[0].get("content") == _CODEX_INCOMPLETE_NUDGE
+    assert not any(
+        isinstance(key, str) and key.startswith("_")
+        for item in items for key in item
+    )
