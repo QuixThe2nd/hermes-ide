@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -142,65 +141,75 @@ def _text_resp(text: str) -> dict:
 
 
 @pytest.fixture()
-def provider_env():
+def provider_env(tmp_path, monkeypatch):
     """In-process provider + isolated home + a shared SessionDB.
 
     Yields ``(make_agent, handler, db, sid)``; ``make_agent()`` builds a fresh
     AIAgent bound to the shared DB/session, modeling the gateway constructing
     the agent for the resume turn.
+
+    HERMES_HOME is the shared conftest hermetic home (monkeypatch-managed, so
+    there is no manual home to create or restore).  TMPDIR is explicitly
+    pointed at a fixture-owned ``tmp_path`` root: the boot scratch-env hook
+    (``hermes_constants.apply_scratch_tmp_env``) respects an explicitly set
+    temp var, so ``TMPDIR``/``TMP``/``TEMP``, the ``HERMES_SCRATCH_DIR``
+    marker and ``tempfile.tempdir`` are never rewritten under the home — and
+    monkeypatch restores the originals on teardown.
     """
     _MockHandler.captured_requests = []
     _MockHandler.response_queue = []
     srv = HTTPServer(("127.0.0.1", 0), _MockHandler)
-    port = srv.server_address[1]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-
-    test_home = tempfile.mkdtemp(prefix="hermes_resume_probe_")
-    os.makedirs(os.path.join(test_home, ".hermes"))
-    prev_home = os.environ.get("HERMES_HOME")
-    os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
-
-    from run_agent import AIAgent
-
-    db = SessionDB(db_path=Path(test_home) / "state.db")
-    sid = "sess-resume-probe"
-
-    def make_agent():
-        agent = AIAgent(
-            api_key="test-key",
-            base_url=f"http://127.0.0.1:{port}/v1",
-            provider="openai-compat",
-            model="test-model",
-            max_iterations=10,
-            enabled_toolsets=[],
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            save_trajectories=False,
-            platform="cli",
-            session_db=db,
-            session_id=sid,
-        )
-        agent.valid_tool_names = {"read_file"}
-        return agent
-
+    srv_thread = None
+    db = None
     try:
+        port = srv.server_address[1]
+        srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        srv_thread.start()
+
+        # Everything tempfile-based during the test lands under this
+        # fixture-owned root; pytest retains tmp_path roots for the whole
+        # session, so no live handle ever points into a deleted tree.
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
+        monkeypatch.setattr(tempfile, "tempdir", None)
+
+        from run_agent import AIAgent
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-resume-probe"
+
+        def make_agent():
+            agent = AIAgent(
+                api_key="test-key",
+                base_url=f"http://127.0.0.1:{port}/v1",
+                provider="openai-compat",
+                model="test-model",
+                max_iterations=10,
+                enabled_toolsets=[],
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                save_trajectories=False,
+                platform="cli",
+                session_db=db,
+                session_id=sid,
+            )
+            agent.valid_tool_names = {"read_file"}
+            return agent
+
         with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
             yield make_agent, _MockHandler, db, sid
     finally:
-        srv.shutdown()
-        db.close()
-        shutil.rmtree(test_home, ignore_errors=True)
-        if prev_home is None:
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = prev_home
+        if srv_thread is not None and srv_thread.is_alive():
+            srv.shutdown()
+        srv.server_close()
+        if db is not None:
+            db.close()
         # Drop the cached file_ops and active local-terminal environment so
         # the next test sees fresh state (same teardown the file-ops suites
-        # use).  Without this, a later real ``read_file`` dispatch reuses the
-        # env whose session-snapshot ``mktemp`` template lived under THIS
-        # test's already-deleted home; the mktemp error then glues onto every
-        # command's stdout and the stat parse silently yields file_size 0.
+        # use).  Without this, a later real ``read_file`` dispatch reuses an
+        # environment snapshot bound to THIS test's tmp home; the stale
+        # snapshot then glues mktemp errors onto command output and the stat
+        # parse silently yields file_size 0.
         try:
             from tools.file_tools import clear_file_ops_cache
 
