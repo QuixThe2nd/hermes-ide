@@ -24,15 +24,6 @@ import pytest
 import yaml
 
 
-A2A_CLIENT_TOOLS = {
-    "a2a_call",
-    "a2a_discover",
-    "a2a_history",
-    "a2a_list",
-    "a2a_orchestrate",
-}
-
-
 # ── synthetic platform plugin helpers ──────────────────────────────────────
 
 
@@ -160,74 +151,19 @@ def clean_registry():
             sys.modules.pop(name, None)
 
 
-# ── the reported symptom, against the real a2a plugin ──────────────────────
+# ── the retired a2a platform plugin ─────────────────────────────────────────
 
 
-class TestA2AClientToolsInCliProcess:
-    """The issue's exact repro: a CLI/TUI process, no gateway startup."""
-
-    def test_manifest_declares_the_client_tools(self):
-        """The opt-in lives in the manifest, so it is pinned like any contract.
-
-        Dropping ``provides_tools`` from plugin.yaml silently reverts a2a to
-        the deferred-and-invisible behaviour of #78050, with every other test
-        here still passing on the synthetic plugins — so assert it directly.
-        """
-        manifest_path = (
-            Path(__file__).resolve().parents[2]
-            / "plugins" / "platforms" / "a2a" / "plugin.yaml"
-        )
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-
-        assert set(manifest.get("provides_tools") or []) == A2A_CLIENT_TOOLS
-
-    def test_a2a_toolset_resolves_without_materializing_the_platform(self):
-        from hermes_cli.plugins import PluginManager
-        from toolsets import resolve_toolset
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        a2a = mgr._plugins.get("a2a-platform")
-        assert a2a is not None, "bundled a2a platform plugin was not discovered"
-
-        # The whole point of the deferral is preserved: the inbound adapter is
-        # still not imported in a CLI process.
-        assert a2a.deferred is True
-
-        # ...but the outbound client tools are now reachable. Before the fix
-        # this was [] until a gateway/web process called all_entries().
-        assert set(resolve_toolset("a2a")) == A2A_CLIENT_TOOLS
-
-    def test_a2a_appears_in_the_hermes_tools_checklist(self):
-        """`a2a` is in _DEFAULT_OFF_TOOLSETS, so it must be tickable.
-
-        Every other member of that set (homeassistant, spotify, video_gen,
-        x_search, ...) renders a checkbox; a2a rendered nothing, so the
-        documented opt-in path had nothing to tick.
-        """
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-
-        # get_plugin_toolsets() reads the process-wide manager, which is what
-        # the `hermes tools` checklist does.
-        discover_plugins()
-
-        assert "a2a" in {key for key, _, _ in get_plugin_toolsets()}
-
-    def test_platform_bundle_includes_the_client_tools(self):
-        """``hermes-a2a`` sessions get the client tools too.
-
-        The bundle path read the tool registry behind a deliberately cheap
-        ``is_registered()`` check, so a deferred platform's own tools were
-        dropped from its bundle as well.
-        """
-        from hermes_cli.plugins import PluginManager
-        from toolsets import resolve_toolset
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert A2A_CLIENT_TOOLS.issubset(set(resolve_toolset("hermes-a2a")))
+def test_bundled_a2a_platform_plugin_stays_retired():
+    """The a2a platform adapter was retired with the outbound platforms
+    (#571). Nothing may resurrect the bundled plugin: its directory is the
+    seed of the deferred registration path these tests exercise, so a
+    reintroduction must be a conscious one, not an accidental one.
+    """
+    bundled = (
+        Path(__file__).resolve().parents[2] / "plugins" / "platforms" / "a2a"
+    )
+    assert not bundled.exists()
 
 
 # ── the general mechanism ──────────────────────────────────────────────────
