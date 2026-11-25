@@ -142,6 +142,7 @@ from agent.session_persistence import SessionPersistenceMixin
 from agent.session_persistence import _safe_session_filename_component  # noqa: F401
 from agent.context_compressor import (  # noqa: F401
     COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor, _DB_PERSISTED_MARKER, user_originated_turn_view)
+from agent.context_compressor import drop_shadowed_checkpoints, _newest_checkpoint_carrier
 from agent.memory_manager import sanitize_context  # noqa: F401
 from agent.redact import redact_sensitive_text  # noqa: F401
 from agent.usage_pricing import normalize_usage  # noqa: F401
@@ -1432,6 +1433,13 @@ class AIAgent(
                 from agent.transcript_repair import sync_flushed_message_markers
 
                 sync_flushed_message_markers(_batch_msgs, _batch_rows)
+                if _newest_checkpoint_carrier(_batch_msgs, "codex_reasoning_items") >= 0:
+                    # The insert already rewrote the older rows
+                    # (SessionDB._drop_shadowed_checkpoint_rows); mirror it on the
+                    # live transcript so forks/compaction built from memory carry
+                    # one checkpoint too. Markers stay: the rows are durable
+                    # exactly as the dicts now read (#102374).
+                    drop_shadowed_checkpoints(messages)
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.

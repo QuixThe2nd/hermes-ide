@@ -47,7 +47,7 @@ from agent.message_sanitization import _sanitize_surrogates
 # predating copy — hermes_state cannot import run_agent (circular) — guarded
 # by test_marker_constant_in_sync.
 from agent.context_compressor import (
-    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY,
+    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, _newest_checkpoint_carrier,
 )
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
@@ -93,7 +93,9 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RESET_CHILD_SQL,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
-    _ephemeral_child_sql,
+    _RESET_CHILD_SQL,
+    _sql_json_extract,
+    _placeholders,
     _legacy_reset_child_sql,
     _shape_preview,
     _sql_session_last_active,
@@ -124,6 +126,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _describe_lock_holder,
     _read_lock_holder_record,
     is_advisory_lock_contention,
+    stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
 from hermes_state_portability import SessionPortabilityMixin
@@ -150,12 +153,18 @@ from hermes_state_repair import (
     apply_durability_barriers,
 )
 from hermes_state_search import SessionSearchMixin
-from hermes_state_messages import SessionMessagesMixin, _INSERT_MESSAGE_SQL
+from hermes_state_messages import (
+    SessionMessagesMixin,
+    _DISPLAY_ACTIVE_CLAUSE,
+    _INSERT_MESSAGE_SQL,
+    _SET_DISPLAY_META_SQL,
+    _coerce_timestamp,
+)
 from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause, classify_session_status, workspace_key
 from hermes_state_fts import SessionFtsSetupMixin, fts5_cjk_so_path
 from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
-from hermes_state_gateway import SessionGatewayMixin
+from hermes_state_gateway import SessionGatewayMixin, _COMPRESSION_LINEAGE_CTE
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_titles import SessionTitlesMixin
@@ -310,7 +319,9 @@ def _scrub_surrogates(value: Any) -> Any:
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
-    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+    # Non-throwing like every other marker lookup: malformed model_config
+    # JSON must not break list/route surfaces.
+    return _sql_json_extract(col, "$._delegate_from")
 
 
 def _compression_child_marker_sql(alias: str) -> str:
@@ -440,6 +451,18 @@ _MODEL_CONFIG_ROW_MISSING = object()
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
 
 
+# SQLite's SQLITE_LIMIT_VARIABLE_NUMBER was 999 before 3.32; callers that
+# bulk-delete thousands of ids in one IN (...) statement fail with
+# "too many SQL variables" on such builds. Chunk at a size that is safe
+# everywhere (see test_bulk_delete_and_prune_stay_below_sqlite_variable_limit).
+SQL_VARIABLE_CHUNK = 900
+
+
+def _chunked(seq: List[str], size: int = SQL_VARIABLE_CHUNK) -> Iterator[List[str]]:
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     """Delegate-subagent ids to cascade-delete with *parent_ids*.
 
@@ -460,13 +483,22 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     found: set[str] = set(seeds)
     frontier = list(seeds)
     while frontier:
-        ph = ",".join("?" * len(frontier))
-        cursor = conn.execute(
-            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
-            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
-            frontier + frontier,
-        )
-        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
+        # The frontier can grow past the variable limit when one delete
+        # sweep collects thousands of delegate descendants at once.
+        next_frontier: list[str] = []
+        # Each statement binds the chunk twice (marker IN + parent IN), so
+        # halve the chunk to stay under the limit.
+        for chunk in _chunked(frontier, SQL_VARIABLE_CHUNK // 2):
+            ph = ",".join("?" * len(chunk))
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+                f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
+                chunk + chunk,
+            )
+            next_frontier.extend(
+                row["id"] for row in cursor.fetchall() if row["id"] not in found
+            )
+        frontier = next_frontier
         found.update(frontier)
     # Return only the discovered children — never the parents themselves.
     return [sid for sid in found if sid not in seeds]
@@ -474,16 +506,16 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
-    if ids:
-        ph = ",".join("?" * len(ids))
-        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+    for chunk in _chunked(ids):
+        ph = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(
             f"UPDATE sessions SET parent_session_id = NULL "
             f"WHERE parent_session_id IN ({ph})",
-            ids,
+            chunk,
         )
-        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
     return ids
 
 
@@ -3275,119 +3307,6 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
     return path
 
 
-# _read_sqlite_application_id runs on EVERY write via _raise_if_db_replaced,
-# against the LIVE state.db.  A bare open()/read()/close() there is the
-# howtocorrupt §2.2 bug: close() cancels every POSIX advisory lock this
-# process holds on the file — measured on Linux/SQLite 3.53.1, one probe call
-# drops the WAL-mode DMS shared lock the writer connection holds on state.db
-# (see hermes_cli/sqlite_safe_read.py for the module built around this rule).
-# With the DMS lock gone, a fresh opener in another process can treat this
-# writer as dead and rerun WAL-index recovery underneath it.
-#
-# The probe therefore reads through a per-path fd cached for the life of the
-# process: opening an fd never cancels locks (only close() does), and
-# os.pread takes no shared file position.  When the path is re-pointed at a
-# new inode (the very replacement this probe exists to detect), the stale fd
-# is RETIRED, never closed — closing it would cancel the live connection's
-# locks on the old file, the exact bug being avoided.  Replacement events are
-# rare and halt writes anyway, so the leak is bounded.
-_HEADER_PROBE_LOCK = threading.Lock()
-_HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
-_RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
-
-
-def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
-    """Lock-safe raw header read of a possibly-live SQLite database.
-
-    pread from a cached, never-closed fd (rebound when the path names a new
-    inode): closing the fd would drop this process's advisory locks.
-    """
-    key = str(db_path)
-    try:
-        st = os.stat(db_path)
-    except OSError:
-        return None
-    with _HEADER_PROBE_LOCK:
-        cached = _HEADER_PROBE_FDS.get(key)
-        if cached is not None and (cached[1], cached[2]) != (st.st_dev, st.st_ino):
-            # Path re-pointed at a new file. Retire (never close) the old fd.
-            _RETIRED_HEADER_PROBE_FDS.append(cached[0])
-            cached = None
-            del _HEADER_PROBE_FDS[key]
-        if cached is None:
-            try:
-                fd = os.open(db_path, os.O_RDONLY)
-            except OSError:
-                return None
-            try:
-                fst = os.fstat(fd)
-            except OSError:
-                _RETIRED_HEADER_PROBE_FDS.append(fd)
-                return None
-            cached = (fd, fst.st_dev, fst.st_ino)
-            _HEADER_PROBE_FDS[key] = cached
-        try:
-            return os.pread(cached[0], length, 0)
-        except OSError:
-            return None
-
-
-def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
-    """Read application_id from the SQLite header without opening a connection.
-
-    Safe against live databases: routed through :func:`_pread_db_header`,
-    which never issues a ``close()`` that would cancel this process's POSIX
-    locks on the file (howtocorrupt §2.2).
-    """
-    header = _pread_db_header(db_path, _STATE_DB_APPLICATION_ID_OFFSET + 4)
-    if header is None:
-        return None
-    if len(header) < _STATE_DB_APPLICATION_ID_OFFSET + 4:
-        return None
-    if header[:16] != b"SQLite format 3\x00":
-        return None
-    return int(
-        struct.unpack(
-            ">I",
-            header[_STATE_DB_APPLICATION_ID_OFFSET:_STATE_DB_APPLICATION_ID_OFFSET + 4],
-        )[0]
-    )
-
-
-def _stat_db_file_identity(path: Path) -> "Optional[tuple]":
-    """Return ``(st_dev, st_ino)`` for *path*, or None when identity is unavailable."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    # Windows volumes (and some network FS) report st_ino=0; a (0, 0)
-    # identity would false-positive every check. Skip the inode half of
-    # the guard there; generation stamp still applies.
-    if not st.st_dev or not st.st_ino:
-        return None
-    return (st.st_dev, st.st_ino)
-
-
-def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
-    """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars."""
-    identities: Dict[str, tuple] = {}
-    base = os.fspath(db_path)
-    for suffix in ("-wal", "-shm"):
-        ident = _stat_db_file_identity(Path(base + suffix))
-        if ident is not None:
-            identities[suffix] = ident
-    return identities
-
-
-_canonical_sqlite_path = _state_holders.canonical_sqlite_path
-
-
-def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
-    base = os.path.abspath(os.fspath(db_path))
-    return {
-        _state_holders.canonical_sqlite_path(base + "-wal"),
-        _state_holders.canonical_sqlite_path(base + "-shm"),
-    }
 
 
 def refuse_deleted_wal_generation(db_path) -> None:
@@ -3756,6 +3675,10 @@ class SessionDB(
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
         "cli",
         "cron",
+        # The kanban platform was removed (#548) but deployed databases still
+        # hold its never-ended worker rows — the sweep exists exactly for
+        # producers that can no longer close their own sessions.
+        "kanban",
         "acp",
         "api_server",
         "subagent",
@@ -4504,8 +4427,8 @@ class SessionDB(
         # longer the one this instance originally opened (out-of-band
         # restore/cp/mv), reconnecting would write into the new generation
         # through stale WAL/shm assumptions (#89332). Refuse instead.
-        if self._db_replaced or self._db_file_was_replaced():
-            self._halt_db_replaced()
+        # (predicate + full halt semantics live in the helper)
+        self._halt_if_db_replaced()
         # A quarantined handle must never come back: reopening would hand a
         # fresh connection (and its own close-time checkpoint) to a file we
         # already know is structurally damaged.
@@ -4515,8 +4438,7 @@ class SessionDB(
                 f"structural corruption; refusing to reopen for a {context} "
                 "after close(). "
             )
-        if self._db_wal_generation_lost or self._wal_generation_was_lost():
-            self._halt_deleted_wal_generation()
+        self._halt_if_wal_generation_lost()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)",
@@ -5182,11 +5104,14 @@ class SessionDB(
                 return True
         return False
 
-    def _halt_db_replaced(self) -> None:
-        """Stop writes and raise; do not run in-file repair on a new generation."""
-        self._db_replaced = True
-        logger.error(_STATE_DB_REPLACED_MSG)
-        raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+    def _halt_if_db_replaced(self) -> None:
+        """Stop writes and raise when the file was replaced; never run in-file
+        repair on a new generation."""
+        if self._db_replaced or self._db_file_was_replaced():
+            self._db_replaced = True
+            self._disable_close_time_checkpoint()
+            logger.error(_STATE_DB_REPLACED_MSG)
+            raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
 
     def _wal_generation_was_lost(self) -> bool:
         """True when the WAL/SHM generation this instance opened is gone.
@@ -5245,23 +5170,13 @@ class SessionDB(
             self._db_sidecar_identity = current_identity
         return False
 
-    def _halt_deleted_wal_generation(self) -> None:
-        """Stop writes; do not mint or keep committing on a split WAL."""
-        self._db_wal_generation_lost = True
-        logger.error(_DELETED_WAL_GENERATION_MSG)
-        raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
-    def _halt_if_db_generation_changed(self) -> None:
-        """Stop writes (logging once) when the file was replaced or its WAL/SHM generation
-        is gone: never run in-file repair on a new generation, never keep committing on a
-        split WAL. Both flags are sticky."""
-        # A reopen resolves the PATH again — if the file at that path is no longer the one this instance
-        # originally opened (out-of-band restore/cp/mv), reconnecting would write into the new generation
-        # through stale WAL/shm assumptions (#89332). Refuse instead.
-        if self._db_replaced or self._db_file_was_replaced():
-            self._db_replaced = True
-            self._disable_close_time_checkpoint()
-            logger.error(_STATE_DB_REPLACED_MSG)
-            raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+    def _halt_if_wal_generation_lost(self) -> None:
+        """Stop writes when the WAL/SHM generation is gone; never mint or keep
+        committing on a split WAL. The quarantined handle's close-time checkpoint
+        is disabled and the retired generation captured durably before the
+        refusal — best effort only: a failed capture is logged, never settled,
+        and the handle is not released (close() retries the capture and refuses
+        to settle without it)."""
         if self._db_wal_generation_lost or self._wal_generation_was_lost():
             self._db_wal_generation_lost = True
             self._disable_close_time_checkpoint()
@@ -5274,6 +5189,15 @@ class SessionDB(
                 )
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+    def _halt_if_db_generation_changed(self) -> None:
+        """Stop writes (logging once) when the file was replaced or its WAL/SHM generation
+        is gone: never run in-file repair on a new generation, never keep committing on a
+        split WAL. Both flags are sticky."""
+        # A reopen resolves the PATH again — if the file at that path is no longer the one this instance
+        # originally opened (out-of-band restore/cp/mv), reconnecting would write into the new generation
+        # through stale WAL/shm assumptions (#89332). Refuse instead.
+        self._halt_if_db_replaced()
+        self._halt_if_wal_generation_lost()
 
     def _capture_retired_generation(self, trigger: str) -> Path:
         """Durably capture the lost WAL generation this handle still holds open, once per handle.
@@ -5297,14 +5221,15 @@ class SessionDB(
         return artifact
 
     def _raise_if_db_replaced(self) -> None:
+        """Sticky-flag fast path (no log spam on every write), then the full halt:
+        the close-time checkpoint is disabled and the retired WAL generation
+        captured durably before the refusal propagates."""
         if self._db_replaced:
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_wal_generation_lost:
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
-        if self._db_file_was_replaced():
-            self._halt_db_replaced()
-        if self._wal_generation_was_lost():
-            self._halt_deleted_wal_generation()
+        self._halt_if_db_replaced()
+        self._halt_if_wal_generation_lost()
 
     @classmethod
     def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
@@ -5567,10 +5492,8 @@ class SessionDB(
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
         self._raise_if_db_corrupt()
-        if self._db_replaced or self._db_file_was_replaced():
-            self._halt_db_replaced()
-        if self._db_wal_generation_lost or self._wal_generation_was_lost():
-            self._halt_deleted_wal_generation()
+        self._halt_if_db_replaced()
+        self._halt_if_wal_generation_lost()
 
         try:
             with self._lock:
@@ -5636,8 +5559,8 @@ class SessionDB(
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
         """
-        if self._db_corrupt:
-            return  # quarantined: never checkpoint over a damaged image
+        if self._quarantine_reason() is not None:
+            return  # quarantined: never checkpoint over a damaged, replaced or split file
         try:
             with self._lock:
                 if self._conn is None:
@@ -6156,26 +6079,9 @@ class SessionDB(
             target_clause = "WHERE id = ?"
             query_params = []
             if include_compression_ancestors:
-                lineage_cte = """
-                    WITH RECURSIVE compression_lineage(id) AS (
-                        SELECT ?
-                        UNION
-                        SELECT parent.id
-                        FROM compression_lineage lineage
-                        JOIN sessions child ON child.id = lineage.id
-                        JOIN sessions parent ON parent.id = child.parent_session_id
-                        WHERE parent.end_reason = 'compression'
-                          AND json_extract(
-                              COALESCE(child.model_config, '{}'),
-                              '$._branched_from'
-                          ) IS NULL
-                          AND json_extract(
-                              COALESCE(child.model_config, '{}'),
-                              '$._delegate_from'
-                          ) IS NULL
-                          AND COALESCE(child.source, '') != 'tool'
-                    )
-                """
+                # Same membership rule as get_compression_lineage / _CHAIN_STEP_SQL:
+                # branch, delegate, tool, and RESET-fork rows stop the walk (#114271).
+                lineage_cte = _COMPRESSION_LINEAGE_CTE
                 target_clause = "WHERE id IN (SELECT id FROM compression_lineage)"
                 query_params.append(session_id)
             query_params.extend(
@@ -6755,10 +6661,8 @@ class SessionDB(
                   AND EXISTS (SELECT 1 FROM messages m
                                WHERE m.session_id = o.id)
                   AND COALESCE(o.source, '') != 'tool'
-                  AND json_extract(COALESCE(o.model_config, '{{}}'),
-                                   '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(o.model_config, '{{}}'),
-                                   '$._delegate_from') IS NULL
+                  AND {_sql_json_extract('o.model_config', '$._branched_from')} IS NULL
+                  AND {_sql_json_extract('o.model_config', '$._delegate_from')} IS NULL
                 ORDER BY o.started_at ASC
                 """
             ).fetchall()
@@ -6923,23 +6827,6 @@ class SessionDB(
 
         return self._execute_write(_do)
 
-    # Children that carry a ``parent_session_id`` but are NOT compression
-    # continuations: branches, delegate/subagent runs, and tool sessions.
-    # A marker only disqualifies a child when it points at the parent being
-    # queried — compression continuations inherit the rotated agent's
-    # ``model_config`` verbatim (``publish_compression_child`` callers pass
-    # ``agent._session_init_model_config``), so a delegate subagent's
-    # continuation carries ``_delegate_from=<the delegate's own parent>``.
-    # Matching markers by mere presence misclassified those real
-    # continuations as delegate children (fail-open for orphan reopen,
-    # fail-closed for adoption). Bind the parent id for both markers.
-    _NON_CONTINUATION_CHILD_FILTER_SQL = (
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._branched_from'), '') != ?\n"
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n"
-        "  AND COALESCE({alias}source, '') != 'tool'\n"
-    )
 
     def find_live_compression_child(
         self, parent_session_id: str
@@ -6980,7 +6867,7 @@ class SessionDB(
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id, parent_session_id, parent_session_id),
+                (parent_session_id,) * 4,
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -7008,8 +6895,8 @@ class SessionDB(
             ):
                 return False
 
-            # Treat any direct non-branch/non-delegate/non-tool child as a
-            # continuation, regardless of its current ended state. Reopening
+            # Treat any direct non-branch/non-delegate/non-reset/non-tool child
+            # as a continuation, regardless of its current ended state. Reopening
             # in that case could create a second live head for one lineage.
             child = conn.execute(
                 """
@@ -7021,7 +6908,7 @@ class SessionDB(
                 + """
                 LIMIT 1
                 """,
-                (session_id, session_id, session_id),
+                (session_id,) * 4,
             ).fetchone()
             if child is not None:
                 return False
@@ -7330,10 +7217,10 @@ class SessionDB(
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed.
-
-        Before clearing a reset boundary, stabilize markerless legacy reset
-        children that still depend on the parent's mutable end_reason.
+        """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
+        children, skipping explicit fork/delegate provenance and children that predate the parent itself.
+        The guard compares against the parent's started_at, not its current ended_at: a parent that was
+        reopened and re-ended later still owns reset children from its earlier boundaries.
         """
         def _do(conn):
             placeholders = ",".join("?" for _ in _RESET_END_REASONS)
@@ -7347,6 +7234,10 @@ class SessionDB(
                 "WHERE child.parent_session_id = ? "
                 "AND json_extract(COALESCE(child.model_config, '{}'), "
                 "                 '$._reset_from') IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                "AND COALESCE(child.source, '') != 'tool' "
+                "AND child.started_at >= (SELECT p.started_at FROM sessions p WHERE p.id = child.parent_session_id) "
                 f"AND {_legacy_reset_child_sql('child', placeholders)}",
                 (session_id, *_RESET_END_REASONS),
             )
@@ -8100,7 +7991,7 @@ class SessionDB(
             if (
                 not parent_id
                 or parent_id in seen
-                or self._is_explicit_fork_child_row(current)
+                or self._is_explicit_fork_child_row(current, include_reset=True)
             ):
                 break
             parent = _row(parent_id)
@@ -9977,7 +9868,7 @@ class SessionDB(
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?",
                     (title, session_id),
                 )
                 conflict = cursor.fetchone()
@@ -9999,6 +9890,20 @@ class SessionDB(
                     ):
                         conn.execute(
                             "UPDATE sessions SET title = NULL WHERE id = ?",
+                            (conflict_id,),
+                        )
+                    # A deliberately archived hidden Bot Chat is a retired registry
+                    # entry, not a live identity. Retire its name in the same title
+                    # transaction so a replacement can become the sole canonical row;
+                    # the old session remains archived and otherwise untouched.
+                    elif (
+                        title == self.CANONICAL_BOT_CHAT_TITLE
+                        and bool(conflict["archived"])
+                        and bool(conflict["hidden"])
+                    ):
+                        conn.execute(
+                            "UPDATE sessions SET title = NULL, title_source = NULL "
+                            "WHERE id = ?",
                             (conflict_id,),
                         )
                     else:
@@ -10258,46 +10163,24 @@ class SessionDB(
         flipped as a unit, so pinning the surfaced tip protects the root (and
         vice-versa) no matter which id the caller holds. Returns True when at
         least one row changed.
+
+        Pinning also clears ``hidden`` across the lineage: a pin means "keep
+        this visible", and a hidden+pinned row is otherwise absent from both
+        the default listing and the pinned back-fill (#106171). Exempt the
+        canonical Bot Chat (hidden + exact registry title): the desktop
+        contract keeps it hidden and reachable only through the bot row, and
+        unhiding it would also disable the rename guard in
+        ``_set_session_title`` that protects its identity (#106180).
         """
-        def _do(conn):
-            cursor = conn.execute(
-                """
-                WITH RECURSIVE
-                  ancestors(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  descendants(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT child.id
-                    FROM descendants d
-                    JOIN sessions parent ON parent.id = d.id
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  lineage(id) AS (
-                    SELECT id FROM ancestors
-                    UNION
-                    SELECT id FROM descendants
-                  )
-                UPDATE sessions
-                SET pinned = ?
-                WHERE id IN (SELECT id FROM lineage)
-                """,
-                (session_id, session_id, 1 if pinned else 0),
+        result = self._set_lineage_column("pinned", session_id, int(pinned))
+        if pinned:
+            row = self.get_session(session_id)
+            is_canonical_bot_chat = bool(row) and bool(row.get("hidden")) and (
+                (row.get("title") or "") == self.CANONICAL_BOT_CHAT_TITLE
             )
-            rowcount = cursor.rowcount
-            if rowcount is None or rowcount < 0:
-                rowcount = conn.execute("SELECT changes()").fetchone()[0]
-            return rowcount
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+            if not is_canonical_bot_chat:
+                self._set_lineage_column("hidden", session_id, 0)
+        return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide or unhide a session (and its whole compression lineage).
@@ -10525,7 +10408,10 @@ class SessionDB(
         the real continuation chain.
 
         Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
+        explicit branch/delegate/tool children AND reset forks (a reset fork is
+        its own user-visible conversation: following one would hijack the tip
+        projection onto the reset sibling and hide the real continuation,
+        #114271), and prefer children that are
         themselves continuing the compression chain (``end_reason='compression'``)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
@@ -10549,8 +10435,9 @@ class SessionDB(
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -10695,6 +10582,7 @@ class SessionDB(
                 COALESCE(child.model_config, '{{}}'), '$._branched_from'
             ) IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
+            AND NOT ({_RESET_CHILD_SQL.format(a='child')})
             AND COALESCE(child.source, '') != 'tool'
         """
 
@@ -10961,7 +10849,11 @@ class SessionDB(
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
-        if not include_hidden:
+        # The archived-only view is the recovery surface for rows that dropped out of every
+        # default list: a session that is archived AND hidden (Bot Mode marks its sessions
+        # hidden) must still be reachable there, or nothing but direct DB access can bring
+        # it back (#90946).
+        if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -11082,8 +10974,9 @@ class SessionDB(
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                 ){tip_cte_prefix},
                 chain_max AS (
@@ -11189,64 +11082,13 @@ class SessionDB(
                 seen_ids.add(s["id"])
                 sessions.append(s)
 
-        # Project compression roots forward to their tips. Each row whose
-        # end_reason is 'compression' has a continuation child; replace the
-        # surfaced fields (id, message_count, title, last_active, ended_at,
-        # end_reason, preview) with the tip's values so the list entry acts
-        # as the live conversation. Keep the root's started_at to preserve
-        # chronological ordering by original conversation start.
+        # Project compression roots forward to their tips: the surfaced row acts
+        # as the live conversation (tip identity/activity data), inheriting the
+        # root's title when the tip is still untitled (#106165). One
+        # implementation with the sessions mixin — the inline copy here had
+        # already dropped that inheritance once.
         if project_compression_tips and not include_children:
-            # get_compression_tip() walks each root's chain individually (it's
-            # a per-session graph walk, not batchable in one query), but the
-            # tip *row* fetch afterward was previously one _get_session_rich_row()
-            # call per compression root. Batch that half instead: resolve
-            # every tip id first, then fetch all tip rows in a single query.
-            tip_ids_by_root: Dict[str, str] = {}
-            chain_by_root: Dict[str, List[str]] = {}
-            for s in sessions:
-                if s.get("end_reason") != "compression":
-                    continue
-                chain = self.get_compression_chain(s["id"])
-                tip_id = chain[-1] if chain else s["id"]
-                if tip_id != s["id"]:
-                    tip_ids_by_root[s["id"]] = tip_id
-                    chain_by_root[s["id"]] = chain
-
-            tip_rows = (
-                self._get_session_rich_rows_batch(
-                    set(tip_ids_by_root.values()), compact_rows=compact_rows
-                )
-                if tip_ids_by_root
-                else {}
-            )
-
-            projected = []
-            for s in sessions:
-                tip_id = tip_ids_by_root.get(s["id"])
-                tip_row = tip_rows.get(tip_id) if tip_id else None
-                if not tip_row:
-                    projected.append(s)
-                    continue
-                # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
-                merged = dict(s)
-                for key in (
-                    "id", "ended_at", "end_reason", "message_count",
-                    "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
-                ):
-                    if key in tip_row:
-                        merged[key] = tip_row[key]
-                merged["_lineage_root_id"] = s["id"]
-                # Every id on the chain, intermediates included. Root and tip
-                # alone are not enough client-side: a persisted tile or route
-                # can hold a MIDDLE segment's id (it was the tip when opened,
-                # then rotated again), and with only the root/tip pair such a
-                # surface can no longer prove it names this conversation —
-                # which is how one chat ends up open twice after compaction.
-                merged["_lineage_ids"] = chain_by_root.get(s["id"]) or None
-                projected.append(merged)
-            sessions = projected
+            sessions = self._project_compression_tips(sessions, compact_rows)
 
         if open_first:
             # Pinned back-fill rows append after the page, so a closed page
@@ -11665,15 +11507,14 @@ class SessionDB(
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
 
-        message_timestamp = time.time()
-        if timestamp is not None:
-            try:
-                if hasattr(timestamp, "timestamp"):
-                    message_timestamp = float(timestamp.timestamp())
-                else:
-                    message_timestamp = float(timestamp)
-            except (TypeError, ValueError):
-                logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
+        # The write-side twin of the readers' coerce_epoch: a caller-supplied
+        # timestamp outside the sane epoch window (or any non-coercible junk)
+        # must never be persisted — it falls back to now.
+        message_timestamp = (
+            _coerce_timestamp(timestamp, time.time())
+            if timestamp is not None
+            else time.time()
+        )
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -11824,6 +11665,20 @@ class SessionDB(
                     "UPDATE sessions SET message_count = message_count + ? WHERE id = ?",
                     (inserted, session_id),
                 )
+
+            # Native compaction: one durable checkpoint per transcript (#102374). A newer
+            # carrier row supersedes the checkpoints on every older active row — the
+            # durable twin of ``drop_shadowed_checkpoints`` on the live transcript, which
+            # mirrors this rewrite in memory after commit. Skip when the newest carrier
+            # was deduped to an existing row: pruning against an older carrier would
+            # shadow a checkpoint that is still the session's newest.
+            carrier_idx = _newest_checkpoint_carrier(inserted_rows, "codex_reasoning_items")
+            if carrier_idx >= 0 and isinstance(
+                inserted_rows[carrier_idx].get("_row_id"), int
+            ):
+                self._drop_shadowed_checkpoint_rows(
+                    conn, session_id, inserted_rows[carrier_idx]["_row_id"]
+                )
             return inserted
 
         # Same criticality as append_message: this IS the turn's transcript.
@@ -11962,27 +11817,31 @@ class SessionDB(
         Powers the cache-safe model-context path: reactions are announced on the
         NEXT user turn (never by rewriting the message that was reacted to), and
         the ``seen`` stamp guarantees each one is announced exactly once.
+        Scans the whole resume lineage so a reaction on a compacted-away
+        ancestor row still surfaces in the continuation; includes
+        compaction-archived history that remains visible, but never
+        rewound/superseded rows.
         """
         if not session_id:
             return []
+        lineage = self._resume_lineage_ids(session_id)
 
         def _do(conn):
-            rows = conn.execute(
-                "SELECT id, role, content, display_metadata FROM messages "
-                "WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL "
-                "ORDER BY id",
-                (session_id,),
-            ).fetchall()
-
             pending = []
-            for row in rows:
+            # Only reaction-bearing rows cross into Python: display_metadata also
+            # carries delivery / attachment markers on most rows, and the lineage
+            # scan grows with the session's age.
+            for row in conn.execute(
+                "SELECT id, role, content, display_metadata FROM messages "
+                f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+                f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
+                "ORDER BY id",
+                tuple(lineage),
+            ).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
-                if not meta:
-                    continue
-                reactions = meta.get(self.REACTIONS_METADATA_KEY)
+                reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):
                     continue
-
                 changed = False
                 for reaction in reactions:
                     if (
@@ -12002,13 +11861,11 @@ class SessionDB(
                             "text": content if isinstance(content, str) else "",
                         }
                     )
-
                 if changed:
                     conn.execute(
-                        "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                        _SET_DISPLAY_META_SQL,
                         (self._encode_display_metadata(meta), row["id"]),
                     )
-
             return pending
 
         return self._execute_write(_do) or []
@@ -12090,14 +11947,9 @@ class SessionDB(
             tool_calls = msg.get("tool_calls")
             message_timestamp = now_ts
             if msg.get("timestamp") is not None:
-                try:
-                    ts_value = msg.get("timestamp")
-                    if hasattr(ts_value, "timestamp"):
-                        message_timestamp = float(ts_value.timestamp())
-                    else:
-                        message_timestamp = float(ts_value)
-                except (TypeError, ValueError):
-                    logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
+                # Same write-side window guard as append_message: a corrupt
+                # explicit timestamp degrades to now, never persists.
+                message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
             reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
             codex_reasoning_items = (
                 msg.get("codex_reasoning_items") if role == "assistant" else None
@@ -13757,6 +13609,12 @@ class SessionDB(
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
+        ``source`` is one source slug or an iterable of them (a source
+        *family*, e.g. ``["cli", "oneshot"]`` from
+        ``run_agent.CLI_FAMILY_SOURCES`` so ``hermes -c`` continues the
+        previous one-shot run — #112550). A single slug still matches
+        exactly; a family matches any member.
+
         Returns rows enriched with a computed ``last_active`` column
         (freshest of ``last_activity_at`` and latest message timestamp,
         else ``started_at``), ordered by most-recently-used first.
@@ -13776,8 +13634,12 @@ class SessionDB(
         where_clauses = []
         params: list = []
         if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+            sources = [source] if isinstance(source, str) else [str(s) for s in source]
+            if sources:
+                where_clauses.append(
+                    f"s.source IN ({','.join('?' for _ in sources)})"
+                )
+                params.extend(sources)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)
@@ -13952,17 +13814,18 @@ class SessionDB(
     # Export and cleanup
     # =========================================================================
 
-    def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
-        """True when ``session`` is a branch, delegate, or tool child of its parent.
-
-        Markers only count as a fork when they point at ``parent_session_id``.
-        Compression copies ``model_config`` onto the continuation
-        (``publish_compression_child`` callers pass
+    def _is_explicit_fork_child_row(
+        self, session: Dict[str, Any], *, include_reset: bool = False
+    ) -> bool:
+        """True when ``session`` is a branch, delegate, or tool child of its parent
+        (``include_reset``: also a reset fork). Markers only count as a fork when
+        they point at ``parent_session_id``. Compression copies ``model_config``
+        onto the continuation (``publish_compression_child`` callers pass
         ``agent._session_init_model_config``), so a delegate's continuation
         carries ``_delegate_from=<the delegate's own parent>``. Presence-only
         matching would treat that real continuation as a fork — the same
         misclassification ``_NON_CONTINUATION_CHILD_FILTER_SQL`` already
-        avoids by binding both markers to the queried parent.
+        avoids by binding the markers to the queried parent.
         """
         if session.get("source") == "tool":
             return True
@@ -13975,12 +13838,11 @@ class SessionDB(
             return False
         if not isinstance(cfg, dict):
             return False
+        markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
+        if include_reset:
+            markers += (cfg.get("_reset_from"),)
         parent_id = session.get("parent_session_id")
-        branched = cfg.get("_branched_from")
-        delegated = cfg.get("_delegate_from")
-        if parent_id:
-            return branched == parent_id or delegated == parent_id
-        return branched is not None or delegated is not None
+        return parent_id in markers if parent_id else any(m is not None for m in markers)
 
     def is_explicit_fork_child(self, session_id: str) -> bool:
         """True when ``session_id`` is a /branch, delegate, or tool child row.
@@ -14074,7 +13936,9 @@ class SessionDB(
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
-        if not parent_id or self._is_explicit_fork_child_row(child):
+        # A reset fork of a compression-ended parent is its own conversation,
+        # not the continuation (#114271).
+        if not parent_id or self._is_explicit_fork_child_row(child, include_reset=True):
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")
@@ -14328,37 +14192,39 @@ class SessionDB(
         removed_delegate_ids: list[str] = []
 
         def _do(conn):
-            placeholders = ",".join("?" * len(unique_ids))
             # First, filter to IDs that actually exist — we want to
             # return the real deleted count, not the input length.
-            cursor = conn.execute(
-                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
-                unique_ids,
-            )
-            existing = [row["id"] for row in cursor.fetchall()]
+            # Every IN (...) list is chunked: a dashboard bulk-delete can
+            # easily exceed SQLite's legacy 999-variable statement limit.
+            existing: list[str] = []
+            for chunk in _chunked(unique_ids):
+                cursor = conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN "
+                    f"({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+                existing.extend(row["id"] for row in cursor.fetchall())
             if not existing:
                 return 0
 
-            existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
             # of survivors — the IN list on ``parent_session_id`` does
             # exactly this.
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({existing_placeholders})",
-                existing,
-            )
-            conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
-                existing,
-            )
-            conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
-                existing,
-            )
+            for chunk in _chunked(existing):
+                ph = ",".join("?" * len(chunk))
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({ph})",
+                    chunk,
+                )
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({ph})",
+                    chunk,
+                )
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
             return len(existing)
@@ -14481,176 +14347,6 @@ class SessionDB(
             self._remove_session_files(sessions_dir, sid)
         return count
 
-    @staticmethod
-    def _prune_filter_where(
-        *,
-        last_active_before: Optional[float] = None,
-        last_active_after: Optional[float] = None,
-        started_before: Optional[float] = None,
-        started_after: Optional[float] = None,
-        source: Optional[str] = None,
-        title_like: Optional[str] = None,
-        end_reason: Optional[str] = None,
-        cwd_prefix: Optional[str] = None,
-        min_messages: Optional[int] = None,
-        max_messages: Optional[int] = None,
-        archived: Optional[bool] = None,
-        model_like: Optional[str] = None,
-        provider: Optional[str] = None,
-        user_id: Optional[str] = None,
-        chat_id: Optional[str] = None,
-        chat_type: Optional[str] = None,
-        branch_like: Optional[str] = None,
-        min_tokens: Optional[int] = None,
-        max_tokens: Optional[int] = None,
-        min_cost: Optional[float] = None,
-        max_cost: Optional[float] = None,
-        min_tool_calls: Optional[int] = None,
-        max_tool_calls: Optional[int] = None,
-        include_pinned: bool = False,
-    ) -> Tuple[str, list]:
-        """Build the shared WHERE clause for bulk prune/archive selection.
-
-        All filters AND together. Only ended sessions are ever candidates
-        (``ended_at IS NOT NULL``) so a live session is never selected.
-        ``archived`` is a tri-state: ``None`` = both, ``True`` = only
-        archived rows, ``False`` = only unarchived rows.
-
-        String matching conventions: ``model_like`` / ``branch_like`` /
-        ``title_like`` are case-insensitive substring matches (model slugs
-        and branch names vary in prefix format); ``provider`` / ``user_id``
-        / ``chat_id`` / ``chat_type`` / ``source`` / ``end_reason`` are
-        exact (case-insensitive for provider). Token bounds apply to
-        ``input_tokens + output_tokens``; cost bounds apply to
-        ``COALESCE(actual_cost_usd, estimated_cost_usd)``.
-
-        The clause references the ``s`` table alias — callers must select
-        ``FROM sessions s``.
-        """
-        clauses = ["s.ended_at IS NOT NULL"]
-        params: list = []
-        if last_active_before is not None:
-            clauses.append(
-                """COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = s.id),
-                       s.started_at
-                   ) < ?"""
-            )
-            params.append(last_active_before)
-            # An automatic orphan sweep closes a stale open row so the user can
-            # still recover it. Age those rows from the sweep, not from their old
-            # activity, or the next prune pass can delete them immediately.
-            clauses.append(
-                "(COALESCE(s.end_reason, '') != 'startup_orphan_reap' "
-                "OR s.ended_at < ?)"
-            )
-            params.append(last_active_before)
-        if last_active_after is not None:
-            clauses.append(
-                """COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = s.id),
-                       s.started_at
-                   ) >= ?"""
-            )
-            params.append(last_active_after)
-        if started_before is not None:
-            clauses.append("s.started_at < ?")
-            params.append(started_before)
-        if started_after is not None:
-            clauses.append("s.started_at >= ?")
-            params.append(started_after)
-        if source:
-            clauses.append("s.source = ?")
-            params.append(source)
-        if title_like:
-            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(title_like.lower())}%")
-        if end_reason:
-            clauses.append("s.end_reason = ?")
-            params.append(end_reason)
-        if cwd_prefix:
-            clause, clause_params = _cwd_prefix_clause(cwd_prefix)
-            clauses.append(clause)
-            params.extend(clause_params)
-        if min_messages is not None:
-            clauses.append("s.message_count >= ?")
-            params.append(min_messages)
-        if max_messages is not None:
-            clauses.append("s.message_count <= ?")
-            params.append(max_messages)
-        if model_like:
-            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(model_like.lower())}%")
-        if provider:
-            clauses.append("LOWER(COALESCE(s.billing_provider, '')) = ?")
-            params.append(provider.lower())
-        if user_id:
-            clauses.append("s.user_id = ?")
-            params.append(user_id)
-        if chat_id:
-            clauses.append("s.chat_id = ?")
-            params.append(chat_id)
-        if chat_type:
-            clauses.append("s.chat_type = ?")
-            params.append(chat_type)
-        if branch_like:
-            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(branch_like.lower())}%")
-        if min_tokens is not None:
-            clauses.append(
-                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) >= ?"
-            )
-            params.append(min_tokens)
-        if max_tokens is not None:
-            clauses.append(
-                "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) <= ?"
-            )
-            params.append(max_tokens)
-        if min_cost is not None:
-            clauses.append(
-                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) >= ?"
-            )
-            params.append(min_cost)
-        if max_cost is not None:
-            clauses.append(
-                "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0) <= ?"
-            )
-            params.append(max_cost)
-        if min_tool_calls is not None:
-            clauses.append("COALESCE(s.tool_call_count, 0) >= ?")
-            params.append(min_tool_calls)
-        if max_tool_calls is not None:
-            clauses.append("COALESCE(s.tool_call_count, 0) <= ?")
-            params.append(max_tool_calls)
-        if archived is True:
-            clauses.append("s.archived = 1")
-        elif archived is False:
-            clauses.append("s.archived = 0")
-        # Pinned sessions are a durable "keep" flag (exempt from the stale
-        # auto-archive sweep). Bulk prune/delete/archive must honor that too:
-        # exclude pinned rows unless the caller explicitly opts in. Without
-        # this, `sessions prune`/`delete`/`archive` with a filter silently
-        # destroyed pinned conversations (round-3 QA SES-01, data loss).
-        if not include_pinned:
-            clauses.append("COALESCE(s.pinned, 0) = 0")
-        return " AND ".join(clauses), params
-
-    @staticmethod
-    def _apply_prune_age_filter(
-        older_than_days: Optional[float], filters: Dict[str, Any]
-    ) -> None:
-        """Translate the legacy age window into the shared activity filter."""
-        if (
-            filters.get("last_active_before") is None
-            and filters.get("started_before") is None
-            and older_than_days is not None
-        ):
-            filters["last_active_before"] = time.time() - (
-                older_than_days * 86400
-            )
-
     def list_prune_candidates(
         self,
         older_than_days: Optional[float] = None,
@@ -14664,20 +14360,16 @@ class SessionDB(
         keyword filters as :meth:`_prune_filter_where` (unknown names raise
         ``TypeError`` there). Rows are ordered oldest-first and carry
         ``id, source, title, model, started_at, last_active, ended_at,
-        message_count, archived``. ``older_than_days`` is an inactivity
-        threshold: it uses the latest message timestamp, falling back to
-        ``started_at`` for sessions without messages.
+        ``message_count, archived``. ``older_than_days`` is an inactivity
+        threshold on real recency: the freshest of the session heartbeat
+        (``last_activity_at``) and the latest message timestamp, falling back
+        to ``started_at`` for sessions without messages.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_where(older_than_days, source, filters)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
-                           COALESCE(
-                               (SELECT MAX(m.timestamp) FROM messages m
-                                WHERE m.session_id = s.id),
-                               s.started_at
-                           ) AS last_active,
+                           {_sql_session_last_active("s")} AS last_active,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""",
@@ -14697,8 +14389,7 @@ class SessionDB(
         ``include_pinned`` tri-state), but returns only a count. Used by the
         CLI to report how many pinned sessions are being spared.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_where(older_than_days, source, filters)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 f"SELECT COUNT(*) FROM sessions s WHERE {where}", params
@@ -14718,8 +14409,7 @@ class SessionDB(
         why an otherwise matching session was skipped without making live
         sessions eligible for destructive pruning.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_where(older_than_days, source, filters)
         ended_guard = "s.ended_at IS NOT NULL"
         if not where.startswith(ended_guard):
             raise RuntimeError("prune filter lost its ended-session safety guard")
@@ -14777,6 +14467,10 @@ class SessionDB(
             chain via :meth:`set_session_archived`, so we never resurrect an
             active conversation by matching an old compressed-away root whose
             live continuation is recent.
+          * the hidden canonical Bot Chat (same predicate as the pinned
+            exemption) is never swept: only a deliberate archive may retire
+            it, since archiving releases its registry title to the next Bot
+            open.
 
         Returns the number of sessions archived. Never raises for an empty or
         non-positive ``idle_days`` — it simply archives nothing.
@@ -14792,10 +14486,11 @@ class SessionDB(
                 WHERE s.archived = 0
                   AND COALESCE(s.end_reason, '') <> 'compression'
                   {pin_clause}
+                  AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
                   AND {_sql_session_last_active("s")} < ?
                 ORDER BY s.started_at ASC
                 """,
-                (cutoff,),
+                (self.CANONICAL_BOT_CHAT_TITLE, cutoff),
             ).fetchall()
         ids = [(r["id"] if isinstance(r, sqlite3.Row) else r[0]) for r in rows]
         for sid in ids:
@@ -14814,13 +14509,15 @@ class SessionDB(
 
         By default, delete ended sessions inactive for
         ``older_than_days`` days, optionally restricted to ``source``.
-        Activity is the latest message timestamp, falling back to
-        ``started_at`` for sessions without messages. Additional keyword
+        Activity is the freshest of the session heartbeat
+        (``last_activity_at``) and the latest message timestamp, falling back
+        to ``started_at`` for sessions without messages. Additional keyword
         filters AND together — the full set is defined by
         :meth:`_prune_filter_where`:
 
         * ``last_active_before`` / ``last_active_after`` — epoch bounds on
-          the latest message timestamp (falling back to ``started_at``).
+          real recency (freshest of heartbeat and latest message, else
+          ``started_at``).
         * ``started_before`` / ``started_after`` — epoch bounds on
           ``started_at``. An explicit ``started_before`` overrides the
           default ``older_than_days`` inactivity cutoff; pass
@@ -14851,8 +14548,7 @@ class SessionDB(
         are skipped, while expired or provably dead holders are reclaimed and
         fenced in the same write transaction.
         """
-        self._apply_prune_age_filter(older_than_days, filters)
-        where, where_params = self._prune_filter_where(source=source, **filters)
+        where, where_params = self._prune_where(older_than_days, source, filters)
         removed_ids: list[str] = []
 
         def _do(conn):
@@ -14884,13 +14580,15 @@ class SessionDB(
             if not session_ids:
                 return 0
 
-            # Orphan any sessions whose parent is about to be deleted
-            placeholders = ",".join("?" * len(session_ids))
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({placeholders})",
-                list(session_ids),
-            )
+            # Orphan any sessions whose parent is about to be deleted.
+            # Chunked: a prune sweep can select thousands of rows at once
+            # and one IN (...) would exceed SQLite's variable limit.
+            for chunk in _chunked(list(session_ids)):
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
@@ -15365,6 +15063,12 @@ class SessionDB(
         Returns the number of FTS indexes that were optimized (0 if the
         merge step failed or no FTS tables exist).
         """
+        # A quarantined handle (corrupt image, replaced file, lost WAL generation) raises
+        # before any rewrite: a VACUUM reads every page and commits the result back,
+        # turning contained damage into an amplified one (#105670). Same guard
+        # _execute_write applies to every write.
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         # Merge FTS5 segments before VACUUM so the freed pages are returned
         # to the OS in the same pass. optimize_fts() manages its own lock.
         optimized = 0
@@ -15477,6 +15181,11 @@ class SessionDB(
             # Delete only sessions that were already explicitly closed. A
             # startup orphan discovered by this pass is closed *after* pruning,
             # preserving a full retention window in which it can be resumed.
+            # Startup-watchdog leases: each long step is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock.
+            # Leases are clamped to _MAX_LEASE_S per call, so each long step
+            # renews rather than one lease at entry (#111092).
+            report_startup_progress(900.0, phase="state_db_auto_prune")
             pruned = self.prune_sessions(
                 older_than_days=retention_days,
                 sessions_dir=sessions_dir,
@@ -15486,6 +15195,7 @@ class SessionDB(
 
             # Reap stale state-owned rows only. Runtime-owned messaging sources
             # are intentionally outside this automatic destructive scope.
+            report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
                 sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES,
@@ -15520,6 +15230,9 @@ class SessionDB(
                 result["freelist_ratio"] = ratio
                 if ratio is None or ratio > min_vacuum_freelist_ratio:
                     try:
+                        # VACUUM rewrites every page with ~zero CPU: renew the lease
+                        # here so a multi-minute rewrite never outlives the clamp.
+                        report_startup_progress(900.0, phase="state_db_auto_vacuum")
                         self.vacuum()
                         result["vacuumed"] = True
                         self.set_meta("last_vacuum", str(now))
@@ -15587,6 +15300,10 @@ class SessionDB(
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
+            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock. No-op
+            # when the watchdog is not armed; never raises (#111092).
+            report_startup_progress(900.0, phase="state_db_auto_archive")
             archived = self.archive_stale_sessions(
                 idle_days, exclude_pinned=exclude_pinned
             )
