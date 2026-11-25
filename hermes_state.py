@@ -47,7 +47,7 @@ from agent.message_sanitization import _sanitize_surrogates
 # predating copy — hermes_state cannot import run_agent (circular) — guarded
 # by test_marker_constant_in_sync.
 from agent.context_compressor import (
-    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY,
+    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, _newest_checkpoint_carrier,
 )
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
@@ -11711,6 +11711,20 @@ class SessionDB(
                 conn.execute(
                     "UPDATE sessions SET message_count = message_count + ? WHERE id = ?",
                     (inserted, session_id),
+                )
+
+            # Native compaction: one durable checkpoint per transcript (#102374). A newer
+            # carrier row supersedes the checkpoints on every older active row — the
+            # durable twin of ``drop_shadowed_checkpoints`` on the live transcript, which
+            # mirrors this rewrite in memory after commit. Skip when the newest carrier
+            # was deduped to an existing row: pruning against an older carrier would
+            # shadow a checkpoint that is still the session's newest.
+            carrier_idx = _newest_checkpoint_carrier(inserted_rows, "codex_reasoning_items")
+            if carrier_idx >= 0 and isinstance(
+                inserted_rows[carrier_idx].get("_row_id"), int
+            ):
+                self._drop_shadowed_checkpoint_rows(
+                    conn, session_id, inserted_rows[carrier_idx]["_row_id"]
                 )
             return inserted
 
