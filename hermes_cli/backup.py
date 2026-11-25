@@ -613,14 +613,22 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
 
 
 # ---- END PLUGIN-COMPAT ----
-
-
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
 
-def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
+# Default archive name prefix minted by ``hermes backup``; ``--keep`` rotation only ever touches
+# ``<prefix>*.zip`` — custom or foreign zips beside them are left alone (#81317).
+_RUN_BACKUP_PREFIX = "hermes-backup-"
+
+def run_backup(args) -> bool:
+    """Create a zip backup of the Hermes home directory.
+
+    True when every selected file landed in the archive (or there was nothing to back up); False
+    when the zip was written but is incomplete — it is kept so the rest can still be restored, and
+    the caller turns False into exit status 1 so a cron/systemd timer never publishes a
+    "successful" archive that is missing state.db. Hard failures keep raising ``SystemExit``.
+    """
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -629,14 +637,14 @@ def run_backup(args) -> None:
 
     try:
         with _backup_operation_lock(hermes_root):
-            _run_backup_locked(args, hermes_root)
+            return _run_backup_locked(args, hermes_root)
     except BackupInProgressError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2) from exc
 
 
-def _run_backup_locked(args, hermes_root: Path) -> None:
-    """Write a full backup while the cross-process backup slot is held."""
+def _run_backup_locked(args, hermes_root: Path) -> bool:
+    """Write a full backup while the cross-process backup slot is held; see ``run_backup``."""
 
     # Determine output path
     out_path = None
@@ -646,10 +654,10 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             # If user gave a directory, put the zip inside it
             if out_path.is_dir():
                 stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-                out_path = out_path / f"hermes-backup-{stamp}.zip"
+                out_path = out_path / f"{_RUN_BACKUP_PREFIX}{stamp}.zip"
         else:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            out_path = Path.home() / f"hermes-backup-{stamp}.zip"
+            out_path = Path.home() / f"{_RUN_BACKUP_PREFIX}{stamp}.zip"
 
         # Ensure the suffix is .zip
         if out_path.suffix.lower() != ".zip":
@@ -703,7 +711,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             (time.monotonic() - scan_started) * 1000,
         )
         print("No files to back up.")
-        return
+        return True
 
     # Create the zip
     file_count = len(files_to_add) + len(external_to_add)
@@ -792,9 +800,11 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
 
     # --keep bounds default-named archives only (the ones this command mints);
     # custom or foreign zips in the same directory are never touched (#81317).
+    # Prune only after a complete archive: a timer hitting the same unreadable file every run
+    # must not rotate the last good backups out in favour of incomplete ones.
     keep = max(int(getattr(args, "keep", 0) or 0), 0)
-    if keep and out_path.name.startswith("hermes-backup-"):
-        removed = _prune_prefixed_zips(out_path.parent, "hermes-backup-", keep, "backup")
+    if keep and not errors and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+        removed = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
         if removed:
             print(f"  Pruned:      {removed} older backup(s) beyond newest {keep}")
 
@@ -826,6 +836,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
 
     if not errors:
         print(f"\nRestore with: hermes import {out_path.name}")
+    return not errors
 
 
 # ---------------------------------------------------------------------------
