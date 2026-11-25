@@ -2597,6 +2597,9 @@ def _run_conversation_inlined(
         _anchored_pressure = anchored_context_tokens(
             messages, getattr(agent, "_usage_anchor", None)
         )
+        # Same flag the phase-loop assembly stamps (turn_request_assembly.py):
+        # consumers below skip the noisy-estimate defer for anchored figures.
+        agent._request_pressure_anchored = _anchored_pressure is not None
         if _anchored_pressure is not None:
             request_pressure_tokens = _anchored_pressure
         else:
@@ -2695,8 +2698,15 @@ def _run_conversation_inlined(
                 f"{_previous_preflight_pressure:,}",
                 f"{request_pressure_tokens:,}",
             )
-        _defer_preflight = getattr(
-            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+        # An anchored figure is real usage + delta: never deferred. Only a
+        # whole-context rough estimate waits for the provider's count — the
+        # same skip as the turn-prologue preflight and turn_preflight_gate.
+        _defer_preflight = (
+            (lambda _t: False)
+            if getattr(agent, "_request_pressure_anchored", False)
+            else getattr(
+                _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+            )
         )
         _compression_cooldown = getattr(
             _compressor, "get_active_compression_failure_cooldown", lambda: None
