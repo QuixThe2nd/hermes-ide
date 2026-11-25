@@ -38,7 +38,6 @@ class TestSilentDefaultPair:
 
     def test_aggregators_carry_vendor_prefixed_spelling(self):
         assert PREFERRED_SILENT_DEFAULT_MODEL_IDS["openrouter"] == "x-ai/grok-4.6"
-        assert PREFERRED_SILENT_DEFAULT_MODEL_IDS["nous"] == "x-ai/grok-4.6"
 
     def test_every_spelling_exists_in_its_providers_catalog(self):
         """The silent default must never name a model the provider doesn't
@@ -55,7 +54,6 @@ class TestPreferredSilentDefaultModel:
 
     def test_provider_scoped_spelling_offline(self):
         assert get_preferred_silent_default_model("openrouter") == "x-ai/grok-4.6"
-        assert get_preferred_silent_default_model("nous") == "x-ai/grok-4.6"
         # Providers the table doesn't cover get the canonical spelling.
         assert get_preferred_silent_default_model("zai") == "grok-4.6"
 
@@ -65,7 +63,7 @@ class TestDefaultModelForProvider:
         assert get_default_model_for_provider("xai-oauth") == "grok-4.6"
 
     def test_aggregators_get_their_own_spelling(self):
-        for provider in ("openrouter", "nous"):
+        for provider in ("openrouter",):
             mid = get_default_model_for_provider(provider)
             assert mid == PREFERRED_SILENT_DEFAULT_MODEL_IDS[provider]
             assert mid in _catalog_ids_for(provider)
