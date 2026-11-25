@@ -13604,6 +13604,12 @@ class SessionDB(
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
+        ``source`` is one source slug or an iterable of them (a source
+        *family*, e.g. ``["cli", "oneshot"]`` from
+        ``run_agent.CLI_FAMILY_SOURCES`` so ``hermes -c`` continues the
+        previous one-shot run — #112550). A single slug still matches
+        exactly; a family matches any member.
+
         Returns rows enriched with a computed ``last_active`` column
         (freshest of ``last_activity_at`` and latest message timestamp,
         else ``started_at``), ordered by most-recently-used first.
@@ -13623,8 +13629,12 @@ class SessionDB(
         where_clauses = []
         params: list = []
         if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+            sources = [source] if isinstance(source, str) else [str(s) for s in source]
+            if sources:
+                where_clauses.append(
+                    f"s.source IN ({','.join('?' for _ in sources)})"
+                )
+                params.extend(sources)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)
