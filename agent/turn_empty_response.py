@@ -153,6 +153,11 @@ def promote_reasoning_only_clean_stop(
     byte-identically. (Tool calls already branched above; re-checked here so the phase
     owns its own precondition.)
 
+    The stall warning logs only safe constants and operation counts — never the
+    model/provider route (user/provider-controlled strings that can arrive via
+    env-backed config; CodeQL py/clear-text-logging-sensitive-data, #915), never the
+    promoted reasoning itself, and never row or session identifiers.
+
     Returns the promoted text, or None when this is not a reasoning-only clean stop.
     """
     _content = content
@@ -169,8 +174,8 @@ def promote_reasoning_only_clean_stop(
     # (planning monologue, zero tool calls) while the turn reports "complete".
     logger.warning(
         "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-        "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-        len(_promoted), agent.model, agent.provider, api_call_count,
+        "response (api_calls=%d tool_turns=%d)",
+        len(_promoted), api_call_count,
         sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
     )
     return _promoted

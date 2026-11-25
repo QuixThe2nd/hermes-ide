@@ -107,18 +107,62 @@ def test_stall_guard_interim_row_carries_promoted_text_as_sidecar(loop_agent):
     assert "api_content" not in interim_wire
 
 
-def test_reasoning_only_clean_stop_logs_warning_with_route(loop_agent, caplog):
+def test_clean_stop_warning_writes_no_route_strings(loop_agent, caplog):
+    """Contract change (#915 CodeQL py/clear-text-logging-sensitive-data): the stall
+    warning previously logged ``model=``/``provider=`` — user/provider-controlled
+    route strings whose values can arrive via env-backed config. It now carries only
+    safe constants and operation counts; the route is gone from the record."""
     from tests.agent.test_run_agent import _mock_response
 
+    loop_agent.model = "ROUTE-MARKER-model"
+    loop_agent.provider = "ROUTE-MARKER-provider"
     with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
         _run(loop_agent, [_mock_response(content=None, finish_reason="stop", reasoning_content=REASONING)])
 
     hits = [r for r in caplog.records if r.getMessage().startswith("Reasoning-only clean stop")]
     assert len(hits) == 1
     assert hits[0].levelno == logging.WARNING
-    assert f"model={loop_agent.model}" in hits[0].getMessage()
-    assert "provider=deepseek" in hits[0].getMessage()
-    assert "tool_turns=0" in hits[0].getMessage()
+    logged = hits[0].getMessage()
+    assert "ROUTE-MARKER-model" not in logged
+    assert "ROUTE-MARKER-provider" not in logged
+    assert "model=" not in logged and "provider=" not in logged
+    assert f"({len(REASONING)} chars)" in logged
+    assert "api_calls=1" in logged
+    assert "tool_turns=0" in logged
+
+
+def test_clean_stop_warning_never_writes_secret_bearing_strings(loop_agent, caplog):
+    """Exercises the owning phase directly: reasoning content, route values, row
+    identifiers, and credentials must never reach the record — only the promoted
+    length and the operation counts."""
+    from types import SimpleNamespace
+
+    from agent.turn_empty_response import promote_reasoning_only_clean_stop
+
+    fake_reasoning = "SECRET-MARKER-reasoning-NOT-FOR-LOGS"
+    loop_agent.model = "SECRET-MARKER-model"
+    loop_agent.provider = "SECRET-MARKER-provider"
+    message = SimpleNamespace(content="", reasoning=fake_reasoning, tool_calls=None)
+    history = [
+        {"role": "assistant", "tool_calls": [{"id": "RAW-ID-marker-call"}]},
+        {"role": "user", "content": "go"},
+    ]
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+        promoted = promote_reasoning_only_clean_stop(
+            loop_agent, message, "stop", content=message.content,
+            api_call_count=3, messages=history,
+        )
+
+    assert promoted == fake_reasoning  # returned to the caller, not logged
+    hits = [r for r in caplog.records if r.getMessage().startswith("Reasoning-only clean stop")]
+    assert len(hits) == 1 and hits[0].levelno == logging.WARNING
+    logged = hits[0].getMessage()
+    for forbidden in (fake_reasoning, "SECRET-MARKER-model", "SECRET-MARKER-provider",
+                      "RAW-ID-marker-call", "test-key-1234567890", "session="):
+        assert forbidden not in logged, forbidden
+    assert f"({len(fake_reasoning)} chars)" in logged
+    assert "api_calls=3" in logged
+    assert "tool_turns=1" in logged
 
 
 # ── planning-monologue stall: promoted reasoning must not fake a completion ──────────────────
