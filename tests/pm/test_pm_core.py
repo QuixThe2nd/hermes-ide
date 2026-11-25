@@ -674,25 +674,33 @@ def test_check_reports_venv_drift_and_missing_tools(venv_env):
     assert "faketool: not installed or outdated" in problems
 
 
-def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):
+def test_bundle_package_names_track_the_shipped_lock():
+    """07dfc63666d removed the browser payload: no chromium pin ships, so
+    the bundle (derived from the shipped lock, not a fake) carries no
+    browsers — while python/ripgrep/node/npm ship and internal uv rides
+    along via the explicit whitelist. Every pin resolves in the registry."""
     from pm.cli import _bundle_package_names
-    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
+    from pm.registry import get_package
 
-    lock = Lockfile(tmp_path / "lock.json")
-    for name in ("uv", "python", "ripgrep", "chromium", "chromium-headless-shell", "node", "npm"):
-        lock.set_pin(name, "1", {"any": {"url": "x", "sha256": "0" * 64}})
-    lock.save()
-    monkeypatch.setattr("pm.cli._lockfile", lambda: lock)
     names = _bundle_package_names()
-    # Browsers ship in every payload; nothing is excluded from the bundle.
-    assert "chromium" in names
-    assert "chromium-headless-shell" in names
+    # Browsers are absent from the shipped lock and hence the bundle.
+    assert "chromium" not in names
+    assert "chromium-headless-shell" not in names
+    # The shipped runtime tools remain.
     assert "python" in names
     assert "ripgrep" in names
     # node/npm are shipped runtime tools (TUI, plugins), not install
-    # machinery; only uv remains internal.
+    # machinery; only uv remains internal — and it still ships.
     assert "node" in names
     assert "npm" in names
+    assert "uv" in names
+    # The bundle never regresses behind a stale registry: every name it
+    # returns is a lock pin that resolves to a registered package.
+    shipped = Lockfile(lockfile_path()).names()
+    assert set(names) <= set(shipped) | {"python"}
+    for name in shipped:
+        get_package(name)  # KeyError here = lock/registry drift
 
 
 def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
