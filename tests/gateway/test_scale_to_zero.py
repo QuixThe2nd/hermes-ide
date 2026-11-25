@@ -76,7 +76,7 @@ def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkey
     runner = object.__new__(GatewayShutdownMixin)
     runner.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
     runner.adapters = {Platform.RELAY: object()}
-    runner._profile_adapters = {"imessage": {Platform("photon"): object()}}
+    runner._profile_adapters = {"discord": {Platform.DISCORD: object()}}
 
     assert runner._scale_to_zero_should_arm() is False
 
@@ -84,7 +84,7 @@ def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkey
     # _profile_failed_platforms (retryable fatal); it is still served and must
     # keep the process awake or the reconnect can never complete.
     runner._profile_adapters = {}
-    runner._profile_failed_platforms = {"imessage": {Platform("photon"): object()}}
+    runner._profile_failed_platforms = {"discord": {Platform.DISCORD: object()}}
 
     assert runner._scale_to_zero_should_arm() is False
 
@@ -144,7 +144,7 @@ def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
             pass
 
     hot_added = Runner()
-    hot_added._profile_adapters = {"imessage": {Platform("photon"): object()}}
+    hot_added._profile_adapters = {"discord": {Platform.DISCORD: object()}}
     asyncio.run(one_tick(hot_added))
     assert hot_added.adapters[Platform.RELAY].calls == []
 
