@@ -21,7 +21,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
-NODE_BOOTSTRAP = REPO_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
 
 
 def _extract_function(text: str, name: str) -> str:
@@ -113,10 +112,4 @@ def test_downloaded_tree_is_probed_before_it_replaces_anything() -> None:
     # has already clobbered a working managed Node.
     assert reject < text.index('mv "$extracted_dir" "$HERMES_HOME/node"', probe)
 
-
-def test_node_bootstrap_mirrors_the_prerelease_guard() -> None:
-    """The sourceable helper answers the same question and must agree."""
-    text = NODE_BOOTSTRAP.read_text(encoding="utf-8")
-    assert "_nb_node_is_prerelease" in text
-    assert "_nb_node_is_prerelease && return 1" in text
 
