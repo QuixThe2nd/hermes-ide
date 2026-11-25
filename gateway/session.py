@@ -10,6 +10,7 @@ Handles:
 
 import asyncio
 import logging
+import math
 import os
 import json
 import threading
@@ -1531,7 +1532,9 @@ class SessionStore(SessionTranscriptMixin):
         if not isinstance(row, dict) or not row.get("id"):
             return None
         started_at = row.get("started_at")
-        if not_after is not None and started_at is not None and float(started_at) > float(not_after):
+        # ``ts`` is ``int(time.time())`` while ``started_at`` is a REAL, so compare whole seconds:
+        # a row minted in the same second as the flush is still a valid origin.
+        if not_after is not None and started_at is not None and math.floor(float(started_at)) > int(not_after):
             return None
         return str(row["id"]), db
 
