@@ -1,61 +1,61 @@
 """Destructive CLI session slashes run immediately — no confirm modal.
 
-``/new``, ``/reset``, and the old skip-token spellings (``/reset now``,
-``/new --yes ...``) call ``new_session`` without consulting the modal.
-Skip tokens are ordinary title text now; there is no confirm to bypass.
+/new calls new_session without consulting any confirmation modal; its old
+skip-token spellings are ordinary title text now. /reset (the retired alias of
+/new, e5b347e4989) is no longer a session command at all: real process_command
+dispatch must leave the session untouched and report the unknown command
+instead of mutating anything.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from unittest.mock import patch
 
 from cli import HermesCLI
 
 
-def _make_cli_stub():
-    new_session_calls = []
-    modal_calls = []
-
-    def _capture_new_session(title=None, silent=False):
-        new_session_calls.append({"title": title, "silent": silent})
+def _make_cli():
+    """A real HermesCLI (no __init__ side effects) with a live session to observe."""
+    c = HermesCLI.__new__(HermesCLI)
+    c.config = {}
+    c.session_id = "stub-session"
+    c.conversation_history = [{"role": "user", "content": "hello"}]
 
     def _record_modal(**kw):
-        modal_calls.append(kw)
         raise AssertionError("destructive slash must not open a confirm modal")
 
-    self_ = SimpleNamespace(
-        _app=None,
-        _prompt_text_input_modal=_record_modal,
-        new_session=_capture_new_session,
-        console=SimpleNamespace(clear=lambda: None),
-        compact=False,
-        model="stub-model",
-        session_id="stub-session",
-        enabled_toolsets=[],
-        _pending_title=None,
-        _session_db=None,
-    )
-    self_._slash_handler = HermesCLI._slash_handler
-    self_._cmd_new = HermesCLI._cmd_new.__get__(self_, type(self_))
-    self_.process_command = HermesCLI.process_command.__get__(self_, type(self_))
-    return self_, new_session_calls, modal_calls
+    c._prompt_text_input_modal = _record_modal
+    return c
 
 
-def test_new_and_reset_run_without_confirm_modal():
-    self_, calls, modal_calls = _make_cli_stub()
-
+def test_confirm_machinery_stays_retired():
     assert not hasattr(HermesCLI, "_confirm_destructive_slash")
     assert not hasattr(HermesCLI, "_split_destructive_skip")
 
-    assert self_.process_command("/reset") is True
-    assert self_.process_command("/reset now") is True
-    assert self_.process_command("/new --yes My Session") is True
-    assert self_.process_command("/new My Session") is True
 
-    assert modal_calls == []
-    assert [c["title"] for c in calls] == [
+def test_new_runs_without_confirm_modal():
+    c = _make_cli()
+    with patch.object(HermesCLI, "new_session") as new_session:
+        assert c.process_command("/new") is True
+        assert c.process_command("/new My Session") is True
+        assert c.process_command("/new --yes My Session") is True
+    # Skip tokens are ordinary title text now; there is no confirm to bypass.
+    assert [call.kwargs["title"] for call in new_session.call_args_list] == [
         None,
-        "now",
-        "--yes My Session",
         "My Session",
+        "--yes My Session",
     ]
+
+
+def test_retired_reset_leaves_session_untouched():
+    """/reset no longer resolves to a handler, so dispatch falls through the
+    unregistered path: new_session is never called and the live session (id +
+    history) is exactly what it was. The unknown-command notice is printed,
+    not swallowed."""
+    c = _make_cli()
+    with patch.object(HermesCLI, "new_session") as new_session:
+        assert c.process_command("/reset") is True
+        assert c.process_command("/reset now") is True
+    new_session.assert_not_called()
+    assert c.session_id == "stub-session"
+    assert c.conversation_history == [{"role": "user", "content": "hello"}]
