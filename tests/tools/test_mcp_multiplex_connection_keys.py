@@ -39,7 +39,7 @@ def two_profiles(tmp_path, monkeypatch):
                "_server_connect_errors", "_server_connect_retry_after", "_server_connect_failures",
                "_server_error_counts", "_server_breaker_opened_at", "_lazy_server_configs",
                "_mcp_tool_server_names", "_orphaned_adopters", "_parallel_safe_servers",
-               "_server_trust_levels", "_tool_read_only_hints")
+               "_tool_read_only_hints")
     saved = {n: type(getattr(core, n))(getattr(core, n)) for n in ledgers}
     for n in ledgers:
         getattr(core, n).clear()
