@@ -33,18 +33,36 @@ def caller_killed_service_cgroup() -> Optional[str]:
     return path if path.endswith(".service") else None
 
 
+def _user_bus_env() -> Optional[dict]:
+    try:
+        from tools.process_registry import systemd_user_bus_env
+    except Exception:
+        return None
+    return systemd_user_bus_env()
+
+
 def _systemctl_show(unit: str, prop: str) -> str:
+    # ``systemctl show`` exits 0 with default values (ActiveState=inactive) for a unit the
+    # manager has never heard of, so the system manager would mask a user-manager unit.
+    # Skip a manager whose LoadState is not-found.
     for prefix in ([], ["--user"]):
         try:
             result = subprocess.run(
-                ["systemctl", *prefix, "show", unit, "-p", prop, "--value"],
+                ["systemctl", *prefix, "show", unit, "-p", "LoadState", "-p", prop],
                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
-                encoding="utf-8", errors="replace",
+                encoding="utf-8", errors="replace", env=_user_bus_env() if prefix else None,
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
-        value = (result.stdout or "").strip()
-        if result.returncode == 0 and value:
+        if result.returncode != 0:
+            continue
+        values = dict(
+            line.split("=", 1) for line in (result.stdout or "").splitlines() if "=" in line
+        )
+        if values.get("LoadState", "").strip() == "not-found":
+            continue
+        value = values.get(prop, "").strip()
+        if value:
             return value
     return ""
 
@@ -60,6 +78,31 @@ def active_service_main_pid(unit: str) -> Optional[int]:
     return pid or None
 
 
+def _start_transient_service(cmd: list[str]) -> None:
+    """Run a ``systemd-run`` transient-service argv on the system manager, then the user manager.
+
+    A system-level gateway (``User=`` unit) may start a system transient service; a gateway that
+    runs as a *user* service is refused by polkit ("Access denied") on the system manager, which
+    made every detached harness die in 0s. A user-manager transient service is still outside the
+    gateway service cgroup, so it survives a gateway unit stop just the same.
+    """
+    def _run(argv: list[str], env: Optional[Mapping[str, str]] = None) -> None:
+        subprocess.run(argv, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=30, env=env)
+
+    try:
+        _run(cmd)
+        return
+    except subprocess.CalledProcessError as system_exc:
+        first_error = system_exc
+
+    user_cmd = [cmd[0], "--user", *cmd[1:]]
+    try:
+        _run(user_cmd, _user_bus_env())
+    except subprocess.CalledProcessError:
+        raise first_error from None
+
+
 def launch_detached_service(
     argv: list[str],
     *,
@@ -69,7 +112,7 @@ def launch_detached_service(
     stderr_path: Path,
     unit: Optional[str] = None,
 ) -> dict:
-    """Start argv in its own system service. The returned pid is not in the caller cgroup."""
+    """Start argv in its own transient service (system manager, else user manager). The returned pid is not in the caller cgroup."""
     unit_name = unit or f"hermes-harness-{uuid.uuid4().hex[:12]}.service"
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path.write_text("", encoding="utf-8")
@@ -104,8 +147,7 @@ def launch_detached_service(
         cmd.append(f"--setenv={key}={value}")
     cmd.append("--")
     cmd.extend(str(part) for part in argv)
-    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                   timeout=30)
+    _start_transient_service(cmd)
     deadline = time.time() + 15
     pid = None
     while time.time() < deadline:
@@ -116,6 +158,11 @@ def launch_detached_service(
         if state in ("inactive", "failed"):
             raw = _systemctl_show(unit_name, "ExecMainPID") or "0"
             pid = int(raw) if raw.isdigit() and int(raw) else None
+            break
+        if state == "":
+            # systemd-run returned, so the unit was started; unknown to every manager now
+            # means --collect already reaped a fast exit.
+            state = "inactive"
             break
         time.sleep(0.1)
     else:
@@ -150,7 +197,9 @@ def wait_service(unit: str, timeout_seconds: int = 0) -> int:
         if state == "" and (time.monotonic() - started) > 2:
             return 0
         if timeout_seconds and (time.monotonic() - started) > timeout_seconds:
-            subprocess.run(["systemctl", "stop", unit], check=False, timeout=20, stdin=subprocess.DEVNULL)
+            from tools.process_registry import _stop_systemd_unit
+
+            _stop_systemd_unit(unit)
             raise subprocess.TimeoutExpired(unit, timeout_seconds)
         time.sleep(0.5)
 
