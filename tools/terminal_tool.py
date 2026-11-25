@@ -1086,18 +1086,6 @@ def _session_isolation_enabled() -> bool:
     return _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
 
 
-def _current_session_profile() -> str:
-    """Return the active session's Hermes profile name, or "" when unset.
-
-    Same lookup discipline as :func:`_current_session_key`: the ContextVar
-    (bound per message by the gateway, per session by the WebUI streaming
-    layer) with the ``get_session_env`` os.environ fallback for CLI, cron,
-    and test processes.
-    """
-    from gateway.session_context import get_session_env
-
-    return get_session_env("HERMES_SESSION_PROFILE", "")
-
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({"image", "env_type"})
 
