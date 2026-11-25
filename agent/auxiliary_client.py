@@ -3322,6 +3322,15 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     return False
 
 
+class _SameProviderReplanError(RuntimeError):
+    """Rebuilding ``(client, kwargs)`` for a same-provider retry failed.
+
+    Subclasses RuntimeError so ladder consumers keep the historical error shape;
+    the in-loop transient retry catches it to surface the ORIGINAL transient error
+    — a rebuild failure is not a new transport fact about the provider.
+    """
+
+
 def _prepare_same_provider_retry(
     *, task: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
@@ -3344,7 +3353,7 @@ def _prepare_same_provider_retry(
         )
         effective_provider = _effective_provider_for_client(retry_client, resolved_provider)
     if retry_client is None:
-        raise RuntimeError(
+        raise _SameProviderReplanError(
             f"Auxiliary {task or 'call'}: provider {resolved_provider} could not be rebuilt after recovery"
         )
     retry_base = str(getattr(retry_client, "base_url", "") or "")
@@ -7454,7 +7463,16 @@ def _call_llm_impl(
                             task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
                 time.sleep(_backoff)
                 try:
-                    return _primary()
+                    # Re-resolve the client through the ladder's retry preparation: the transient
+                    # failure (e.g. the 60s no-progress guard) may have closed AND evicted the
+                    # planned client, so re-sending on the captured one fails fast with
+                    # "Connection error." A failed rebuild surfaces the ORIGINAL transient error.
+                    return _retry_same_provider_sync(
+                        **retry_kwargs,
+                        resolved_provider=req.resolved_provider,
+                        resolved_model=req.resolved_model)
+                except _SameProviderReplanError:
+                    raise _last_transient
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise
@@ -7606,7 +7624,16 @@ async def _async_call_llm_impl(
                 raise
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)
-            return await _primary()
+            try:
+                # Same re-resolution as the sync loop: the no-progress guard may have closed
+                # AND evicted the planned client, so retry on a freshly resolved one; a failed
+                # rebuild surfaces the ORIGINAL transient error.
+                return await _retry_same_provider_async(
+                    **retry_kwargs,
+                    resolved_provider=req.resolved_provider,
+                    resolved_model=req.resolved_model)
+            except _SameProviderReplanError:
+                raise transient_err
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
