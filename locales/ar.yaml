@@ -50,7 +50,7 @@ gateway:
     estimated:             "Estimated context: ~{count} tokens across {messages} messages"
     detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
     no_data:               "No context data available yet. Send a message to start a session."
-  draining:         "⏳ جارٍ طلب إيقاف مؤقت لـ {count} وكيل نشط ثم إعادة التشغيل..."
+  draining:         "♻ جارٍ إعادة تشغيل البوابة..."
   goal_cleared:     "✓ تم مسح الهدف."
   no_active_goal:   "لا يوجد هدف نشط."
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"
@@ -169,9 +169,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ العنوان فارغ بعد التنظيف — بدأت الجلسة دون عنوان."
     tip:                   "\n✦ نصيحة: {tip}"
 
+  incognito:
+    status_on:             "🕵️ هذه الجلسة في وضع التخفي: استدعاء الذاكرة الخارجية، والجلب المسبق في قائمة الانتظار، والاحتفاظ بالأدوار المكتملة، والتعبئة غير المحدودة للسجل — كلها معطَّلة."
+    status_off:            "هذه الجلسة ليست في وضع التخفي. استخدم /incognito لبدء جلسة تخفٍّ جديدة."
+    note:                  "🕵️ جلسة تخفٍّ: لا ذاكرة خارجية ولا سجل سابق. يبدأ /new جلسة عادية."
+    write_failed:          "⚠️ بدأت جلسة جديدة، لكن تعذّر حفظ علامة التخفي — هذه الجلسة ليست في وضع التخفي. حاول مرة أخرى."
+
   restart:
     in_progress:           "⏳ إعادة تشغيل البوابة قيد التنفيذ بالفعل..."
     restarting:            "♻ جارٍ إعادة تشغيل البوابة. إن لم تُخطَر خلال 60 ثانية، أعِد التشغيل من وحدة التحكّم باستخدام `hermes gateway restart`."
+    forwarded:            "♻ أُعيد توجيه إعادة تشغيل البوابة إلى أحدث جيل (PID {pid})..."
 
   resume:
     db_unavailable:        "قاعدة بيانات الجلسات غير متاحة."
@@ -233,6 +240,14 @@ gateway:
 لا تُستبدل قنوات الإشعارات الموجودة أبدًا.
 تعمل إعادة المزامنة تلقائيًا مرة واحدة في الساعة على الأكثر."
 
+  set_notify:
+    save_failed:           "تعذّر حفظ قناة الإشعارات: {error}"
+    success:               "✅ ضُبطت إشعارات دورة حياة البوابة على **{name}** (المعرّف: {chat_id}).\nستُسلَّم إعلانات إيقاف/تشغيل البوابة هنا."
+
+  clear_notify:
+    failed:                "تعذّر مسح قناة الإشعارات: {error}"
+    success:               "✅ مُسحت قناة الإشعارات.\nتُتخطى إعلانات دورة حياة البوابة حتى يُضبط قناة إشعارات."
+
   status:
     header:                "📊 **حالة بوابة Hermes**"
     matrix_scope_header:   "**نطاق Matrix:**"
@@ -291,6 +306,8 @@ gateway:
     mode_all:              "⚙️ تقدّم الأدوات: **ALL** — يُعرض كل استدعاء أداة (طول المعاينة: `display.tool_preview_length`، افتراضي 40)."
     mode_verbose:          "⚙️ تقدّم الأدوات: **VERBOSE** — كل استدعاء أداة مع وسائطه الكاملة."
     mode_log:              "⚙️ تقدّم الأدوات: **LOG** — صامت في المحادثة؛ تُكتب استدعاءات الأدوات إلى ~/.hermes/logs/tool_calls.log."
+    mode_compact:          "⚙️ تقدّم الأدوات: **COMPACT** — سطر واحد لكل أداة: `name({full JSON args})`."
+    mode_describe:         "⚙️ تقدّم الأدوات: **DESCRIBE** — سطر قصير واحد يوضّح الغرض من كل استدعاء أداة بدلًا من الأمر/الكود الخام."
     saved_suffix:          "_(حُفظ لـ **{platform}** — يسري على الرسالة التالية)_"
     save_failed:           "_(تعذّر الحفظ في الإعدادات: {error})_"
 

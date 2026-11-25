@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 設定の保存に失敗)\n_(次のメッセージから有効)_"
     set_session:               "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 永続化するには `--global` を追加)\n_(次のメッセージから有効)_"
 
-  draining:         "⏳ {count} 個のアクティブエージェントに一時停止を依頼してから再起動します..."
+  draining:         "♻ ゲートウェイを再起動しています..."
   goal_cleared:     "✓ 目標をクリアしました。"
   no_active_goal:   "アクティブな目標はありません。"
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ クリーンアップ後にタイトルが空になりました — タイトルなしでセッションを開始しました。"
     tip:                   "\n✦ ヒント: {tip}"
 
+  incognito:
+    status_on:             "🕵️ このセッションはシークレットです：外部メモリの参照、キューに入ったプリフェッチ、完了ターンの保持、無制限の履歴バックフィルはすべて抑制されています。"
+    status_off:            "このセッションはシークレットではありません。/incognito で新しいシークレットセッションを開始できます。"
+    note:                  "🕵️ シークレットセッション：外部メモリなし、過去の履歴なし。/new で通常のセッションを開始します。"
+    write_failed:          "⚠️ 新しいセッションを開始しましたが、シークレットフラグを保存できませんでした — このセッションはシークレットではありません。もう一度お試しください。"
+
   restart:
     in_progress:           "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
+    forwarded:            "♻ ゲートウェイの再起動を最新の世代へ転送しました (PID {pid})..."
 
   resume:
     db_unavailable:        "セッションデータベースは利用できません。"
@@ -212,6 +219,15 @@ Future messages in this room will use that transcript until `/reset` or another 
 **有効なモジュール:** {modules_count}/5
 既存の通知チャンネルは上書きされません。
 再同期は最大で1時間に1回自動実行されます。"
+
+  set_notify:
+    save_failed:           "通知チャンネルを保存できませんでした: {error}"
+    success:               "✅ ゲートウェイのライフサイクル通知を **{name}** に設定しました (ID: {chat_id})。\nゲートウェイの停止/起動の通知はここに配信されます。"
+
+  clear_notify:
+    failed:                "通知チャンネルを解除できませんでした: {error}"
+    success:               "✅ 通知チャンネルを解除しました。\n通知チャンネルが設定されるまで、ゲートウェイのライフサイクル通知はスキップされます。"
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_all:              "⚙️ ツール進捗: **ALL** — すべてのツール呼び出しを表示 (プレビュー長: `display.tool_preview_length`、デフォルト 40)。"
     mode_verbose:          "⚙️ ツール進捗: **VERBOSE** — すべてのツール呼び出しを完全な引数とともに表示。"
     mode_log:              "⚙️ ツール進捗: **LOG** — チャットには表示せず、ツール呼び出しを ~/.hermes/logs/tool_calls.log に記録します。"
+    mode_compact:          "⚙️ ツール進捗: **COMPACT** — ツールごとに 1 行: `name({full JSON args})`。"
+    mode_describe:         "⚙️ ツール進捗: **DESCRIBE** — 生のコマンド/コードの代わりに、各ツール呼び出しの目的を短い 1 行で示します。"
     saved_suffix:          "_(**{platform}** に保存しました — 次のメッセージから有効)_"
     save_failed:           "_(設定に保存できませんでした: {error})_"
 
