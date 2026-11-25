@@ -95,6 +95,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RESET_END_REASONS_SQL,
     _RESET_CHILD_SQL,
     _sql_json_extract,
+    _placeholders,
     _legacy_reset_child_sql,
     _shape_preview,
     _sql_session_last_active,
@@ -154,7 +155,9 @@ from hermes_state_repair import (
 from hermes_state_search import SessionSearchMixin
 from hermes_state_messages import (
     SessionMessagesMixin,
+    _DISPLAY_ACTIVE_CLAUSE,
     _INSERT_MESSAGE_SQL,
+    _SET_DISPLAY_META_SQL,
     _coerce_timestamp,
 )
 from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause, classify_session_status, workspace_key
@@ -11814,27 +11817,31 @@ class SessionDB(
         Powers the cache-safe model-context path: reactions are announced on the
         NEXT user turn (never by rewriting the message that was reacted to), and
         the ``seen`` stamp guarantees each one is announced exactly once.
+        Scans the whole resume lineage so a reaction on a compacted-away
+        ancestor row still surfaces in the continuation; includes
+        compaction-archived history that remains visible, but never
+        rewound/superseded rows.
         """
         if not session_id:
             return []
+        lineage = self._resume_lineage_ids(session_id)
 
         def _do(conn):
-            rows = conn.execute(
-                "SELECT id, role, content, display_metadata FROM messages "
-                "WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL "
-                "ORDER BY id",
-                (session_id,),
-            ).fetchall()
-
             pending = []
-            for row in rows:
+            # Only reaction-bearing rows cross into Python: display_metadata also
+            # carries delivery / attachment markers on most rows, and the lineage
+            # scan grows with the session's age.
+            for row in conn.execute(
+                "SELECT id, role, content, display_metadata FROM messages "
+                f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+                f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
+                "ORDER BY id",
+                tuple(lineage),
+            ).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
-                if not meta:
-                    continue
-                reactions = meta.get(self.REACTIONS_METADATA_KEY)
+                reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):
                     continue
-
                 changed = False
                 for reaction in reactions:
                     if (
@@ -11854,13 +11861,11 @@ class SessionDB(
                             "text": content if isinstance(content, str) else "",
                         }
                     )
-
                 if changed:
                     conn.execute(
-                        "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                        _SET_DISPLAY_META_SQL,
                         (self._encode_display_metadata(meta), row["id"]),
                     )
-
             return pending
 
         return self._execute_write(_do) or []
