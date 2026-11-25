@@ -212,8 +212,7 @@ class TestStatusBarSegment:
             "idle_since": "",
         }
 
-        with patch.object(HermesCLI, "_get_status_bar_snapshot", return_value=snapshot), \
-             patch.object(HermesCLI, "_is_session_yolo_active", return_value=False):
+        with patch.object(HermesCLI, "_get_status_bar_snapshot", return_value=snapshot):
             text = HermesCLI._build_status_bar_text(host, width=width)
 
         assert "focus" in text
