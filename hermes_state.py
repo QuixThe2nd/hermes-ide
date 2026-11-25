@@ -10156,46 +10156,15 @@ class SessionDB(
         flipped as a unit, so pinning the surfaced tip protects the root (and
         vice-versa) no matter which id the caller holds. Returns True when at
         least one row changed.
+
+        Pinning also clears ``hidden`` across the lineage: a pin means "keep
+        this visible", and a hidden+pinned row is otherwise absent from both
+        the default listing and the pinned back-fill (#106171).
         """
-        def _do(conn):
-            cursor = conn.execute(
-                """
-                WITH RECURSIVE
-                  ancestors(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  descendants(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT child.id
-                    FROM descendants d
-                    JOIN sessions parent ON parent.id = d.id
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  lineage(id) AS (
-                    SELECT id FROM ancestors
-                    UNION
-                    SELECT id FROM descendants
-                  )
-                UPDATE sessions
-                SET pinned = ?
-                WHERE id IN (SELECT id FROM lineage)
-                """,
-                (session_id, session_id, 1 if pinned else 0),
-            )
-            rowcount = cursor.rowcount
-            if rowcount is None or rowcount < 0:
-                rowcount = conn.execute("SELECT changes()").fetchone()[0]
-            return rowcount
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+        result = self._set_lineage_column("pinned", session_id, int(pinned))
+        if pinned:
+            self._set_lineage_column("hidden", session_id, 0)
+        return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide or unhide a session (and its whole compression lineage).
