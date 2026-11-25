@@ -27,7 +27,8 @@ class HermesOverlay:
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
-    "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
+    "openrouter": HermesOverlay(is_aggregator=True, extra_env_vars=("OPENROUTER_API_KEY",),
+                                base_url_env_var="OPENROUTER_BASE_URL"),
     "openai-codex": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
                                   base_url_override="https://chatgpt.com/backend-api/codex"),
     "openai-api": HermesOverlay(transport="codex_responses", base_url_override="https://api.openai.com/v1",
@@ -59,7 +60,8 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "opencode-go": HermesOverlay(is_aggregator=True, base_url_env_var="OPENCODE_GO_BASE_URL"),
     "kilo": HermesOverlay(is_aggregator=True, base_url_env_var="KILOCODE_BASE_URL"),
     "huggingface": HermesOverlay(is_aggregator=True, base_url_env_var="HF_BASE_URL"),
-    "novita": HermesOverlay(is_aggregator=True, base_url_env_var="NOVITA_BASE_URL"),
+    "novita": HermesOverlay(is_aggregator=True, extra_env_vars=("NOVITA_API_KEY",),
+                            base_url_env_var="NOVITA_BASE_URL"),
     "xai": HermesOverlay(transport="codex_responses", base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
     "nvidia": HermesOverlay(base_url_override="https://integrate.api.nvidia.com/v1", base_url_env_var="NVIDIA_BASE_URL"),
     "xiaomi": HermesOverlay(base_url_env_var="XIAOMI_BASE_URL"),
