@@ -88,7 +88,7 @@ from agent.turn_preflight_gate import run_preflight_gate
 from agent.turn_request_assembly import (
     assemble_api_request, _send_copy_with_delegation_runtime_note,
 )
-from agent.turn_response_check import check_api_response
+from agent.turn_response_check import _derive_finish_reason, check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_timing import reset_turn_phase_times, timed_setup_exclusive
 from agent.turn_tool_round import run_tool_round
@@ -3657,30 +3657,12 @@ def _run_conversation_inlined(
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
-                    status = getattr(response, "status", None)
-                    if isinstance(status, str):
-                        status = status.strip().lower()
-                    incomplete_details = getattr(response, "incomplete_details", None)
-                    incomplete_reason = None
-                    if isinstance(incomplete_details, dict):
-                        incomplete_reason = incomplete_details.get("reason")
-                    else:
-                        incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if incomplete_reason is not None:
-                        incomplete_reason = str(incomplete_reason).strip().lower()
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        # Responses API max-output exhaustion is a normal
-                        # Codex incomplete turn.  Let the Codex-specific
-                        # continuation path below append the incomplete
-                        # assistant state and retry, instead of routing to
-                        # the generic chat-completions length rollback that
-                        # emits "Response truncated due to output length
-                        # limit" and stops gateway turns.
-                        finish_reason = "incomplete"
-                    elif status == "incomplete" and incomplete_reason == "content_filter":
-                        finish_reason = "content_filter"
-                    else:
-                        finish_reason = "stop"
+                    # Shared post-call owner (check_api_response calls the same
+                    # helper): derives status/incomplete_details and routes a
+                    # max_output_tokens-cut function_call to the length path
+                    # (#91770). chat-completions stays inline below because it
+                    # also binds assistant_message from its normalized result.
+                    finish_reason = _derive_finish_reason(agent, response, messages)
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
@@ -4165,8 +4147,11 @@ def _run_conversation_inlined(
                                 "partial": True,
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
-
-                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
+                    # codex_responses joins here via the #91770 finish_reason reroute
+                    # above: its truncated tool calls get the same bounded boosted
+                    # retry; text-only Codex truncation never reaches "length" and
+                    # stays on the Codex incomplete continuation.
+                    if agent.api_mode in {"chat_completions", "anthropic_messages", "codex_responses"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
