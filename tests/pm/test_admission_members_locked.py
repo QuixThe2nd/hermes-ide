@@ -13,6 +13,12 @@ def test_admission_reads_other_profiles_after_taking_lock(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     repo = tmp_path / "repo"
     repo.mkdir()
+    # sync_venv intersects the enabled extras with the repo's declared
+    # extras (pm.features.declared_extras reads pyproject.toml) — a fake
+    # repo without one fails before admission's locking is ever observed.
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "fake-repo"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(ensure, "_facts", lambda: {})
