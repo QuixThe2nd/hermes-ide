@@ -557,12 +557,23 @@ def continue_codex_incomplete(
         if not interim_replayable or n >= 2:
             _last_msg = messages[-1] if messages else None
             if isinstance(_last_msg, dict):
+                # Structural, never content equality: a genuine user row can be
+                # byte-identical to the nudge text, so only the flag identifies the
+                # system-produced row. `_`-prefixed = transcript-private (wire
+                # transports strip it, SessionDB projection never persists it), the
+                # same convention as `_length_continuation_nudge`; the
+                # cross-protocol sanitizer drops rows keyed on it
+                # (agent_runtime_helpers.drop_thinking_only_and_merge_users).
                 _already_nudged = (
-                    _last_msg.get("role") == "user" and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
+                    _last_msg.get("role") == "user" and bool(_last_msg.get("_codex_incomplete_nudge"))
                 )
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
-                    append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+                    append_message(messages, {
+                        "role": "user",
+                        "content": _CODEX_INCOMPLETE_NUDGE,
+                        "_codex_incomplete_nudge": True,
+                    })
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
             agent._ephemeral_reasoning_off = True
             # No configured cap means the provider's own ceiling was hit: the observed
