@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）\n_（下一則訊息生效）_"
     set_session:               "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）\n_（下一則訊息生效）_"
 
-  draining:         "⏳ 正在請 {count} 個活躍代理暫停後重新啟動..."
+  draining:         "♻ 正在重新啟動閘道..."
   goal_cleared:     "✓ 目標已清除。"
   no_active_goal:   "目前沒有作用中的目標。"
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ 清理後標題為空 — 工作階段以未命名方式啟動。"
     tip:                   "\n✦ 提示：{tip}"
 
+  incognito:
+    status_on:             "🕵️ 本工作階段處於無痕模式：外部記憶召回、佇列預先擷取、已完成回合保留以及無限歷史回填皆已停用。"
+    status_off:            "本工作階段未處於無痕模式。使用 /incognito 開始新的無痕工作階段。"
+    note:                  "🕵️ 無痕工作階段：無外部記憶，無先前歷史。/new 會開始一般工作階段。"
+    write_failed:          "⚠️ 已開始新工作階段，但無法持久化無痕旗標 — 本工作階段並非無痕。請再試一次。"
+
   restart:
     in_progress:           "⏳ 閘道重新啟動已在進行中……"
     restarting:            "♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。"
+    forwarded:            "♻ 閘道重新啟動已轉送至最新世代 (PID {pid})..."
 
   resume:
     db_unavailable:        "工作階段資料庫無法使用。"
@@ -212,6 +219,15 @@ Future messages in this room will use that transcript until `/reset` or another 
 **已啟用模組：** {modules_count}/5
 絕不會覆寫現有通知頻道。
 重新同步最多每小時自動執行一次。"
+
+  set_notify:
+    save_failed:           "儲存通知頻道失敗：{error}"
+    success:               "✅ 閘道生命週期通知已設為 **{name}** (ID: {chat_id})。\n閘道關機/啟動廣播將傳送到這裡。"
+
+  clear_notify:
+    failed:                "清除通知頻道失敗：{error}"
+    success:               "✅ 已清除通知頻道。\n在設定通知頻道之前，將略過閘道生命週期廣播。"
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_all:              "⚙️ 工具進度：**ALL** — 顯示每次工具呼叫（預覽長度：`display.tool_preview_length`，預設 40）。"
     mode_verbose:          "⚙️ 工具進度：**VERBOSE** — 顯示每次工具呼叫及完整參數。"
     mode_log:              "⚙️ 工具進度：**LOG** — 聊天中保持靜默；工具呼叫寫入 ~/.hermes/logs/tool_calls.log。"
+    mode_compact:          "⚙️ 工具進度：**COMPACT** — 每個工具一行：`name({full JSON args})`。"
+    mode_describe:         "⚙️ 工具進度：**DESCRIBE** — 以一行簡短說明每次工具呼叫的目的，而非原始命令/程式碼。"
     saved_suffix:          "_（已為 **{platform}** 儲存 — 下一則訊息生效）_"
     save_failed:           "_（無法儲存到設定：{error}）_"
 

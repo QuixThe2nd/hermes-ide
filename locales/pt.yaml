@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — falha ao guardar a configuração)\n_(produz efeito na próxima mensagem)_"
     set_session:               "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — adiciona `--global` para persistir)\n_(produz efeito na próxima mensagem)_"
 
-  draining:         "⏳ A pedir a {count} agente(s) ativo(s) que pausem, depois reiniciar..."
+  draining:         "♻ A reiniciar o gateway..."
   goal_cleared:     "✓ Objetivo removido."
   no_active_goal:   "Não há objetivo ativo."
   config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ O título fica vazio após a limpeza — sessão iniciada sem título."
     tip:                   "\n✦ Dica: {tip}"
 
+  incognito:
+    status_on:             "🕵️ Esta sessão está incógnita: a recuperação de memória externa, o prefetch em fila, a retenção de turnos concluídos e o backfill ilimitado do histórico estão suprimidos."
+    status_off:            "Esta sessão não está incógnita. Usa /incognito para iniciar uma nova sessão incógnita."
+    note:                  "🕵️ Sessão incógnita: sem memória externa, sem histórico anterior. /new inicia uma sessão normal."
+    write_failed:          "⚠️ Foi iniciada uma nova sessão, mas não foi possível guardar a flag de incógnito — esta sessão NÃO está incógnita. Tenta novamente."
+
   restart:
     in_progress:           "⏳ O reinício do gateway já está em curso..."
     restarting:            "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."
+    forwarded:            "♻ Reinício do gateway reencaminhado para a geração mais recente (PID {pid})..."
 
   resume:
     db_unavailable:        "Base de dados de sessões indisponível."
@@ -212,6 +219,15 @@ Execute `/sethomeserver confirm` para movê-lo para a guild `{guild_id}`. Nada �
 **Módulos ativados:** {modules_count}/5
 Os canais de notificação existentes nunca são sobrescritos.
 A ressincronização roda automaticamente no máximo uma vez por hora."
+
+  set_notify:
+    save_failed:           "Falha ao guardar o canal de notificações: {error}"
+    success:               "✅ Notificações do ciclo de vida do gateway definidas para **{name}** (ID: {chat_id}).\nOs anúncios de encerramento/arranque do gateway serão entregues aqui."
+
+  clear_notify:
+    failed:                "Falha ao remover o canal de notificações: {error}"
+    success:               "✅ Canal de notificações removido.\nOs anúncios do ciclo de vida do gateway são ignorados até que seja definido um canal de notificações."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ A ressincronização roda automaticamente no máximo uma vez por hora."
     mode_all:              "⚙️ Progresso de ferramentas: **ALL** — cada chamada de ferramenta é mostrada (comprimento da pré-visualização: `display.tool_preview_length`, predefinição 40)."
     mode_verbose:          "⚙️ Progresso de ferramentas: **VERBOSE** — cada chamada de ferramenta com os argumentos completos."
     mode_log:              "⚙️ Progresso de ferramentas: **LOG** — silencioso no chat; as chamadas de ferramentas são gravadas em ~/.hermes/logs/tool_calls.log."
+    mode_compact:          "⚙️ Progresso de ferramentas: **COMPACT** — uma linha por ferramenta: `name({full JSON args})`."
+    mode_describe:         "⚙️ Progresso de ferramentas: **DESCRIBE** — uma linha curta que indica a finalidade de cada chamada de ferramenta, em vez do comando/código em bruto."
     saved_suffix:          "_(guardado para **{platform}** — produz efeito na próxima mensagem)_"
     save_failed:           "_(não foi possível guardar na configuração: {error})_"
 

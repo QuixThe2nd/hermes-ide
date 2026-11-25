@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 설정 저장 실패)\n_(다음 메시지부터 적용됩니다)_"
     set_session:               "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 영구 저장하려면 `--global` 추가)\n_(다음 메시지부터 적용됩니다)_"
 
-  draining:         "⏳ 활성 에이전트 {count}명에게 일시 중지를 요청한 뒤 재시작합니다..."
+  draining:         "♻ 게이트웨이를 재시작 중입니다..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."
   no_active_goal:   "활성 목표가 없습니다."
   config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
     tip:                   "\n✦ 팁: {tip}"
 
+  incognito:
+    status_on:             "🕵️ 이 세션은 시크릿 모드입니다: 외부 메모리 조회, 대기 중인 프리페치, 완료된 턴 보존, 무제한 기록 백필이 모두 억제됩니다."
+    status_off:            "이 세션은 시크릿 모드가 아닙니다. /incognito 로 새 시크릿 세션을 시작하세요."
+    note:                  "🕵️ 시크릿 세션: 외부 메모리 없음, 이전 기록 없음. /new 는 일반 세션을 시작합니다."
+    write_failed:          "⚠️ 새 세션을 시작했지만 시크릿 플래그를 저장하지 못했습니다 — 이 세션은 시크릿 모드가 아닙니다. 다시 시도해 주세요."
+
   restart:
     in_progress:           "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting:            "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
+    forwarded:            "♻ 게이트웨이 재시작이 최신 세대로 전달되었습니다 (PID {pid})..."
 
   resume:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
@@ -212,6 +219,15 @@ Future messages in this room will use that transcript until `/reset` or another 
 **활성화된 모듈:** {modules_count}/5
 기존 알림 채널은 절대 덮어쓰지 않습니다.
 재동기화는 자동으로 최대 1시간에 한 번 실행됩니다."
+
+  set_notify:
+    save_failed:           "알림 채널을 저장하지 못했습니다: {error}"
+    success:               "✅ 게이트웨이 수명 주기 알림이 **{name}** 으로 설정되었습니다 (ID: {chat_id}).\n게이트웨이 종료/시작 알림이 여기로 전달됩니다."
+
+  clear_notify:
+    failed:                "알림 채널을 해제하지 못했습니다: {error}"
+    success:               "✅ 알림 채널을 해제했습니다.\n알림 채널이 설정될 때까지 게이트웨이 수명 주기 알림은 건너뜁니다."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_all:              "⚙️ 도구 진행 상황: **ALL** — 모든 도구 호출이 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
     mode_verbose:          "⚙️ 도구 진행 상황: **VERBOSE** — 모든 도구 호출이 전체 인수와 함께 표시됩니다."
     mode_log:              "⚙️ 도구 진행 상황: **LOG** — 채팅에는 표시되지 않으며 도구 호출이 ~/.hermes/logs/tool_calls.log에 기록됩니다."
+    mode_compact:          "⚙️ 도구 진행 상황: **COMPACT** — 도구당 한 줄: `name({full JSON args})`."
+    mode_describe:         "⚙️ 도구 진행 상황: **DESCRIBE** — 원본 명령/코드 대신 각 도구 호출의 목적을 짧은 한 줄로 표시합니다."
     saved_suffix:          "_(**{platform}**에 저장됨 — 다음 메시지부터 적용됩니다)_"
     save_failed:           "_(설정에 저장할 수 없습니다: {error})_"
 

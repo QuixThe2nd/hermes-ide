@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — a konfiguráció mentése sikertelen)\n_(a következő üzenettől lép életbe)_"
     set_session:               "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — add hozzá a `--global` opciót a megőrzéshez)\n_(a következő üzenettől lép életbe)_"
 
-  draining:         "⏳ {count} aktív ügynököt kérünk, hogy álljon meg, majd újraindítás..."
+  draining:         "♻ Átjáró újraindítása..."
   goal_cleared:     "✓ A cél törölve."
   no_active_goal:   "Nincs aktív cél."
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ Tisztítás után a cím üres — a munkamenet cím nélkül indult."
     tip:                   "\n✦ Tipp: {tip}"
 
+  incognito:
+    status_on:             "🕵️ Ez a munkamenet inkognitó: a külső memória előhívása, a sorba állított előolvasás, a befejezett körök megőrzése és a korlátlan előzmény-visszatöltés le van tiltva."
+    status_off:            "Ez a munkamenet nem inkognitó. Használd az /incognito parancsot egy új inkognitó munkamenet indításához."
+    note:                  "🕵️ Inkognitó munkamenet: nincs külső memória, nincs korábbi előzmény. A /new normál munkamenetet indít."
+    write_failed:          "⚠️ Elindult egy új munkamenet, de az inkognitó jelzőt nem sikerült menteni — ez a munkamenet NEM inkognitó. Kérlek, próbáld újra."
+
   restart:
     in_progress:           "⏳ Az átjáró újraindítása már folyamatban van..."
     restarting:            "♻ Átjáró újraindítása. Ha 60 másodpercen belül nem kapsz értesítést, indítsd újra a konzolból a `hermes gateway restart` paranccsal."
+    forwarded:            "♻ Az átjáró újraindítása továbbítva a legújabb generációnak (PID: {pid})..."
 
   resume:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."
@@ -212,6 +219,15 @@ Futtasd a `/sethomeserver confirm` parancsot a(z) `{guild_id}` guildra való át
 **Engedélyezett modulok:** {modules_count}/5
 A meglévő értesítési csatornák soha nem íródnak felül.
 Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
+
+  set_notify:
+    save_failed:           "Nem sikerült menteni az értesítési csatornát: {error}"
+    success:               "✅ Az átjáró életciklus-értesítései beállítva: **{name}** (azonosító: {chat_id}).\nAz átjáró leállítási/indítási közleményei ide érkeznek."
+
+  clear_notify:
+    failed:                "Nem sikerült törölni az értesítési csatornát: {error}"
+    success:               "✅ Értesítési csatorna törölve.\nAz átjáró életciklus-közleményei kihagyódnak, amíg nincs értesítési csatorna beállítva."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Az újraszinkronizálás legfeljebb óránként egyszer fut automatikusan."
     mode_all:              "⚙️ Eszközfolyamat: **ALL** — minden eszközhívás megjelenik (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
     mode_verbose:          "⚙️ Eszközfolyamat: **VERBOSE** — minden eszközhívás teljes argumentumokkal."
     mode_log:              "⚙️ Eszközfolyamat: **LOG** — csendes a csevegésben; az eszközhívások a ~/.hermes/logs/tool_calls.log fájlba íródnak."
+    mode_compact:          "⚙️ Eszközfolyamat: **COMPACT** — eszközönként egy sor: `name({full JSON args})`."
+    mode_describe:         "⚙️ Eszközfolyamat: **DESCRIBE** — egy rövid sor, amely megmondja, mire való az egyes eszközhívások, a nyers parancs/kód helyett."
     saved_suffix:          "_(elmentve ehhez: **{platform}** — a következő üzenettől lép életbe)_"
     save_failed:           "_(nem sikerült menteni a konfigurációba: {error})_"
 

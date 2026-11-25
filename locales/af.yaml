@@ -27,7 +27,7 @@ gateway:
     set_global_save_failed:    "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — konfigurasie-stoor het misluk)\n_(neem effek by die volgende boodskap)_"
     set_session:               "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — voeg `--global` by om permanent te stoor)\n_(neem effek by die volgende boodskap)_"
 
-  draining:         "⏳ Vra {count} aktiewe agent(e) om te parkeer, dan herbegin..."
+  draining:         "♻ Herbegin van gateway..."
   goal_cleared:     "✓ Doelwit verwyder."
   no_active_goal:   "Geen aktiewe doelwit nie."
   config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
@@ -146,9 +146,16 @@ gateway:
     title_empty_untitled:  "\n⚠️ Titel is leeg na opruiming — sessie sonder titel begin."
     tip:                   "\n✦ Wenk: {tip}"
 
+  incognito:
+    status_on:             "🕵️ Hierdie sessie is inkognito: eksterne geheue-terugroep, wagry-prefetch, behoud van voltooide beurte en onbeperkte geskiedenis-terugvul word onderdruk."
+    status_off:            "Hierdie sessie is nie inkognito nie. Gebruik /incognito om 'n nuwe inkognito-sessie te begin."
+    note:                  "🕵️ Inkognito-sessie: geen eksterne geheue, geen vorige geskiedenis. /new begin 'n normale sessie."
+    write_failed:          "⚠️ 'n Nuwe sessie is begin, maar die inkognito-vlag kon nie gestoor word nie — hierdie sessie is NIE inkognito nie. Probeer asseblief weer."
+
   restart:
     in_progress:           "⏳ Gateway-herbegin reeds aan die gang..."
     restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
+    forwarded:            "♻ Gateway-herbegin is aan die nuutste generasie deurgegee (PID {pid})..."
 
   resume:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
@@ -212,6 +219,15 @@ Voer `/sethomeserver confirm` uit om dit na gild `{guild_id}` te skuif. Niks wor
 **Geaktiveerde modules:** {modules_count}/5
 Bestaande kennisgewingskanale word nooit oorskryf nie.
 Hersinchronisasie loop outomaties hoogstens een keer per uur."
+
+  set_notify:
+    save_failed:           "Kennisgewingskanaal kon nie gestoor word nie: {error}"
+    success:               "✅ Gateway-lewenssiklus-kennisgewings is op **{name}** gestel (ID: {chat_id}).\nGateway-afskakel/aanskakel-uitsendings sal hier afgelewer word."
+
+  clear_notify:
+    failed:                "Kennisgewingskanaal kon nie geskrap word nie: {error}"
+    success:               "✅ Kennisgewingskanaal geskrap.\nGateway-lewenssiklus-uitsendings word oorgeslaan totdat 'n kennisgewingskanaal gestel is."
+
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -289,6 +305,8 @@ Hersinchronisasie loop outomaties hoogstens een keer per uur."
     mode_all:              "⚙️ Gereedskap-vordering: **ALMAL** — elke gereedskaps-oproep vertoon (voorskoulengte: `display.tool_preview_length`, verstek 40)."
     mode_verbose:          "⚙️ Gereedskap-vordering: **OMSLAGTIG** — elke gereedskaps-oproep met volle argumente."
     mode_log:              "⚙️ Gereedskap-vordering: **LOG** — stil in die klets; gereedskaps-oproepe word na ~/.hermes/logs/tool_calls.log geskryf."
+    mode_compact:          "⚙️ Gereedskap-vordering: **KOMPAK** — een reël per gereedskap: `name({full JSON args})`."
+    mode_describe:         "⚙️ Gereedskap-vordering: **BESKRYF** — een kort reël wat sê waarvoor elke gereedskaps-oproep is, in plaas van die rou bevel/kode."
     saved_suffix:          "_(gestoor vir **{platform}** — neem effek by die volgende boodskap)_"
     save_failed:           "_(kon nie in konfigurasie stoor nie: {error})_"
 
