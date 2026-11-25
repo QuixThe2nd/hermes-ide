@@ -151,7 +151,7 @@ def test_openai_gpt55_pro_warns_even_without_pricing(monkeypatch):
     assert "did you mean to select openai/gpt-5.5?" in warning.message
 
 
-def test_openai_gpt55_pro_warns_for_nous_portal_pricing(monkeypatch):
+def test_openai_gpt55_pro_warns_with_endpoint_pricing(monkeypatch):
     monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",
@@ -165,7 +165,7 @@ def test_openai_gpt55_pro_warns_for_nous_portal_pricing(monkeypatch):
         },
     )
 
-    warning = expensive_model_warning("openai/gpt-5.5-pro", provider="nous")
+    warning = expensive_model_warning("openai/gpt-5.5-pro", provider="openrouter")
 
     assert warning is not None
     assert warning.input_cost_per_million == Decimal("25.000000")
