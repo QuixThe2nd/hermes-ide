@@ -647,101 +647,95 @@ install_uv() {
     if [ -x "$_managed_uv" ]; then
         UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "Managed uv found ($UV_VERSION)"
+        log_success "Managed uv found (preinstalled: $UV_VERSION)"
         return 0
     fi
 
-    # Upstream bootstrap-pins integration (pm store foundation): prefer the
-    # pm/lock.json-pinned uv artifact — sha256-verified, staged into the same
-    # pm store slot pm itself uses — over the astral curl installer. The
-    # GENERATED pin fragment above is drift-checked by the bootstrap CI lane;
-    # regenerate it with scripts/gen-bootstrap-pins.py, never edit by hand.
+    # Upstream bootstrap-pins integration (pm store foundation): install ONLY
+    # the pm/lock.json-pinned uv artifact — sha256-verified, staged into the
+    # same pm store slot pm itself uses — so pm adopts the exact same bytes.
+    # There is deliberately NO astral-latest fallback: astral's curl installer
+    # resolves "latest" at run time, and a hermes install must never run a uv
+    # nobody reviewed. Every failure below (unsupported target, download,
+    # digest mismatch, bad archive, dead binary) is fatal with a pointer at
+    # manual installation instead. The GENERATED pin fragment above is
+    # drift-checked by the bootstrap CI lane; regenerate it with
+    # scripts/gen-bootstrap-pins.py, never edit by hand.
     # Termux never reaches here (bypassed above): the pinned builds are glibc.
-    local _pin_target=""
-    if _pin_target="$(uv_bootstrap_target 2>/dev/null)" && [ -n "$_pin_target" ] && uv_bootstrap_pin "$_pin_target"; then
-        local _pin_store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
-        local _pin_entry="$_pin_store/uv-$UV_PIN_VERSION-$_pin_target"
-        if [ ! -x "$_pin_entry/uv" ]; then
-            log_info "Staging pinned uv $UV_PIN_VERSION ($_pin_target) into the pm store..."
-            local _pin_tmp
-            _pin_tmp="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-pin.$$.tmp")"
-            mkdir -p "$_pin_tmp"
-            if curl -LsSf "$UV_PIN_URL" -o "$_pin_tmp/uv.tar.gz"; then
-                local _digest
-                if command -v sha256sum >/dev/null 2>&1; then
-                    _digest="$(sha256sum "$_pin_tmp/uv.tar.gz" | cut -d' ' -f1)"
-                else
-                    _digest="$(shasum -a 256 "$_pin_tmp/uv.tar.gz" | cut -d' ' -f1)"
-                fi
-                if [ "$_digest" = "$UV_PIN_SHA256" ] && tar -xzf "$_pin_tmp/uv.tar.gz" -C "$_pin_tmp"; then
-                    local _unpacked
-                    _unpacked="$(find "$_pin_tmp" -mindepth 1 -maxdepth 2 -name uv -type f | head -n1)"
-                    if [ -n "$_unpacked" ]; then
-                        mkdir -p "$_pin_entry"
-                        mv "$_unpacked" "$_pin_entry/uv"
-                        [ -f "$(dirname "$_unpacked")/uvx" ] && mv "$(dirname "$_unpacked")/uvx" "$_pin_entry/uvx"
-                        chmod +x "$_pin_entry/uv" 2>/dev/null || true
-                        chmod +x "$_pin_entry/uvx" 2>/dev/null || true
-                    fi
-                fi
-            fi
-            rm -rf "$_pin_tmp"
-        fi
-        if [ -x "$_pin_entry/uv" ] && "$_pin_entry/uv" --version >/dev/null 2>&1; then
-            # Keep the fork's managed-uv contract ($HERMES_HOME/bin/uv, shared
-            # with hermes_cli/managed_uv.py) pointing at the pinned build.
-            mkdir -p "$HERMES_HOME/bin"
-            cp "$_pin_entry/uv" "$_managed_uv"
-            chmod +x "$_managed_uv"
-            UV_CMD="$_managed_uv"
-            UV_VERSION=$($UV_CMD --version 2>/dev/null)
-            log_success "Managed uv installed from pm-pinned artifact ($UV_VERSION)"
-            return 0
-        fi
-        log_warn "Pinned uv staging unavailable — falling back to the astral installer"
-    fi
-
-    log_info "Installing managed uv into $HERMES_HOME/bin ..."
-    mkdir -p "$HERMES_HOME/bin"
-
-    # Two-stage: download the installer, then run it.  Piping
-    # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
-    # and conflates network errors with installer errors.
-    local _uv_install_log _uv_installer
-    _uv_install_log="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-install.$$.log")"
-    _uv_installer="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-installer.$$.sh")"
-    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
-        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
-        log_info "curl output:"
-        sed 's/^/    /' "$_uv_install_log" >&2
-        log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
-        rm -f "$_uv_install_log" "$_uv_installer"
+    local _target=""
+    if ! _target="$(uv_bootstrap_target 2>/dev/null)" || [ -z "$_target" ] \
+            || ! uv_bootstrap_pin "$_target"; then
+        log_error "No pm-pinned uv build for this platform — refusing to install an unpinned uv"
+        log_info "Install uv manually and re-run: https://docs.astral.sh/uv/getting-started/installation/"
         exit 1
     fi
-    # UV_UNMANAGED_INSTALL tells the astral installer to place the binary
-    # directly into $HERMES_HOME/bin instead of ~/.local/bin.
-    if UV_UNMANAGED_INSTALL="$HERMES_HOME/bin" sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
-        rm -f "$_uv_installer"
-        if [ -x "$_managed_uv" ]; then
-            UV_CMD="$_managed_uv"
-        else
-            log_error "uv installer reported success but binary not found at $_managed_uv"
-            log_info "Installer output:"
-            sed 's/^/    /' "$_uv_install_log" >&2
-            rm -f "$_uv_install_log"
+
+    local _pin_store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
+    local _pin_entry="$_pin_store/uv-$UV_PIN_VERSION-$_target"
+    if [ -x "$_pin_entry/uv" ]; then
+        log_info "Adopting pinned uv $UV_PIN_VERSION ($_target) already staged in the pm store..."
+    else
+        log_info "Staging pinned uv $UV_PIN_VERSION ($_target) into the pm store..."
+        local _pin_tmp
+        _pin_tmp="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-pin.$$.tmp")"
+        mkdir -p "$_pin_tmp"
+        if ! curl -LsSf "$UV_PIN_URL" -o "$_pin_tmp/uv.tar.gz"; then
+            rm -rf "$_pin_tmp"
+            log_error "Failed to download the pinned uv artifact: $UV_PIN_URL"
+            log_info "Install uv manually and re-run: https://docs.astral.sh/uv/getting-started/installation/"
             exit 1
         fi
-        rm -f "$_uv_install_log"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "Managed uv installed ($UV_VERSION)"
-    else
-        log_error "Failed to install uv"
-        log_info "Installer output:"
-        sed 's/^/    /' "$_uv_install_log" >&2
-        log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
-        rm -f "$_uv_install_log" "$_uv_installer"
-        exit 1
+        # An unverified download is arbitrary code execution: the pm/lock.json
+        # digest MUST match before anything is unpacked or executed.
+        local _digest
+        if command -v sha256sum >/dev/null 2>&1; then
+            _digest="$(sha256sum "$_pin_tmp/uv.tar.gz" | cut -d' ' -f1)"
+        else
+            _digest="$(shasum -a 256 "$_pin_tmp/uv.tar.gz" | cut -d' ' -f1)"
+        fi
+        if [ "$_digest" != "$UV_PIN_SHA256" ]; then
+            rm -rf "$_pin_tmp"
+            log_error "Pinned uv download failed integrity check (sha256 digest mismatch)"
+            log_info "expected $UV_PIN_SHA256"
+            log_info "got      $_digest"
+            exit 1
+        fi
+        if ! tar -xzf "$_pin_tmp/uv.tar.gz" -C "$_pin_tmp"; then
+            rm -rf "$_pin_tmp"
+            log_error "Failed to extract the pinned uv archive"
+            exit 1
+        fi
+        local _unpacked
+        _unpacked="$(find "$_pin_tmp" -mindepth 1 -maxdepth 2 -name uv -type f 2>/dev/null | head -n1)"
+        if [ -z "$_unpacked" ]; then
+            rm -rf "$_pin_tmp"
+            log_error "Pinned uv archive contained no uv binary"
+            exit 1
+        fi
+        mkdir -p "$_pin_entry"
+        mv "$_unpacked" "$_pin_entry/uv"
+        if [ -f "$(dirname "$_unpacked")/uvx" ]; then
+            mv "$(dirname "$_unpacked")/uvx" "$_pin_entry/uvx"
+        fi
+        chmod +x "$_pin_entry/uv" 2>/dev/null || true
+        chmod +x "$_pin_entry/uvx" 2>/dev/null || true
+        rm -rf "$_pin_tmp"
     fi
+
+    if [ -x "$_pin_entry/uv" ] && "$_pin_entry/uv" --version >/dev/null 2>&1; then
+        # Keep the fork's managed-uv contract ($HERMES_HOME/bin/uv, shared
+        # with hermes_cli/managed_uv.py) pointing at the pinned build.
+        mkdir -p "$HERMES_HOME/bin"
+        cp "$_pin_entry/uv" "$_managed_uv"
+        chmod +x "$_managed_uv"
+        UV_CMD="$_managed_uv"
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        log_success "Managed uv installed from pm-pinned artifact ($UV_VERSION)"
+        return 0
+    fi
+    log_error "Pinned uv in the pm store failed its version probe ($_pin_entry/uv)"
+    log_info "Remove that directory and re-run to restage the pinned artifact."
+    exit 1
 }
 
 check_python() {
