@@ -93,7 +93,8 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RESET_CHILD_SQL,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
-    _ephemeral_child_sql,
+    _RESET_CHILD_SQL,
+    _sql_json_extract,
     _legacy_reset_child_sql,
     _shape_preview,
     _sql_session_last_active,
@@ -156,7 +157,7 @@ from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _wor
 from hermes_state_fts import SessionFtsSetupMixin, fts5_cjk_so_path
 from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
-from hermes_state_gateway import SessionGatewayMixin
+from hermes_state_gateway import SessionGatewayMixin, _COMPRESSION_LINEAGE_CTE
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_titles import SessionTitlesMixin
@@ -6044,26 +6045,9 @@ class SessionDB(
             target_clause = "WHERE id = ?"
             query_params = []
             if include_compression_ancestors:
-                lineage_cte = """
-                    WITH RECURSIVE compression_lineage(id) AS (
-                        SELECT ?
-                        UNION
-                        SELECT parent.id
-                        FROM compression_lineage lineage
-                        JOIN sessions child ON child.id = lineage.id
-                        JOIN sessions parent ON parent.id = child.parent_session_id
-                        WHERE parent.end_reason = 'compression'
-                          AND json_extract(
-                              COALESCE(child.model_config, '{}'),
-                              '$._branched_from'
-                          ) IS NULL
-                          AND json_extract(
-                              COALESCE(child.model_config, '{}'),
-                              '$._delegate_from'
-                          ) IS NULL
-                          AND COALESCE(child.source, '') != 'tool'
-                    )
-                """
+                # Same membership rule as get_compression_lineage / _CHAIN_STEP_SQL:
+                # branch, delegate, tool, and RESET-fork rows stop the walk (#114271).
+                lineage_cte = _COMPRESSION_LINEAGE_CTE
                 target_clause = "WHERE id IN (SELECT id FROM compression_lineage)"
                 query_params.append(session_id)
             query_params.extend(
@@ -6811,23 +6795,6 @@ class SessionDB(
 
         return self._execute_write(_do)
 
-    # Children that carry a ``parent_session_id`` but are NOT compression
-    # continuations: branches, delegate/subagent runs, and tool sessions.
-    # A marker only disqualifies a child when it points at the parent being
-    # queried — compression continuations inherit the rotated agent's
-    # ``model_config`` verbatim (``publish_compression_child`` callers pass
-    # ``agent._session_init_model_config``), so a delegate subagent's
-    # continuation carries ``_delegate_from=<the delegate's own parent>``.
-    # Matching markers by mere presence misclassified those real
-    # continuations as delegate children (fail-open for orphan reopen,
-    # fail-closed for adoption). Bind the parent id for both markers.
-    _NON_CONTINUATION_CHILD_FILTER_SQL = (
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._branched_from'), '') != ?\n"
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n"
-        "  AND COALESCE({alias}source, '') != 'tool'\n"
-    )
 
     def find_live_compression_child(
         self, parent_session_id: str
@@ -6868,7 +6835,7 @@ class SessionDB(
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id, parent_session_id, parent_session_id),
+                (parent_session_id,) * 4,
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -6896,8 +6863,8 @@ class SessionDB(
             ):
                 return False
 
-            # Treat any direct non-branch/non-delegate/non-tool child as a
-            # continuation, regardless of its current ended state. Reopening
+            # Treat any direct non-branch/non-delegate/non-reset/non-tool child
+            # as a continuation, regardless of its current ended state. Reopening
             # in that case could create a second live head for one lineage.
             child = conn.execute(
                 """
@@ -6909,7 +6876,7 @@ class SessionDB(
                 + """
                 LIMIT 1
                 """,
-                (session_id, session_id, session_id),
+                (session_id,) * 4,
             ).fetchone()
             if child is not None:
                 return False
@@ -7218,10 +7185,10 @@ class SessionDB(
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed.
-
-        Before clearing a reset boundary, stabilize markerless legacy reset
-        children that still depend on the parent's mutable end_reason.
+        """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
+        children, skipping explicit fork/delegate provenance and children that predate the parent itself.
+        The guard compares against the parent's started_at, not its current ended_at: a parent that was
+        reopened and re-ended later still owns reset children from its earlier boundaries.
         """
         def _do(conn):
             placeholders = ",".join("?" for _ in _RESET_END_REASONS)
@@ -7235,6 +7202,10 @@ class SessionDB(
                 "WHERE child.parent_session_id = ? "
                 "AND json_extract(COALESCE(child.model_config, '{}'), "
                 "                 '$._reset_from') IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                "AND COALESCE(child.source, '') != 'tool' "
+                "AND child.started_at >= (SELECT p.started_at FROM sessions p WHERE p.id = child.parent_session_id) "
                 f"AND {_legacy_reset_child_sql('child', placeholders)}",
                 (session_id, *_RESET_END_REASONS),
             )
@@ -7988,7 +7959,7 @@ class SessionDB(
             if (
                 not parent_id
                 or parent_id in seen
-                or self._is_explicit_fork_child_row(current)
+                or self._is_explicit_fork_child_row(current, include_reset=True)
             ):
                 break
             parent = _row(parent_id)
@@ -10413,7 +10384,10 @@ class SessionDB(
         the real continuation chain.
 
         Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
+        explicit branch/delegate/tool children AND reset forks (a reset fork is
+        its own user-visible conversation: following one would hijack the tip
+        projection onto the reset sibling and hide the real continuation,
+        #114271), and prefer children that are
         themselves continuing the compression chain (``end_reason='compression'``)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
@@ -10437,8 +10411,9 @@ class SessionDB(
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -10583,6 +10558,7 @@ class SessionDB(
                 COALESCE(child.model_config, '{{}}'), '$._branched_from'
             ) IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
+            AND NOT ({_RESET_CHILD_SQL.format(a='child')})
             AND COALESCE(child.source, '') != 'tool'
         """
 
@@ -10970,8 +10946,9 @@ class SessionDB(
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                 ){tip_cte_prefix},
                 chain_max AS (
@@ -11077,64 +11054,13 @@ class SessionDB(
                 seen_ids.add(s["id"])
                 sessions.append(s)
 
-        # Project compression roots forward to their tips. Each row whose
-        # end_reason is 'compression' has a continuation child; replace the
-        # surfaced fields (id, message_count, title, last_active, ended_at,
-        # end_reason, preview) with the tip's values so the list entry acts
-        # as the live conversation. Keep the root's started_at to preserve
-        # chronological ordering by original conversation start.
+        # Project compression roots forward to their tips: the surfaced row acts
+        # as the live conversation (tip identity/activity data), inheriting the
+        # root's title when the tip is still untitled (#106165). One
+        # implementation with the sessions mixin — the inline copy here had
+        # already dropped that inheritance once.
         if project_compression_tips and not include_children:
-            # get_compression_tip() walks each root's chain individually (it's
-            # a per-session graph walk, not batchable in one query), but the
-            # tip *row* fetch afterward was previously one _get_session_rich_row()
-            # call per compression root. Batch that half instead: resolve
-            # every tip id first, then fetch all tip rows in a single query.
-            tip_ids_by_root: Dict[str, str] = {}
-            chain_by_root: Dict[str, List[str]] = {}
-            for s in sessions:
-                if s.get("end_reason") != "compression":
-                    continue
-                chain = self.get_compression_chain(s["id"])
-                tip_id = chain[-1] if chain else s["id"]
-                if tip_id != s["id"]:
-                    tip_ids_by_root[s["id"]] = tip_id
-                    chain_by_root[s["id"]] = chain
-
-            tip_rows = (
-                self._get_session_rich_rows_batch(
-                    set(tip_ids_by_root.values()), compact_rows=compact_rows
-                )
-                if tip_ids_by_root
-                else {}
-            )
-
-            projected = []
-            for s in sessions:
-                tip_id = tip_ids_by_root.get(s["id"])
-                tip_row = tip_rows.get(tip_id) if tip_id else None
-                if not tip_row:
-                    projected.append(s)
-                    continue
-                # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
-                merged = dict(s)
-                for key in (
-                    "id", "ended_at", "end_reason", "message_count",
-                    "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
-                ):
-                    if key in tip_row:
-                        merged[key] = tip_row[key]
-                merged["_lineage_root_id"] = s["id"]
-                # Every id on the chain, intermediates included. Root and tip
-                # alone are not enough client-side: a persisted tile or route
-                # can hold a MIDDLE segment's id (it was the tip when opened,
-                # then rotated again), and with only the root/tip pair such a
-                # surface can no longer prove it names this conversation —
-                # which is how one chat ends up open twice after compaction.
-                merged["_lineage_ids"] = chain_by_root.get(s["id"]) or None
-                projected.append(merged)
-            sessions = projected
+            sessions = self._project_compression_tips(sessions, compact_rows)
 
         if open_first:
             # Pinned back-fill rows append after the page, so a closed page
@@ -13854,17 +13780,18 @@ class SessionDB(
     # Export and cleanup
     # =========================================================================
 
-    def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
-        """True when ``session`` is a branch, delegate, or tool child of its parent.
-
-        Markers only count as a fork when they point at ``parent_session_id``.
-        Compression copies ``model_config`` onto the continuation
-        (``publish_compression_child`` callers pass
+    def _is_explicit_fork_child_row(
+        self, session: Dict[str, Any], *, include_reset: bool = False
+    ) -> bool:
+        """True when ``session`` is a branch, delegate, or tool child of its parent
+        (``include_reset``: also a reset fork). Markers only count as a fork when
+        they point at ``parent_session_id``. Compression copies ``model_config``
+        onto the continuation (``publish_compression_child`` callers pass
         ``agent._session_init_model_config``), so a delegate's continuation
         carries ``_delegate_from=<the delegate's own parent>``. Presence-only
         matching would treat that real continuation as a fork — the same
         misclassification ``_NON_CONTINUATION_CHILD_FILTER_SQL`` already
-        avoids by binding both markers to the queried parent.
+        avoids by binding the markers to the queried parent.
         """
         if session.get("source") == "tool":
             return True
@@ -13877,12 +13804,11 @@ class SessionDB(
             return False
         if not isinstance(cfg, dict):
             return False
+        markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
+        if include_reset:
+            markers += (cfg.get("_reset_from"),)
         parent_id = session.get("parent_session_id")
-        branched = cfg.get("_branched_from")
-        delegated = cfg.get("_delegate_from")
-        if parent_id:
-            return branched == parent_id or delegated == parent_id
-        return branched is not None or delegated is not None
+        return parent_id in markers if parent_id else any(m is not None for m in markers)
 
     def is_explicit_fork_child(self, session_id: str) -> bool:
         """True when ``session_id`` is a /branch, delegate, or tool child row.
@@ -13976,7 +13902,9 @@ class SessionDB(
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
-        if not parent_id or self._is_explicit_fork_child_row(child):
+        # A reset fork of a compression-ended parent is its own conversation,
+        # not the continuation (#114271).
+        if not parent_id or self._is_explicit_fork_child_row(child, include_reset=True):
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")
