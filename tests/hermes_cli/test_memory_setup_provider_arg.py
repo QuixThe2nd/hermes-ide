@@ -8,6 +8,7 @@ once that provider is active.
 """
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from hermes_cli import memory_setup
 
