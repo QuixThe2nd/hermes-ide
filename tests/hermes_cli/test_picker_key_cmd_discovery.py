@@ -33,7 +33,9 @@ def test_picker_command_auth_is_lazy_and_credential_scoped(monkeypatch, route, s
              "model": "fallback", "default_model": "fallback", **static}
 
     def rows(entries, *, probe=True):
-        b = picker._PickerBuild("", "", "", None, False, False, probe, False, False, set(), {})
+        b = picker._PickerBuild("", "", "", None, False, probe_custom_providers=probe,
+                                probe_current_custom_provider=False, refresh=False,
+                                excluded=set(), curated={})
         if route == "providers":
             picker._lap_user_provider_rows(b, {f"gateway-{i}": e for i, e in enumerate(entries)})
         else:
