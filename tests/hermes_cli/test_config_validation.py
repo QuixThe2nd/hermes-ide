@@ -102,24 +102,26 @@ class TestConfigIssueDataclass:
 
 
 class TestVoiceSubmitModeValidation:
-    def test_default_is_direct(self):
-        assert DEFAULT_CONFIG["voice"]["submit_mode"] == "direct"
+    """The voice section was retired with the audio strip (3695ba63b0e #687,
+    2a4da411696 #717): no shipped default and no enum to validate anymore. What must
+    hold on the live surface: a legacy voice section still loads without validation
+    errors — the audio strip's stated contract that old config keys keep loading —
+    and the invalid-value-with-hint contract it used to carry lives on in the other
+    structural validators (fallback_model below)."""
 
-    def test_direct_and_draft_are_valid(self):
-        for mode in ("direct", "draft"):
+    def test_retired_voice_section_loads_without_errors(self):
+        for mode in ("direct", "draft", "refine"):
             issues = validate_config_structure({"voice": {"submit_mode": mode}})
             assert not any("voice.submit_mode" in issue.message for issue in issues)
 
-    def test_invalid_mode_is_reported(self):
-        issues = validate_config_structure({"voice": {"submit_mode": "refine"}})
 
-        assert any(
-            issue.severity == "error"
-            and "voice.submit_mode" in issue.message
-            and "direct" in issue.hint
-            and "draft" in issue.hint
-            for issue in issues
-        )
+    def test_invalid_fallback_model_shape_is_reported(self):
+        issues = validate_config_structure({"fallback_model": "claude"})
+
+        [issue] = [i for i in issues if "fallback_model" in i.message]
+        assert issue.severity == "error"
+        assert "got str" in issue.message
+        assert "provider" in issue.hint and "model" in issue.hint
 
 
 def _has_tz_database() -> bool:
