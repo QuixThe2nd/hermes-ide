@@ -2179,6 +2179,199 @@ class TestTransientTransportRetry:
             "so a same-provider sibling can be tried, not skipped wholesale."
         )
 
+class TestTransientRetryFreshClient:
+    """The in-loop same-provider transient retry must not re-send on a client the
+    no-progress guard closed: ``_CodexStreamGuard._close_client_on_timeout`` closes the
+    shared client and evicts it from ``_client_cache``, so a retry that reuses the
+    captured client fails fast with "Connection error." (production log: attempt 1
+    no-output-within-60.0s, attempt 2 "Connection error." within ~2s). The retry must
+    re-resolve its client through the same ``_retry_same_provider_*`` preparation the
+    recovery ladder already uses, and a failed re-plan must surface the ORIGINAL
+    transient error to the fallback ladder, never the replan failure itself."""
+
+    NO_PROGRESS_MSG = (
+        "Codex auxiliary Responses stream produced no output within "
+        "60.0s (no-progress timeout, 60.2s elapsed)"
+    )
+
+    @staticmethod
+    def _codex_client(name):
+        client = MagicMock(name=name)
+        client.base_url = "https://chatgpt.com/backend-api/codex"
+        return client
+
+    def _closed_first_client(self):
+        """First client whose transport the guard closed after the no-progress window."""
+        client = self._codex_client("closed-first")
+        client.closed = True
+        # Attempt 1 hits the no-progress window; any further send on the closed
+        # transport fails fast with a connection error (the production symptom).
+        client.chat.completions.create.side_effect = [
+            TimeoutError(self.NO_PROGRESS_MSG),
+            ConnectionError("Connection error."),
+            ConnectionError("Connection error."),
+        ]
+        return client
+
+    @staticmethod
+    def _evict_like_guard(client):
+        """Simulate ``_CodexStreamGuard._close_client_on_timeout``'s cache eviction."""
+        import agent.auxiliary_client as ac
+        return ac._evict_cached_client_instance(client)
+
+    def test_transient_retry_does_not_reuse_client_closed_by_timeout(self):
+        import agent.auxiliary_client as ac
+
+        closed_client = self._closed_first_client()
+        fresh_client = self._codex_client("fresh-replan")
+        fresh_client.closed = False
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-ok")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  side_effect=[(closed_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]) as mock_cached,
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                  return_value=(None, None, "")),
+            patch("agent.auxiliary_client._client_cache",
+                  {"k": (closed_client, "gpt-5.4", None)}),
+        ):
+            assert self._evict_like_guard(closed_client) is True
+            resp = call_llm(
+                task="compression", provider="openai-codex", model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-ok"
+        # Attempt 2 re-planned: a DIFFERENT, open client served it; the closed one
+        # was sent exactly once (its failed attempt 1).
+        assert mock_cached.call_count == 2
+        assert fresh_client.closed is False
+        assert fresh_client.chat.completions.create.call_count == 1
+        assert closed_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_transient_retry_async_does_not_reuse_client_closed_by_timeout(self):
+        import agent.auxiliary_client as ac
+
+        closed_client = self._codex_client("closed-first-async")
+        closed_client.closed = True
+        closed_client.chat.completions.create = AsyncMock(side_effect=[
+            TimeoutError(self.NO_PROGRESS_MSG),
+            ConnectionError("Connection error."),
+        ])
+        fresh_client = self._codex_client("fresh-replan-async")
+        fresh_client.closed = False
+        fresh_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-async-ok"))
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  side_effect=[(closed_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]) as mock_cached,
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                  return_value=(None, None, "")),
+            patch("agent.auxiliary_client._client_cache",
+                  {"k": (closed_client, "gpt-5.4", None)}),
+        ):
+            assert self._evict_like_guard(closed_client) is True
+            resp = await async_call_llm(
+                task="compression", provider="openai-codex", model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-async-ok"
+        assert mock_cached.call_count == 2
+        assert fresh_client.closed is False
+        assert fresh_client.chat.completions.create.call_count == 1
+        assert closed_client.chat.completions.create.call_count == 1
+
+    def test_transient_retry_replan_failure_surfaces_original_error(self):
+        first_client = self._codex_client("first")
+        first_client.chat.completions.create.side_effect = [
+            TimeoutError(self.NO_PROGRESS_MSG),
+            ConnectionError("Connection error."),
+            ConnectionError("Connection error."),
+        ]
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            # Re-plan cannot rebuild the provider (credentials gone): the natural
+            # failure is _get_cached_client returning (None, None), which
+            # _prepare_same_provider_retry reports as "could not be rebuilt".
+            patch("agent.auxiliary_client._get_cached_client",
+                  side_effect=[(first_client, "gpt-5.4"), (None, None)]),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                  return_value=(None, None, "")),
+        ):
+            with pytest.raises(TimeoutError) as excinfo:
+                call_llm(
+                    task="compression", provider="openai-codex", model="gpt-5.4",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+        assert "no-progress timeout" in str(excinfo.value)
+        assert "could not be rebuilt" not in str(excinfo.value)
+
+    def test_transient_retry_first_client_healthy_unchanged(self):
+        class _Err400(Exception):
+            status_code = 400
+
+        healthy = self._codex_client("healthy")
+        healthy.chat.completions.create.return_value = _DummyResponse("first-try-ok")
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openrouter", "some-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(healthy, "some-model")) as mock_cached,
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            resp = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+
+        assert resp.choices[0].message.content == "first-try-ok"
+        # Exactly one provider send; the re-plan seam was never touched.
+        assert healthy.chat.completions.create.call_count == 1
+        assert mock_cached.call_count == 1
+
+        failing = self._codex_client("failing-400")
+        failing.chat.completions.create.side_effect = _Err400("bad request")
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openrouter", "some-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(failing, "some-model")) as mock_cached,
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                  return_value=(None, None, "")),
+        ):
+            with pytest.raises(_Err400):
+                call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+
+        # A non-transient first error skips the same-provider retry entirely.
+        assert failing.chat.completions.create.call_count == 1
+        assert mock_cached.call_count == 1
+
 
 
 
