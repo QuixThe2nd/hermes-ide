@@ -8,7 +8,6 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [jailbreak, red-teaming, G0DM0D3, Parseltongue, GODMODE, uncensoring, safety-bypass, prompt-engineering, L1B3RT4S]
-    related_skills: [obliteratus]
 ---
 
 # G0DM0D3 Jailbreaking Skill

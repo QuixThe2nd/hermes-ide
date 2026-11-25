@@ -74,7 +74,6 @@ exit 0
             "--stage",
             "node-deps",
             "--json",
-            "--skip-browser",
             "--skip-computer-use",
         ],
         cwd=REPO_ROOT,

@@ -1,15 +1,12 @@
 """Tests for Automation Blueprints — the parameterized automation blueprint system.
 
-Covers the core catalog/slot schema/renderers/fill (cron/blueprint_catalog.py),
-the shared /blueprint command handler (hermes_cli/blueprint_cmd.py), and
-the docs generator. Uses an isolated HERMES_HOME for anything that touches the
-cron job store.
+Covers the core catalog/slot schema/renderers/fill (cron/blueprint_catalog.py)
+and the shared /blueprint command handler (hermes_cli/blueprint_cmd.py). Uses
+an isolated HERMES_HOME for anything that touches the cron job store.
 """
 
 import importlib
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -184,21 +181,26 @@ class TestCommandHandler:
         assert jobs[0].get("deliver") == "discord"
 
 
-class TestDocsGenerator:
-    def test_generator_emits_valid_index(self, tmp_path):
-        # The generator imports the catalog and writes a flat JSON array.
-        import importlib.util
-
-        script = (
-            Path(__file__).resolve().parents[2]
-            / "website" / "scripts" / "extract-automation-blueprints.py"
-        )
-        spec = importlib.util.spec_from_file_location("extract_cron_blueprints", script)
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        index = mod.build_index()
-        assert isinstance(index, list) and len(index) == len(CATALOG)
-        # Each entry must round-trip through json and carry the surfaces.
-        json.dumps(index)
-        assert all("command" in e and "appUrl" in e for e in index)
+class TestCatalogEntries:
+    def test_entry_is_json_serializable_with_command_deeplink_and_identity(self):
+        """The serializable catalog entry (dashboard/docs consumers) is the catalog
+        API itself — the Docusaurus docs generator is retired (7b383376efd); each
+        CATALOG item must still round-trip through JSON with its surfaces intact."""
+        entries = [blueprint_catalog_entry(bp) for bp in CATALOG]
+        assert len(entries) == len(CATALOG)
+        reloaded = json.loads(json.dumps(entries))
+        assert len(reloaded) == len(entries)
+        for bp, entry, raw in zip(CATALOG, entries, reloaded):
+            # Identity: the entry names its own blueprint, both before and after
+            # the JSON round-trip.
+            assert entry["key"] == bp.key
+            assert entry["title"] == bp.title
+            assert raw["key"] == bp.key
+            # Command: the ready-to-paste slash command for THIS blueprint.
+            assert entry["command"] == blueprint_slash_command(bp)
+            assert entry["command"].startswith(f"/blueprint {bp.key}")
+            assert raw["command"] == entry["command"]
+            # Deep link: the hermes:// URL for THIS blueprint.
+            assert entry["appUrl"] == blueprint_deeplink(bp)
+            assert entry["appUrl"].startswith(f"hermes://blueprint/{bp.key}")
+            assert raw["appUrl"] == entry["appUrl"]

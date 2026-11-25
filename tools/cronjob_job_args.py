@@ -22,6 +22,22 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     if not async_delivery_supported():
         return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+    if (
+        thread_id
+        and str(origin_platform).lower() == "slack"
+        and thread_id == get_session_env("HERMES_SESSION_MESSAGE_ID")
+    ):
+        # A Slack session whose thread id equals the triggering message's own id is the
+        # relay adapter's synthetic per-message SESSION KEY (native SlackAdapter parity:
+        # ``thread_ts = event.thread_ts or ts``; gateway/relay/adapter.py::
+        # _stamp_slack_session_thread), not a durable thread — persisting it as the job's
+        # origin buries every fire inside the ephemeral thread spawned around the creation
+        # message. A genuine in-thread creation has thread_id != the message's own id and
+        # keeps its thread; without a message id to compare, never guess.
+        logger.debug(
+            "Cron origin discarded synthetic Slack session-key thread_id=%s for %s:%s",
+            thread_id, origin_platform, origin_chat_id)
+        thread_id = None
     if thread_id:
         logger.debug(
             "Cron origin captured thread_id=%s for %s:%s",

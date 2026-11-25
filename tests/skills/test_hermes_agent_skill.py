@@ -1,17 +1,16 @@
 """The `hermes-agent` skill is what a running Hermes knows about itself.
 
-`website/` is never packaged, so an installed Hermes has no local copy of the
-user guide; skills ARE synced into `$HERMES_HOME/skills/`. The skill therefore
-does not try to restate the product — it routes to the published `llms.txt`,
-which is generated from the docs tree on every build and so can never be behind
-the feature set. These tests keep that routing honest: the index has to be where
-the skill says it is, and every reference has to be reachable, otherwise a
-shipped feature is invisible and the agent answers "Hermes can't do that."
+The docsite is gone from the tree (7b383376efd), so an installed Hermes has no
+local copy of the user guide; skills ARE synced into `$HERMES_HOME/skills/`.
+The skill therefore does not try to restate the product — it routes to the
+hosted `llms.txt` index. These tests keep that routing honest: the exact
+external index URL must be what the shipped skill carries, and every
+reference has to be reachable, otherwise a shipped feature is invisible and
+the agent answers "Hermes can't do that."
 """
 
 from __future__ import annotations
 
-import importlib.util
 import re
 from pathlib import Path
 
@@ -20,7 +19,10 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO / "skills" / "autonomous-ai-agents" / "hermes-agent"
 SKILL_MD = SKILL_DIR / "SKILL.md"
-GENERATOR = REPO / "website" / "scripts" / "generate-llms-txt.py"
+
+# The published index, verbatim. The generator that derived this from the
+# docs tree left with the site — the URL itself is now the contract.
+PUBLISHED_INDEX = "https://hermes-agent.nousresearch.com/docs/llms.txt"
 
 
 @pytest.fixture(scope="module")
@@ -59,11 +61,13 @@ def test_unknown_features_route_to_the_published_index(skill_text):
     assert "curl" in skill_text, "no way to reach the index without web tools"
 
 
-def test_the_index_is_published_where_the_skill_says_it_is(skill_text):
-    """A skill pointing at a URL nobody generates is worse than no routing."""
-    spec = importlib.util.spec_from_file_location("generate_llms_txt", GENERATOR)
-    assert spec is not None and spec.loader is not None
-    gen = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gen)
-
-    assert f"{gen.SITE_BASE}/llms.txt" in skill_text
+def test_the_index_is_published_at_the_exact_external_url(skill_text):
+    """The shipped skill must carry the exact published index URL — not a
+    relative `/docs/llms.txt` the model can't resolve — and the
+    no-web-tools fallback must curl that same address."""
+    assert PUBLISHED_INDEX in skill_text, (
+        f"the shipped skill must route unknown-feature questions to {PUBLISHED_INDEX}"
+    )
+    assert f"curl -s {PUBLISHED_INDEX}" in skill_text, (
+        "the curl fallback must target the exact index URL"
+    )

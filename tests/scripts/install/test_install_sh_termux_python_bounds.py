@@ -1,4 +1,13 @@
-"""Behavioral regression tests for Termux Python selection."""
+"""Behavioral regression tests for Termux Python selection.
+
+Python-bounds selection on Termux belongs to scripts/install.sh (the tests
+named test_install_stage_* below). setup-hermes.sh stopped doing its own
+interpreter scan when it moved to the pm-pinned packaged runtime (upstream
+3d12e86ef13, merged as a435cc358c0): under Termux it refuses up front —
+the pinned uv builds are glibc and cannot run under bionic — and defers to
+the installer, which keeps the Android path. These stubbed-harness runs
+exercise only that refusal; any full-setup execution is hosted-CI only.
+"""
 
 from __future__ import annotations
 
@@ -191,23 +200,13 @@ def test_install_stage_provisions_supported_python_from_tur(tmp_path: Path) -> N
     assert "Python installed from TUR: Python 3.13.7" in result.stdout
 
 
-def test_setup_script_prefers_compatible_minor_over_unsupported_default(
+def test_setup_script_refuses_termux_and_defers_to_installer(
     tmp_path: Path,
 ) -> None:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _write_fake_python(bin_dir, "python3.11", "3.14.6")
-    _write_fake_python(bin_dir, "python3.12", "3.12.11")
-    _write_fake_python(bin_dir, "python", "3.14.6")
-
-    result = _run_setup(tmp_path)
-
-    assert result.returncode == 0, result.stdout
-    assert "Python 3.12.11 found" in result.stdout
-    assert (tmp_path / "checkout" / "venv" / "bin" / "python").exists()
-
-
-def test_setup_script_rejects_unsupported_default(tmp_path: Path) -> None:
+    """setup-hermes.sh's pm-pinned bootstrap cannot run under Termux (bionic
+    vs the glibc pinned uv), so it must fail closed before staging anything —
+    never fall through to a partial bootstrap — and point at the installer
+    that keeps the Android path."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_fake_python(bin_dir, "python", "3.14.6")
@@ -216,5 +215,29 @@ def test_setup_script_rejects_unsupported_default(tmp_path: Path) -> None:
     result = _run_setup(tmp_path)
 
     assert result.returncode == 1
-    assert "Termux Python Python 3.14.6 is not supported" in result.stdout
-    assert "Hermes requires Python >=3.11,<3.14" in result.stdout
+    assert "Termux detected" in result.stdout
+    assert "scripts/install.sh" in result.stdout
+    # Fail closed means no partial bootstrap state either.
+    assert not (tmp_path / "checkout" / "venv").exists()
+    assert not (tmp_path / "home" / ".hermes" / "tools").exists()
+
+
+def test_setup_script_refuses_termux_even_with_compatible_python(
+    tmp_path: Path,
+) -> None:
+    """A compatible interpreter on PATH must not resurrect the retired local
+    python scan: the pinned runtime still cannot exec, so the refusal holds.
+    (The bounds-selection contract itself lives in the installer — see the
+    test_install_stage_* tests above.)"""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_fake_python(bin_dir, "python3.11", "3.14.6")
+    _write_fake_python(bin_dir, "python3.12", "3.12.11")
+    _write_fake_python(bin_dir, "python", "3.14.6")
+
+    result = _run_setup(tmp_path)
+
+    assert result.returncode == 1
+    assert "Termux detected" in result.stdout
+    assert "scripts/install.sh" in result.stdout
+    assert not (tmp_path / "checkout" / "venv").exists()

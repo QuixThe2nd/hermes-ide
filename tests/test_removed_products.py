@@ -101,5 +101,29 @@ def test_openclaw_migration_skill_absent():
     assert not (REPO_ROOT / "optional-skills" / "migration" / "openclaw-migration").exists()
 
 
-def test_website_dir_absent():
-    assert not (REPO_ROOT / "website").exists(), "the Docusaurus site was removed"
+def test_docusaurus_package_config_and_generators_absent():
+    """7b383376efd removed the Docusaurus site; ``website/`` keeps only the
+    plain Markdown docs. The machinery must not come back piecemeal: no
+    npm package, no Docusaurus config, no generated pages or generator
+    scripts — those are the parts that drag the build/deploy surface
+    (workflows, dockerignore carve-outs) back with them."""
+    website = REPO_ROOT / "website"
+
+    assert not (website / "package.json").exists(), "the Docusaurus package was removed"
+    for name in (
+        "docusaurus.config.js",
+        "docusaurus.config.ts",
+        "docusaurus.config.mjs",
+        "sidebars.js",
+        "sidebars.ts",
+    ):
+        assert not (website / name).exists(), f"website/{name} was removed with the site"
+    assert not (website / "src").exists(), "Docusaurus src/ (custom pages/components) was removed"
+    for name in (
+        "generate-llms-txt.py",
+        "generate-skill-docs.py",
+        "extract-automation-blueprints.py",
+    ):
+        assert not (website / "scripts" / name).exists(), (
+            f"website/scripts/{name} was removed with the site"
+        )
