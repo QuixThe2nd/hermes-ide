@@ -4392,8 +4392,8 @@ class SessionDB(
         # longer the one this instance originally opened (out-of-band
         # restore/cp/mv), reconnecting would write into the new generation
         # through stale WAL/shm assumptions (#89332). Refuse instead.
-        if self._db_replaced or self._db_file_was_replaced():
-            self._halt_db_replaced()
+        # (predicate + full halt semantics live in the helper)
+        self._halt_if_db_replaced()
         # A quarantined handle must never come back: reopening would hand a
         # fresh connection (and its own close-time checkpoint) to a file we
         # already know is structurally damaged.
@@ -4403,8 +4403,7 @@ class SessionDB(
                 f"structural corruption; refusing to reopen for a {context} "
                 "after close(). "
             )
-        if self._db_wal_generation_lost or self._wal_generation_was_lost():
-            self._halt_deleted_wal_generation()
+        self._halt_if_wal_generation_lost()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)",
@@ -5070,11 +5069,14 @@ class SessionDB(
                 return True
         return False
 
-    def _halt_db_replaced(self) -> None:
-        """Stop writes and raise; do not run in-file repair on a new generation."""
-        self._db_replaced = True
-        logger.error(_STATE_DB_REPLACED_MSG)
-        raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+    def _halt_if_db_replaced(self) -> None:
+        """Stop writes and raise when the file was replaced; never run in-file
+        repair on a new generation."""
+        if self._db_replaced or self._db_file_was_replaced():
+            self._db_replaced = True
+            self._disable_close_time_checkpoint()
+            logger.error(_STATE_DB_REPLACED_MSG)
+            raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
 
     def _wal_generation_was_lost(self) -> bool:
         """True when the WAL/SHM generation this instance opened is gone.
@@ -5133,23 +5135,13 @@ class SessionDB(
             self._db_sidecar_identity = current_identity
         return False
 
-    def _halt_deleted_wal_generation(self) -> None:
-        """Stop writes; do not mint or keep committing on a split WAL."""
-        self._db_wal_generation_lost = True
-        logger.error(_DELETED_WAL_GENERATION_MSG)
-        raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
-    def _halt_if_db_generation_changed(self) -> None:
-        """Stop writes (logging once) when the file was replaced or its WAL/SHM generation
-        is gone: never run in-file repair on a new generation, never keep committing on a
-        split WAL. Both flags are sticky."""
-        # A reopen resolves the PATH again — if the file at that path is no longer the one this instance
-        # originally opened (out-of-band restore/cp/mv), reconnecting would write into the new generation
-        # through stale WAL/shm assumptions (#89332). Refuse instead.
-        if self._db_replaced or self._db_file_was_replaced():
-            self._db_replaced = True
-            self._disable_close_time_checkpoint()
-            logger.error(_STATE_DB_REPLACED_MSG)
-            raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+    def _halt_if_wal_generation_lost(self) -> None:
+        """Stop writes when the WAL/SHM generation is gone; never mint or keep
+        committing on a split WAL. The quarantined handle's close-time checkpoint
+        is disabled and the retired generation captured durably before the
+        refusal — best effort only: a failed capture is logged, never settled,
+        and the handle is not released (close() retries the capture and refuses
+        to settle without it)."""
         if self._db_wal_generation_lost or self._wal_generation_was_lost():
             self._db_wal_generation_lost = True
             self._disable_close_time_checkpoint()
@@ -5162,6 +5154,15 @@ class SessionDB(
                 )
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+    def _halt_if_db_generation_changed(self) -> None:
+        """Stop writes (logging once) when the file was replaced or its WAL/SHM generation
+        is gone: never run in-file repair on a new generation, never keep committing on a
+        split WAL. Both flags are sticky."""
+        # A reopen resolves the PATH again — if the file at that path is no longer the one this instance
+        # originally opened (out-of-band restore/cp/mv), reconnecting would write into the new generation
+        # through stale WAL/shm assumptions (#89332). Refuse instead.
+        self._halt_if_db_replaced()
+        self._halt_if_wal_generation_lost()
 
     def _capture_retired_generation(self, trigger: str) -> Path:
         """Durably capture the lost WAL generation this handle still holds open, once per handle.
@@ -5185,14 +5186,15 @@ class SessionDB(
         return artifact
 
     def _raise_if_db_replaced(self) -> None:
+        """Sticky-flag fast path (no log spam on every write), then the full halt:
+        the close-time checkpoint is disabled and the retired WAL generation
+        captured durably before the refusal propagates."""
         if self._db_replaced:
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_wal_generation_lost:
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
-        if self._db_file_was_replaced():
-            self._halt_db_replaced()
-        if self._wal_generation_was_lost():
-            self._halt_deleted_wal_generation()
+        self._halt_if_db_replaced()
+        self._halt_if_wal_generation_lost()
 
     @classmethod
     def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
@@ -5455,10 +5457,8 @@ class SessionDB(
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
         self._raise_if_db_corrupt()
-        if self._db_replaced or self._db_file_was_replaced():
-            self._halt_db_replaced()
-        if self._db_wal_generation_lost or self._wal_generation_was_lost():
-            self._halt_deleted_wal_generation()
+        self._halt_if_db_replaced()
+        self._halt_if_wal_generation_lost()
 
         try:
             with self._lock:
