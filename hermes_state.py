@@ -9861,7 +9861,7 @@ class SessionDB(
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?",
                     (title, session_id),
                 )
                 conflict = cursor.fetchone()
@@ -9883,6 +9883,20 @@ class SessionDB(
                     ):
                         conn.execute(
                             "UPDATE sessions SET title = NULL WHERE id = ?",
+                            (conflict_id,),
+                        )
+                    # A deliberately archived hidden Bot Chat is a retired registry
+                    # entry, not a live identity. Retire its name in the same title
+                    # transaction so a replacement can become the sole canonical row;
+                    # the old session remains archived and otherwise untouched.
+                    elif (
+                        title == self.CANONICAL_BOT_CHAT_TITLE
+                        and bool(conflict["archived"])
+                        and bool(conflict["hidden"])
+                    ):
+                        conn.execute(
+                            "UPDATE sessions SET title = NULL, title_source = NULL "
+                            "WHERE id = ?",
                             (conflict_id,),
                         )
                     else:
@@ -14462,6 +14476,10 @@ class SessionDB(
             chain via :meth:`set_session_archived`, so we never resurrect an
             active conversation by matching an old compressed-away root whose
             live continuation is recent.
+          * the hidden canonical Bot Chat (same predicate as the pinned
+            exemption) is never swept: only a deliberate archive may retire
+            it, since archiving releases its registry title to the next Bot
+            open.
 
         Returns the number of sessions archived. Never raises for an empty or
         non-positive ``idle_days`` — it simply archives nothing.
@@ -14477,10 +14495,11 @@ class SessionDB(
                 WHERE s.archived = 0
                   AND COALESCE(s.end_reason, '') <> 'compression'
                   {pin_clause}
+                  AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
                   AND {_sql_session_last_active("s")} < ?
                 ORDER BY s.started_at ASC
                 """,
-                (cutoff,),
+                (self.CANONICAL_BOT_CHAT_TITLE, cutoff),
             ).fetchall()
         ids = [(r["id"] if isinstance(r, sqlite3.Row) else r[0]) for r in rows]
         for sid in ids:
