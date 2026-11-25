@@ -5861,12 +5861,13 @@ def _restart_via_control_socket(*, old_pid: int | None = None) -> bool:
 def _cmd_restart(args):
     """`hermes gateway restart` — the CLI door onto the ONE restart pipeline.
 
-    Transports, in order: (1) the running gateway's control socket runs the
-    same core ``queue_user_restart`` sequence /restart uses; (2) SIGUSR1, which
-    the gateway maps to the same ``request_restart`` core; (3) the service
-    manager (systemd/launchd) as a TRANSPORT of the same semantics,
-    not a second one — its graceful path SIGUSR1s first too; (4) stop + fresh
-    start when no gateway is running.
+    Transports, in order: (0) a gateway whose supervisor Hermes did not install
+    exits back to that supervisor; (1) the running gateway's control socket
+    runs the same core ``queue_user_restart`` sequence /restart uses; (2)
+    SIGUSR1, which the gateway maps to the same ``request_restart`` core; (3)
+    the service manager (systemd/launchd) as a TRANSPORT of the same
+    semantics, not a second one — its graceful path SIGUSR1s first too; (4)
+    stop + fresh start when no gateway is running.
     """
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
@@ -5881,14 +5882,31 @@ def _cmd_restart(args):
         _restart_all(system)
         return
 
-    # Door 1: the running process runs the ONE restart core itself. A live PID
-    # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
     from gateway.status import get_running_pid
+    from hermes_cli.gateway_supervised_restart import (
+        gateway_declares_external_supervisor, restart_externally_supervised_gateway,
+    )
+    kind = _installed_service_kind()
+    supervised_pid = get_running_pid()
 
-    if _restart_via_control_socket(old_pid=get_running_pid()):
+    # Door 0: a gateway whose supervisor Hermes did not install (custom launchd agent /
+    # unit running `gateway run --external-supervisor`) must exit back to that supervisor:
+    # the control-socket door below asks for a via_service=False self-restart and the stop
+    # + foreground run would stamp this CLI's PID as the gateway — both wedge every
+    # supervisor respawn (#110637). Gateways with a Hermes-installed unit keep the service
+    # path below.
+    if (
+        kind is None and supervised_pid
+        and gateway_declares_external_supervisor(supervised_pid)
+    ):
+        restart_externally_supervised_gateway(supervised_pid)
         return
 
-    kind = _installed_service_kind()
+    # Door 1: the running process runs the ONE restart core itself. A live PID
+    # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
+    if _restart_via_control_socket(old_pid=supervised_pid):
+        return
+
     service_configured = kind is not None
     if kind is not None:
         try:
@@ -5920,18 +5938,6 @@ def _cmd_restart(args):
             "  Fix the service, then retry: hermes gateway start",
         )
         sys.exit(1)
-
-    # A gateway that declares an external supervisor (custom launchd agent / unit running
-    # `gateway run --external-supervisor`) restarts by exiting back to it: the stop + foreground
-    # run below would stamp this CLI's PID as the gateway and wedge every respawn (#110637).
-    from gateway.status import get_running_pid
-    from hermes_cli.gateway_supervised_restart import (
-        gateway_declares_external_supervisor, restart_externally_supervised_gateway,
-    )
-    supervised_pid = get_running_pid()
-    if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
-        restart_externally_supervised_gateway(supervised_pid)
-        return
 
     if supervised_pid and not force:
         from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
