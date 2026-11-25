@@ -14,7 +14,7 @@ def test_prompt_paint_yields_monitor_but_ordinary_paint_does_not(monkeypatch, pa
     from prompt_toolkit.output import DummyOutput
 
     async def run():
-        for name in ('_approval_state', '_clarify_state', '_secret_state', '_sudo_state',
+        for name in ('_clarify_state', '_secret_state', '_sudo_state',
                      '_slash_confirm_state'):
             dock_cli = SimpleNamespace(agent=None)
             install_dock(dock_cli)

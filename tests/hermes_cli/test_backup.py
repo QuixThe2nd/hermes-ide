@@ -773,6 +773,56 @@ class TestBackupEdgeCases:
         unreadable.chmod(0o600)
         assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
 
+
+    def test_backup_exit_and_retention_contract_portable(self, tmp_path, monkeypatch, capsys):
+        """Root-portable twin of the unreadable-file regression above: a deterministic
+        single-member write failure (no chmod(0), which an operator root ignores) keeps
+        the partial archive with real member bytes, reports incomplete (False / exit 1)
+        and never rotates the last complete default-named zip (#101096); the next
+        complete run reports success (True / no exit) and does rotate, touching only
+        default-named archives (#81317)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: x\n")
+        (hermes_home / "locked.txt").write_text("member that cannot be archived\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from hermes_cli.backup import _RUN_BACKUP_PREFIX, run_backup
+        from hermes_cli.main import cmd_backup
+
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        good_old = out_dir / f"{_RUN_BACKUP_PREFIX}2020-01-01-000000.zip"
+        with zipfile.ZipFile(good_old, "w") as zf:
+            zf.writestr("config.yaml", "previous complete archive")
+
+        real_write = zipfile.ZipFile.write
+
+        def _failing_write(self, filename, arcname=None, compress_type=None, compresslevel=None):
+            if arcname == "locked.txt":
+                raise OSError("simulated unreadable member")
+            return real_write(self, filename, arcname, compress_type, compresslevel)
+
+        partial_zip = out_dir / f"{_RUN_BACKUP_PREFIX}2026-01-02-000000.zip"
+        with monkeypatch.context() as fail_write:
+            fail_write.setattr(zipfile.ZipFile, "write", _failing_write)
+            assert run_backup(Namespace(output=str(partial_zip), keep=1)) is False
+            with pytest.raises(SystemExit) as exc:
+                cmd_backup(Namespace(output=str(out_dir / "custom-partial.zip"), quick=False))
+            assert exc.value.code == 1
+        assert partial_zip.exists()
+        with zipfile.ZipFile(partial_zip) as zf:
+            assert zf.read("config.yaml") == b"model: x\n"
+        assert (out_dir / "custom-partial.zip").exists()
+        assert good_old.exists(), "an incomplete run must not rotate the last complete backup out"
+        assert "Backup incomplete" in capsys.readouterr().out
+
+        latest = out_dir / f"{_RUN_BACKUP_PREFIX}2026-01-03-000000.zip"
+        assert run_backup(Namespace(output=str(latest), keep=1)) is True
+        assert cmd_backup(Namespace(output=str(out_dir / "custom-ok.zip"), quick=False)) is None
+        assert (out_dir / "custom-ok.zip").exists()
+        assert sorted(p.name for p in out_dir.glob(f"{_RUN_BACKUP_PREFIX}*.zip")) == [latest.name]
+
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""
         hermes_home = tmp_path / ".hermes"

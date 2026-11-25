@@ -125,7 +125,7 @@ class TestLayoutSlot:
             children = cli._build_tui_layout_children(
                 sudo_widget="sudo",
                 secret_widget="secret",
-                approval_widget="approval",
+                slash_confirm_widget="slash-confirm",
                 clarify_widget="clarify",
                 spinner_widget="spinner",
                 spacer="spacer",
@@ -134,7 +134,6 @@ class TestLayoutSlot:
                 image_bar="image-bar",
                 input_area="input-area",
                 input_rule_bot="bottom-rule",
-                voice_status_bar="voice-status",
                 completions_menu="completions-menu",
             )
             assert "stash-panel" in children
@@ -148,7 +147,7 @@ class TestLayoutSlot:
         children = cli._build_tui_layout_children(
             sudo_widget="sudo",
             secret_widget="secret",
-            approval_widget="approval",
+            slash_confirm_widget="slash-confirm",
             clarify_widget="clarify",
             spinner_widget="spinner",
             spacer="spacer",
@@ -157,7 +156,6 @@ class TestLayoutSlot:
             image_bar="image-bar",
             input_area="input-area",
             input_rule_bot="bottom-rule",
-            voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
         assert None not in children

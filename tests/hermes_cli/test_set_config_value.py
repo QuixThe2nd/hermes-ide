@@ -117,36 +117,54 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
-    def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
-        set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
+    def test_terminal_timeout_coerces_and_bridges_to_env(self, _isolated_hermes_home):
+        """Live terminal keys route to config.yaml AND mirror the env var the terminal
+        tool reads (docker/vercel keys left the bridge with their backends,
+        c7442dd1745 #708); the numeric key coerces to an int, not a quoted string."""
+        set_config_value("terminal.timeout", "90")
         config = _read_config(_isolated_hermes_home)
         env_content = _read_env(_isolated_hermes_home)
-        assert "docker_mount_cwd_to_workspace: 'true'" in config or "docker_mount_cwd_to_workspace: true" in config
-        assert (
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
-            or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
-        )
+        assert "timeout: 90" in config and "timeout: '90'" not in config
+        assert "TERMINAL_TIMEOUT=90" in env_content
 
-    def test_terminal_docker_shared_key_preserves_string_values(
-        self, _isolated_hermes_home, capsys
+    def test_terminal_degraded_mode_preserves_string_and_bridges(
+        self, _isolated_hermes_home
     ):
-        set_config_value("terminal.docker_shared_container_key", "off")
+        """String-typed terminal settings stay strings even when boolish ("off" is an
+        enum-shaped word, never a boolean) and still bridge to their env mirror."""
+        set_config_value("terminal.degraded_mode", "off")
 
         import yaml
 
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["terminal"]["docker_shared_container_key"] == "off"
-        assert "TERMINAL_DOCKER_SHARED_CONTAINER_KEY=off" in _read_env(
-            _isolated_hermes_home
-        )
-        assert "not a recognized config key" not in capsys.readouterr().out
+        assert saved["terminal"]["degraded_mode"] == "off"
+        assert "TERMINAL_DEGRADED_MODE=off" in _read_env(_isolated_hermes_home)
 
-    def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
-        set_config_value("terminal.vercel_runtime", "python3.13")
-        config = _read_config(_isolated_hermes_home)
+    def test_retired_terminal_keys_load_without_env_bridge(self, _isolated_hermes_home):
+        """Retired backend keys (c7442dd1745, #708) keep the legacy contract the audio
+        strip set for stt.provider (2a4da411696): a stored value still writes so old
+        configs keep loading — but it must NOT reach .env, where the terminal runtime
+        would honor a backend that no longer exists."""
+        for key in (
+            "terminal.vercel_runtime",
+            "terminal.docker_mount_cwd_to_workspace",
+            "terminal.docker_shared_container_key",
+        ):
+            set_config_value(key, "legacy-value")
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        for key in (
+            "vercel_runtime",
+            "docker_mount_cwd_to_workspace",
+            "docker_shared_container_key",
+        ):
+            assert key in saved["terminal"]
         env_content = _read_env(_isolated_hermes_home)
-        assert "vercel_runtime: python3.13" in config
-        assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
+        assert "TERMINAL_VERCEL_RUNTIME" not in env_content
+        assert "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE" not in env_content
+        assert "TERMINAL_DOCKER_SHARED_CONTAINER_KEY" not in env_content
 
 
 # ---------------------------------------------------------------------------

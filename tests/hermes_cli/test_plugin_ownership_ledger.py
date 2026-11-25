@@ -70,9 +70,6 @@ def _write_plugin(hermes_home: Path) -> None:
         "    ctx.register_system_prompt_section(\n"
         "        'ledger-probe-section', 'ledger probe section content',\n"
         "    )\n"
-        "    ctx.register_approval_transport(\n"
-        "        'ledger_probe_transport', lambda request: 'deny',\n"
-        "    )\n"
         "    ctx.on_unload(lambda: UNLOADED.append('ledger_probe'))\n"
     )
     (hermes_home / "config.yaml").write_text(
@@ -157,11 +154,9 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
         "skill",
         "tool_override_policy",
         "system_prompt_section",
-        "approval_transport",
         "on_unload",
     }
     assert "ledger-probe-section" in manager._system_prompt_sections
-    assert "ledger_probe_transport" in manager._approval_transports
 
     manager.discover_and_load(force=True)
 
@@ -193,7 +188,6 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
     assert "ledger-probe-cli" not in manager._cli_commands
     assert "ledger_probe:ledger-probe" not in manager._plugin_skills
     assert "ledger-probe-section" not in manager._system_prompt_sections
-    assert "ledger_probe_transport" not in manager._approval_transports
     assert manager._plugins == {} or "ledger_probe" not in manager._plugins
     reloaded_module_name = None
     import sys as _sys

@@ -1,35 +1,20 @@
 """Measured-work pins for the slash-completer config reads.
 
-The /tools and /personality completers run on every keystroke while the
-user types those commands (complete_while_typing). They used to re-read +
-re-parse the full config on every keypress: load_config()'s defensive
-deepcopy (~345us tax) in _tools_completions, and load_cli_config()'s full
-YAML parse + defaults deep-merge (~110us) in _personality_completions.
-These pins hold the per-keystroke cost down:
-- _tools_completions uses the read-only loader (no deepcopy).
-- _personality_completions memoises the personalities source keyed on the
-  config file's mtime, so the parse+merge runs once per config state.
+The /tools completer runs on every keystroke while the user types the command
+(complete_while_typing) and re-reads the config to reflect live toolset state.
+It used to pay load_config()'s defensive deepcopy (~345us) per keystroke; the
+pin holds it to the read-only loader. /personality was retired (e5b347e4989)
+along with its memoised config parse; the remaining dynamic argument
+completion paths are /skin, /tools and /handoff, and /skin is pinned to its
+real source (built-in skins + a scan of the user skins dir) with no config
+re-parse per keystroke.
 """
 
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
-import pytest
-
 import hermes_cli.commands_completion as commands_mod
-
-
-def _reset_personalities_memo():
-    commands_mod._personalities_memo = None
-
-
-@pytest.fixture(autouse=True)
-def _reset_memo():
-    _reset_personalities_memo()
-    yield
-    _reset_personalities_memo()
 
 
 class TestToolsCompletionsReadonlyConfig:
@@ -53,15 +38,13 @@ class TestToolsCompletionsReadonlyConfig:
 
         # The completer imports the loader inside the function, so patch the
         # source module. Portable-MCP lookup is stubbed because it triggers
-        # one-time plugin discovery (which legitimately calls load_config
+        # one-time plugin discovery (which legitimately reads the config
         # during process init) — this test asserts on the completer's own
         # per-keystroke reads, not discovery's one-off startup reads.
         with patch("hermes_cli.config.load_config", counting_deepcopy), \
              patch("hermes_cli.config.load_config_readonly", counting_readonly), \
              patch("hermes_cli.plugins.get_portable_mcp_server_names_nowait", lambda: set()), \
-             patch("hermes_cli.tools_config._get_plugin_toolset_keys", lambda: set()), \
-             patch("hermes_cli.tools_config._homeassistant_credentials_present", lambda: False), \
-             patch("hermes_cli.tools_config._xai_credentials_present", lambda: False):
+             patch("hermes_cli.tools_config._get_plugin_toolset_keys", lambda: set()):
             list(commands_mod.SlashCommandCompleter._tools_completions("enable ", "enable "))
 
         assert calls["readonly"] == 1, "completer should use the readonly loader"
@@ -70,70 +53,43 @@ class TestToolsCompletionsReadonlyConfig:
         )
 
 
-class TestPersonalityCompletionsMemo:
-    def test_load_cli_config_called_once_per_config_state(self, monkeypatch):
-        """The /personality completer parses the config once per state.
+class TestSkinCompletionsAvailablePath:
+    """/skin argument completion through the real dynamic-completion dispatch."""
 
-        load_cli_config() does a full YAML parse + deep merge of the
-        built-in defaults; the completer runs on every keystroke. The
-        mtime-keyed memo keeps that parse to once per config change.
-        """
-        calls = {"n": 0}
+    def _completions(self, text):
+        from prompt_toolkit.document import Document
 
-        def counting_load_cli_config():
-            calls["n"] += 1
-            return {
-                "agent": {
-                    "personalities": {
-                        "helpful": "You are helpful.",
-                        "concise": "You are concise.",
-                    }
-                }
-            }
+        completer = commands_mod.SlashCommandCompleter()
+        return list(completer.get_completions(Document(text), None))
 
-        monkeypatch.setattr(commands_mod, "_personalities_memo", None)
-        with patch("cli.load_cli_config", counting_load_cli_config):
-            # First call: cache miss -> one parse.
-            list(commands_mod.SlashCommandCompleter._personality_completions("hel", "hel"))
-            assert calls["n"] == 1, "first call should parse once"
+    def test_lists_user_and_builtin_skins_without_config_reads(self, tmp_path):
+        """The actual available completion path: /skin args complete from
+        built-in + user-installed skins, and a keystroke costs no config.yaml
+        parse at all (the retired /personality memo's job done better)."""
+        from hermes_constants import get_hermes_home
 
-            # Subsequent keystrokes: cache hit -> no re-parse.
-            for _ in range(10):
-                list(commands_mod.SlashCommandCompleter._personality_completions("hel", "hel"))
-            assert calls["n"] == 1, (
-                "repeated keystrokes must reuse the memoised personalities, "
-                f"got {calls['n']} parses"
-            )
+        skins_dir = get_hermes_home() / "skins"
+        skins_dir.mkdir(parents=True, exist_ok=True)
+        (skins_dir / "neon.yaml").write_text(
+            "name: neon\ndescription: Neon city glow\n", encoding="utf-8")
+        # A user skin named like a built-in must not shadow it.
+        (skins_dir / "mono.yaml").write_text(
+            "name: mono\ndescription: shadow attempt\n", encoding="utf-8")
 
-    def test_mtime_change_reparses(self, monkeypatch, tmp_path):
-        """A config file change on disk invalidates the memo."""
-        from pathlib import Path
+        def _fail(*a, **k):
+            raise AssertionError("/skin completions must not re-parse config.yaml")
 
-        cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(
-            "agent:\n  personalities:\n    helpful: \"v1\"\n",
-            encoding="utf-8",
-        )
-        # Pin an explicit mtime so the change below is a guaranteed mtime_ns
-        # bump regardless of filesystem timestamp granularity.
-        os.utime(cfg_path, (1_700_000_000, 1_700_000_000))
+        with patch("hermes_cli.config.load_config", _fail), \
+             patch("hermes_cli.config.load_config_readonly", _fail):
+            completions = self._completions("/skin ")
 
-        calls = {"n": 0}
+        by_text = {c.text: c for c in completions}
+        assert "neon" in by_text, "user-installed skin must be offered"
+        assert by_text["neon"].display_meta_text == "Neon city glow"
+        # Built-ins are offered and never shadowed by a same-named user skin.
+        assert {"default", "mono", "slate"} <= set(by_text)
+        assert by_text["mono"].display_meta_text != "shadow attempt"
 
-        def counting_load_cli_config():
-            calls["n"] += 1
-            return {"agent": {"personalities": {"helpful": "v1"}}}
-
-        def fake_config_path():
-            return cfg_path
-
-        monkeypatch.setattr(commands_mod, "_personalities_memo", None)
-        with patch("cli.load_cli_config", counting_load_cli_config), \
-             patch("hermes_cli.config.get_config_path", fake_config_path):
-            list(commands_mod.SlashCommandCompleter._personality_completions("h", "h"))
-            assert calls["n"] == 1
-
-            # Bump the file mtime -> memo invalidates -> re-parse once.
-            os.utime(cfg_path, (1_800_000_000, 1_800_000_000))
-            list(commands_mod.SlashCommandCompleter._personality_completions("h", "h"))
-            assert calls["n"] == 2, "config mtime change should re-parse once"
+    def test_filters_on_the_typed_prefix(self):
+        completions = self._completions("/skin sl")
+        assert {c.text for c in completions} == {"slate"}

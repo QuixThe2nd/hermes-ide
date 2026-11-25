@@ -2612,12 +2612,33 @@ def _service_venv_dir() -> str:
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    python_path = get_python_path()
-    working_dir = _stable_service_working_dir()
-    project_root = PROJECT_ROOT
-    venv_dir = _service_venv_dir()
+    # System units run as the TARGET account: resolve its identity first (never guess
+    # another user), then read committed runtime facts — interpreter, venv, PATH —
+    # under that account's hermes home via the same context-local override
+    # _systemd_watchdog_seconds uses. Reading them under the sudo invoker's home
+    # bakes the invoker's environment into the unit; an unprivileged invoker dies
+    # on the invoker-owned installs root instead. User units keep the calling
+    # user's context untouched.
+    hermes_home = None
+    override_token = reset_home_override = None
+    if system:
+        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
+        hermes_home = _hermes_home_for_target_user(home_dir)
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    path_entries = _build_service_path_dirs()
+        override_token = set_hermes_home_override(hermes_home)
+        reset_home_override = reset_hermes_home_override
+    try:
+        python_path = get_python_path()
+        working_dir = _stable_service_working_dir()
+        project_root = PROJECT_ROOT
+        venv_dir = _service_venv_dir()
+
+        path_entries = _build_service_path_dirs()
+    finally:
+        # Malformed target facts propagate (fail closed); only the scope is reset here.
+        if override_token is not None and reset_home_override is not None:
+            reset_home_override(override_token)
     if not system:
         # System units add managed Node once the TARGET user's home is known (not the sudo caller's).
         _append_node_dir_for_service(path_entries)
@@ -2626,9 +2647,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     restart_timeout = resolve_systemd_timeout_stop_sec(_get_restart_drain_timeout(), _get_cron_drain_timeout())
 
     if system:
-        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
-        hermes_home = _hermes_home_for_target_user(home_dir)
-        # Profile arg relative to the TARGET user's ~/.hermes when hermes_home lives under it.
+        # Identity resolved before the scoped reads above; profile arg is relative
+        # to the TARGET user's ~/.hermes when hermes_home lives under it.
         target_root = Path(home_dir) / ".hermes"
         try:
             Path(hermes_home).resolve().relative_to(target_root.resolve())
@@ -5841,12 +5861,13 @@ def _restart_via_control_socket(*, old_pid: int | None = None) -> bool:
 def _cmd_restart(args):
     """`hermes gateway restart` — the CLI door onto the ONE restart pipeline.
 
-    Transports, in order: (1) the running gateway's control socket runs the
-    same core ``queue_user_restart`` sequence /restart uses; (2) SIGUSR1, which
-    the gateway maps to the same ``request_restart`` core; (3) the service
-    manager (systemd/launchd) as a TRANSPORT of the same semantics,
-    not a second one — its graceful path SIGUSR1s first too; (4) stop + fresh
-    start when no gateway is running.
+    Transports, in order: (0) a gateway whose supervisor Hermes did not install
+    exits back to that supervisor; (1) the running gateway's control socket
+    runs the same core ``queue_user_restart`` sequence /restart uses; (2)
+    SIGUSR1, which the gateway maps to the same ``request_restart`` core; (3)
+    the service manager (systemd/launchd) as a TRANSPORT of the same
+    semantics, not a second one — its graceful path SIGUSR1s first too; (4)
+    stop + fresh start when no gateway is running.
     """
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
@@ -5861,14 +5882,31 @@ def _cmd_restart(args):
         _restart_all(system)
         return
 
-    # Door 1: the running process runs the ONE restart core itself. A live PID
-    # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
     from gateway.status import get_running_pid
+    from hermes_cli.gateway_supervised_restart import (
+        gateway_declares_external_supervisor, restart_externally_supervised_gateway,
+    )
+    kind = _installed_service_kind()
+    supervised_pid = get_running_pid()
 
-    if _restart_via_control_socket(old_pid=get_running_pid()):
+    # Door 0: a gateway whose supervisor Hermes did not install (custom launchd agent /
+    # unit running `gateway run --external-supervisor`) must exit back to that supervisor:
+    # the control-socket door below asks for a via_service=False self-restart and the stop
+    # + foreground run would stamp this CLI's PID as the gateway — both wedge every
+    # supervisor respawn (#110637). Gateways with a Hermes-installed unit keep the service
+    # path below.
+    if (
+        kind is None and supervised_pid
+        and gateway_declares_external_supervisor(supervised_pid)
+    ):
+        restart_externally_supervised_gateway(supervised_pid)
         return
 
-    kind = _installed_service_kind()
+    # Door 1: the running process runs the ONE restart core itself. A live PID
+    # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
+    if _restart_via_control_socket(old_pid=supervised_pid):
+        return
+
     service_configured = kind is not None
     if kind is not None:
         try:
@@ -5900,18 +5938,6 @@ def _cmd_restart(args):
             "  Fix the service, then retry: hermes gateway start",
         )
         sys.exit(1)
-
-    # A gateway that declares an external supervisor (custom launchd agent / unit running
-    # `gateway run --external-supervisor`) restarts by exiting back to it: the stop + foreground
-    # run below would stamp this CLI's PID as the gateway and wedge every respawn (#110637).
-    from gateway.status import get_running_pid
-    from hermes_cli.gateway_supervised_restart import (
-        gateway_declares_external_supervisor, restart_externally_supervised_gateway,
-    )
-    supervised_pid = get_running_pid()
-    if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
-        restart_externally_supervised_gateway(supervised_pid)
-        return
 
     if supervised_pid and not force:
         from hermes_cli.gateway_restart_progress import restart_gateway_with_progress

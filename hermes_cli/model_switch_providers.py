@@ -282,9 +282,12 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
         if alias_target and alias_target != hermes_id and alias_target in _AGGREGATOR_PROVIDERS:
             continue
         try:
-            from providers import get_provider_profile
-            prof = get_provider_profile(hermes_id)
-            if prof is not None and prof.name != hermes_id:
+            from hermes_cli.auth import resolve_provider
+            # The runtime alias table (plugin-declared aliases included) is the surviving
+            # authority for alias-of-a-canonical-profile suppression after the model-provider
+            # strip retired the per-plugin profiles ("kimi"/"moonshot" -> "kimi-coding",
+            # #49439): the canonical row carries the credential, alias rows would duplicate it.
+            if resolve_provider(hermes_id) != hermes_id:
                 continue
         except Exception:
             pass

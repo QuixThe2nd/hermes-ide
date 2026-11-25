@@ -210,6 +210,7 @@ def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
     sup = LlamaServerSupervisor.__new__(LlamaServerSupervisor)
     sup.install_dir = tmp_path
     sup.proc = None
+    sup.server_exe = None  # real __init__ always sets it; None -> reaper falls back to server_binary(install_dir)
     sup._reap_orphaned_children()
 
     assert reaped == [300]

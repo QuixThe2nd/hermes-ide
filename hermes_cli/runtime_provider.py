@@ -479,6 +479,11 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             override_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
             if override_url:
                 return api_mode, override_url
+            # #40913: a configured model.base_url under provider openai-codex is the secondary
+            # proxy override — the canonical URL stored on the pool row must not shadow it.
+            cfg_url = _config_base_url_for_provider(model_cfg, provider)
+            if cfg_url:
+                return api_mode, cfg_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
@@ -507,7 +512,6 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
     base_url = _finalize_base_url(provider, api_mode, base_url)
-    api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=api_mode, model_cfg=model_cfg)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
@@ -598,8 +602,12 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
         api_key = creds.get("api_key", "")
         if not base_url:
             base_url = _actual_url(provider, creds.get("base_url", "").rstrip("/"))
+    # Mirror the env/config rung (#100854): OpenCode families re-derive api_mode from the
+    # effective model and need the symmetric /v1 base_url normalization — an explicit
+    # --api-key must not change which endpoint a model reaches.
     api_mode = _api_key_provider_api_mode(provider, model_cfg, api_key, base_url, target_model or model_cfg.get("default", ""),
-                                          opencode_by_model=False)
+                                          opencode_by_model=True)
+    base_url = _finalize_base_url(provider, api_mode, base_url)
     api_key = _actual_local_key(provider, api_key, base_url)
     return _runtime(provider, api_mode, base_url.rstrip("/"), api_key, source="explicit", requested_provider=requested_provider)
 
@@ -860,6 +868,13 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_provider_disabled(requested_provider)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    # model.openai_runtime: codex_app_server is an opt-in applied once here — not inside the rungs —
+    # so the pool, OAuth-store and explicit rungs all honor it (#115169).
+    # Rung dicts may lack api_mode (the named-custom pool path returns a bare shape) and are
+    # left untouched.
+    if "api_mode" in runtime:
+        runtime["api_mode"] = _maybe_apply_codex_app_server_runtime(
+            provider=runtime.get("provider", ""), api_mode=runtime["api_mode"], model_cfg=_get_model_config())
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     return runtime
 
