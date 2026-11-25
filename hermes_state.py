@@ -442,6 +442,18 @@ _MODEL_CONFIG_ROW_MISSING = object()
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
 
 
+# SQLite's SQLITE_LIMIT_VARIABLE_NUMBER was 999 before 3.32; callers that
+# bulk-delete thousands of ids in one IN (...) statement fail with
+# "too many SQL variables" on such builds. Chunk at a size that is safe
+# everywhere (see test_bulk_delete_and_prune_stay_below_sqlite_variable_limit).
+SQL_VARIABLE_CHUNK = 900
+
+
+def _chunked(seq: List[str], size: int = SQL_VARIABLE_CHUNK) -> Iterator[List[str]]:
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     """Delegate-subagent ids to cascade-delete with *parent_ids*.
 
@@ -462,13 +474,22 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     found: set[str] = set(seeds)
     frontier = list(seeds)
     while frontier:
-        ph = ",".join("?" * len(frontier))
-        cursor = conn.execute(
-            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
-            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
-            frontier + frontier,
-        )
-        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
+        # The frontier can grow past the variable limit when one delete
+        # sweep collects thousands of delegate descendants at once.
+        next_frontier: list[str] = []
+        # Each statement binds the chunk twice (marker IN + parent IN), so
+        # halve the chunk to stay under the limit.
+        for chunk in _chunked(frontier, SQL_VARIABLE_CHUNK // 2):
+            ph = ",".join("?" * len(chunk))
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+                f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
+                chunk + chunk,
+            )
+            next_frontier.extend(
+                row["id"] for row in cursor.fetchall() if row["id"] not in found
+            )
+        frontier = next_frontier
         found.update(frontier)
     # Return only the discovered children — never the parents themselves.
     return [sid for sid in found if sid not in seeds]
@@ -476,16 +497,16 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
-    if ids:
-        ph = ",".join("?" * len(ids))
-        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+    for chunk in _chunked(ids):
+        ph = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(
             f"UPDATE sessions SET parent_session_id = NULL "
             f"WHERE parent_session_id IN ({ph})",
-            ids,
+            chunk,
         )
-        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
     return ids
 
 
@@ -14158,37 +14179,39 @@ class SessionDB(
         removed_delegate_ids: list[str] = []
 
         def _do(conn):
-            placeholders = ",".join("?" * len(unique_ids))
             # First, filter to IDs that actually exist — we want to
             # return the real deleted count, not the input length.
-            cursor = conn.execute(
-                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
-                unique_ids,
-            )
-            existing = [row["id"] for row in cursor.fetchall()]
+            # Every IN (...) list is chunked: a dashboard bulk-delete can
+            # easily exceed SQLite's legacy 999-variable statement limit.
+            existing: list[str] = []
+            for chunk in _chunked(unique_ids):
+                cursor = conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN "
+                    f"({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+                existing.extend(row["id"] for row in cursor.fetchall())
             if not existing:
                 return 0
 
-            existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
             # of survivors — the IN list on ``parent_session_id`` does
             # exactly this.
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({existing_placeholders})",
-                existing,
-            )
-            conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
-                existing,
-            )
-            conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
-                existing,
-            )
+            for chunk in _chunked(existing):
+                ph = ",".join("?" * len(chunk))
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({ph})",
+                    chunk,
+                )
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({ph})",
+                    chunk,
+                )
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
             return len(existing)
@@ -14714,13 +14737,15 @@ class SessionDB(
             if not session_ids:
                 return 0
 
-            # Orphan any sessions whose parent is about to be deleted
-            placeholders = ",".join("?" * len(session_ids))
-            conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({placeholders})",
-                list(session_ids),
-            )
+            # Orphan any sessions whose parent is about to be deleted.
+            # Chunked: a prune sweep can select thousands of rows at once
+            # and one IN (...) would exceed SQLite's variable limit.
+            for chunk in _chunked(list(session_ids)):
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
