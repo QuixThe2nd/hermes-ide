@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
-from agent.turn_empty_response import recover_empty_response
+from agent.turn_empty_response import promote_reasoning_only_clean_stop, recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -73,34 +73,16 @@ def finish_text_response(
             result=result,
         )
 
-    # Reasoning-only clean stop: some reasoning parsers (vLLM nemotron_v3 past ~500K
-    # prompt tokens) file the whole answer as reasoning when the model omits the closing
-    # delimiter. ``finish_reason == "stop"`` means the provider considers generation
-    # complete, so the empty-response ladder would only re-bill the same input to arrive
-    # at a truncated preview of this text; promote the reasoning to the visible answer
-    # BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
-    # The promoted text is RETURNED as the answer but never written into the assistant
-    # row's ``content``: chain-of-thought stored as ordinary content is indistinguishable
-    # from a real reply on every history surface (#111761). The row keeps ``content``
-    # empty with the text in its reasoning fields and carries the promoted text as the
+    # Reasoning-only clean stop: promotion (and its stall warning) lives in the
+    # empty-response recovery phase
+    # (turn_empty_response.promote_reasoning_only_clean_stop); this branch only
+    # orchestrates. The promoted text is RETURNED as the answer but never written
+    # into the assistant row's ``content`` (#111761); the row carries it as the
     # ``api_content`` sidecar, so the next turn still replays it byte-identically.
-    _content = assistant_message.content
-    _promoted = None
-    if (
-        finish_reason == "stop"
-        and not assistant_message.tool_calls
-        and (_content is None or (isinstance(_content, str) and not _content.strip()))
-    ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
-        if _promoted:
-            # WARNING, not INFO: a model that keeps ending turns this way is stalled
-            # (planning monologue, zero tool calls) while the turn reports "complete".
-            logger.warning(
-                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-                len(_promoted), agent.model, agent.provider, api_call_count,
-                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
-            )
+    _promoted = promote_reasoning_only_clean_stop(
+        agent, assistant_message, finish_reason, content=assistant_message.content,
+        api_call_count=api_call_count, messages=messages,
+    )
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.

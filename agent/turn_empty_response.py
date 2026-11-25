@@ -135,6 +135,47 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
     return site_copy("reasoning_only", model=agent.model, preview=reasoning_preview)
 
 
+def promote_reasoning_only_clean_stop(
+    agent: Any, assistant_message: Any, finish_reason: str, *, content: Any,
+    api_call_count: int, messages: List[Any],
+) -> Optional[str]:
+    """Reasoning-only clean stop: promote the reasoning to the visible answer BEFORE
+    the ladder. Some reasoning parsers (vLLM nemotron_v3 past ~500K prompt tokens) file
+    the whole answer as reasoning when the model omits the closing delimiter.
+    ``finish_reason == "stop"`` means the provider considers generation complete, so
+    the empty-response ladder would only re-bill the same input to arrive at a
+    truncated preview of this text. ``length`` (cut off mid-thought) stays on the
+    continuation path. The promoted text is RETURNED as the answer but never written
+    into the assistant row's ``content``: chain-of-thought stored as ordinary content
+    is indistinguishable from a real reply on every history surface (#111761). The row
+    keeps ``content`` empty with the text in its reasoning fields and carries the
+    promoted text as the ``api_content`` sidecar, so the next turn still replays it
+    byte-identically. (Tool calls already branched above; re-checked here so the phase
+    owns its own precondition.)
+
+    Returns the promoted text, or None when this is not a reasoning-only clean stop.
+    """
+    _content = content
+    if (
+        finish_reason != "stop"
+        or assistant_message.tool_calls
+        or not (_content is None or (isinstance(_content, str) and not _content.strip()))
+    ):
+        return None
+    _promoted = agent._extract_reasoning(assistant_message) or None
+    if not _promoted:
+        return None
+    # WARNING, not INFO: a model that keeps ending turns this way is stalled
+    # (planning monologue, zero tool calls) while the turn reports "complete".
+    logger.warning(
+        "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
+        "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
+        len(_promoted), agent.model, agent.provider, api_call_count,
+        sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
+    )
+    return _promoted
+
+
 def recover_empty_response(
     agent: Any, assistant_message: Any, response: Any, finish_reason: str, *, final_response: Any,
     messages: List[Dict[str, Any]], api_messages: Any, conversation_history: Any,

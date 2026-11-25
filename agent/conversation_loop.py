@@ -26,6 +26,7 @@ from agent.turn_context import (
     compose_user_api_content,
     reanchor_current_turn_user_idx,
 )
+from agent.turn_empty_response import promote_reasoning_only_clean_stop
 from agent.turn_retry_state import TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.turn_control import is_gateway_restart_armed
@@ -7926,35 +7927,18 @@ def _run_conversation_inlined(
                 # every path that reaches turn finalization, not just this one.)
                 final_response = assistant_message.content or ""
 
-                # Reasoning-only clean stop: some reasoning parsers (vLLM
-                # nemotron_v3 past ~500K prompt tokens) file the whole answer as
-                # reasoning when the model omits the closing delimiter.
-                # ``finish_reason == "stop"`` means the provider considers
-                # generation complete, so the empty-response ladder would only
-                # re-bill the same input to arrive at a truncated preview of
-                # this text; promote the reasoning to the visible answer BEFORE
-                # the ladder. ``length`` (cut off mid-thought) stays on the
-                # continuation path. The promoted text is RETURNED as the answer
-                # but never written into the assistant row's ``content``:
-                # chain-of-thought stored as ordinary content is
-                # indistinguishable from a real reply on every history surface
-                # (#111761). The row keeps ``content`` empty with the text in
-                # its reasoning fields and carries the promoted text as the
-                # ``api_content`` sidecar, so the next turn still replays it
-                # byte-identically. (Tool calls already branched above.)
-                _promoted = None
-                if finish_reason == "stop" and not final_response.strip():
-                    _promoted = agent._extract_reasoning(assistant_message) or None
-                    if _promoted:
-                        # WARNING, not INFO: a model that keeps ending turns
-                        # this way is stalled (planning monologue, zero tool
-                        # calls) while the turn reports "complete".
-                        logger.warning(
-                            "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                            "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-                            len(_promoted), agent.model, agent.provider, api_call_count,
-                            sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
-                        )
+                # Reasoning-only clean stop: the promotion (and its stall warning)
+                # lives in the empty-response recovery phase
+                # (turn_empty_response.promote_reasoning_only_clean_stop); the loop
+                # only orchestrates. The promoted text is RETURNED as the answer but
+                # never written into the assistant row's ``content`` (#111761); the
+                # row carries it as the ``api_content`` sidecar, so the next turn
+                # still replays it byte-identically. (Tool calls already branched.)
+                _promoted = promote_reasoning_only_clean_stop(
+                    agent, assistant_message, finish_reason,
+                    content=assistant_message.content,
+                    api_call_count=api_call_count, messages=messages,
+                )
                 final_response = _promoted or assistant_message.content or ""
                 
                 # Fix: unmute output when entering the no-tool-call branch
