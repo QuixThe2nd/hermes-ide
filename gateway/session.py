@@ -10,6 +10,7 @@ Handles:
 
 import asyncio
 import logging
+import math
 import os
 import json
 import threading
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Any
 from gateway.session_transcript import SessionTranscriptMixin, TranscriptReadError
 from gateway.session_lifecycle import auto_continue_freshness_window
+from gateway.session_persistence import _DB_UNPINNED
 
 logger = logging.getLogger(__name__)
 
@@ -1207,13 +1209,6 @@ class AsyncSessionStore:
         return _offloaded
 
 
-# Sentinel for "no explicit SessionDB has been pinned on this store", so the
-# ``_db`` property can distinguish "resolve from the active profile scope"
-# from a deliberate ``store._db = None`` (which disables the DB and selects
-# the JSONL fallback).  A plain ``None`` cannot express both.
-_DB_UNPINNED = object()
-
-
 class SessionStore(SessionTranscriptMixin):
     """
     Manages session storage and retrieval.
@@ -1531,7 +1526,9 @@ class SessionStore(SessionTranscriptMixin):
         if not isinstance(row, dict) or not row.get("id"):
             return None
         started_at = row.get("started_at")
-        if not_after is not None and started_at is not None and float(started_at) > float(not_after):
+        # ``ts`` is ``int(time.time())`` while ``started_at`` is a REAL, so compare whole seconds:
+        # a row minted in the same second as the flush is still a valid origin.
+        if not_after is not None and started_at is not None and math.floor(float(started_at)) > int(not_after):
             return None
         return str(row["id"]), db
 

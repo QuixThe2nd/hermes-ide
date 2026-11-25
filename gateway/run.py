@@ -2340,12 +2340,14 @@ def _build_replay_entry(
     # api_content sidecar (persist-what-you-send, prompt-cache stability):
     # forward the exact bytes previously sent to the API for this message so
     # the agent's api_messages build can substitute them and keep the request
-    # prefix byte-stable across turns. Forward ONLY when this replay pipeline
-    # did not rewrite the content (timestamp injection, auto-continue strip,
-    # mirror prefix): a rewritten clean content means the pipeline decided
-    # different bytes must replay — resending the stored sidecar would
-    # reintroduce exactly what was stripped. Dropping it costs one cache
-    # boundary; resending stripped noise is a behavior regression.
+    # prefix byte-stable across turns. Preserve exact sent content unless
+    # cleanup rewrote the body: a rewritten clean content means the pipeline
+    # decided different bytes must replay — resending the stored sidecar
+    # would reintroduce exactly what was stripped. Timestamp-only rendering
+    # is checked separately by the history builder (exact rendered match or
+    # the normal "\n\n" context separator); the mirror rewrite pops the
+    # sidecar at its own site. Dropping it costs one cache boundary;
+    # resending stripped noise is a behavior regression.
     _sidecar = msg.get("api_content")
     if (
         role in ("user", "assistant")
@@ -2505,6 +2507,7 @@ def _build_gateway_agent_history(
     from hermes_time import get_timezone as _get_msg_tz
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
+        strip_leading_message_timestamps as _strip_msg_ts,
     )
 
     _msg_tz = _get_msg_tz()
@@ -2527,9 +2530,9 @@ def _build_gateway_agent_history(
             continue
 
         content = msg.get("content")
-        if inject_timestamps and role == "user" and isinstance(content, str):
-            content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
+            if inject_timestamps and isinstance(content, str):
+                content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
             observed_group_context.append(str(content).strip())
             continue
 
@@ -2543,25 +2546,45 @@ def _build_gateway_agent_history(
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
         elif content or _has_replayable_sidecar(role, content, msg):
+            replay_timestamp = msg.get("timestamp")
             # Strip gateway-injected auto-continue notes that were persisted
             # as part of user messages during interrupted turns.  Keep the
             # user's real text after the note, but never replay the recovery
             # instruction itself — that is what caused infinite re-execution
             # loops for interrupted long-running tools.
+            # Clean before rendering: a timestamp prefix hides recovery notes
+            # from the startswith-based stripper. Retain an embedded original time.
             if role == "user":
-                content = _strip_auto_continue_noise(content)
+                if isinstance(content, str):
+                    body, embedded_timestamp = _strip_msg_ts(content, tz=_msg_tz)
+                    clean_body = _strip_auto_continue_noise(body)
+                    if clean_body != body:
+                        content = clean_body
+                        if embedded_timestamp is not None:
+                            replay_timestamp = embedded_timestamp
                 if not content:
                     continue
-            # Simple text message - just need role and content.
-            if msg.get("mirror"):
-                mirror_src = msg.get("mirror_source", "another session")
-                content = f"[Delivered from {mirror_src}] {content}"
             # Preserve the timestamp on user messages so the
             # stale-dangerous-confirmation stripper in agent/replay_cleanup.py
             # can read it. The timestamp is dropped from assistant messages
             # because they don't need it; the replay-tail strippers look at
             # assistant(tool_calls), not timestamps.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
+            if inject_timestamps and role == "user" and isinstance(content, str):
+                rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
+                # Preserve only a sidecar matching the complete rendered message,
+                # optionally followed by the normal context separator. Cleanup
+                # above already invalidated sidecars containing stripped content.
+                sidecar = entry.get("api_content")
+                if rendered != content and sidecar and not (
+                    sidecar == rendered or sidecar.startswith(rendered + "\n\n")
+                ):
+                    entry.pop("api_content", None)
+                entry["content"] = rendered
+            if msg.get("mirror"):
+                mirror_src = msg.get("mirror_source", "another session")
+                entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
+                entry.pop("api_content", None)
             agent_history.append(entry)
 
     # Replay cleanup runs in the canonicalizer's fixed order (interrupted-block,
