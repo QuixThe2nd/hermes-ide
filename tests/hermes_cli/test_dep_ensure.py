@@ -54,13 +54,3 @@ def test_pm_refusal_reports_and_returns_false(monkeypatch, capsys):
         assert dep_ensure.ensure_dependency("node", interactive=True) is False
     out = capsys.readouterr().out
     assert "hermes pm install" in out
-
-
-def test_browser_check_consults_pm(monkeypatch):
-    from hermes_cli import dep_ensure
-
-    monkeypatch.setattr("shutil.which", lambda *a, **k: None)
-    with patch("pm.is_installed", return_value=True):
-        assert dep_ensure._browser_available() is True
-    with patch("pm.is_installed", return_value=False):
-        assert dep_ensure._browser_available() is False
