@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Any
 from gateway.session_transcript import SessionTranscriptMixin, TranscriptReadError
 from gateway.session_lifecycle import auto_continue_freshness_window
+from gateway.session_persistence import _DB_UNPINNED
 
 logger = logging.getLogger(__name__)
 
@@ -1206,13 +1207,6 @@ class AsyncSessionStore:
             return await asyncio.to_thread(attr, *args, **kwargs)
 
         return _offloaded
-
-
-# Sentinel for "no explicit SessionDB has been pinned on this store", so the
-# ``_db`` property can distinguish "resolve from the active profile scope"
-# from a deliberate ``store._db = None`` (which disables the DB and selects
-# the JSONL fallback).  A plain ``None`` cannot express both.
-_DB_UNPINNED = object()
 
 
 class SessionStore(SessionTranscriptMixin):
