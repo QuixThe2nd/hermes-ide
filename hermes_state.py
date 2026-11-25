@@ -312,7 +312,9 @@ def _scrub_surrogates(value: Any) -> Any:
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
-    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+    # Non-throwing like every other marker lookup: malformed model_config
+    # JSON must not break list/route surfaces.
+    return _sql_json_extract(col, "$._delegate_from")
 
 
 def _compression_child_marker_sql(alias: str) -> str:
@@ -6648,10 +6650,8 @@ class SessionDB(
                   AND EXISTS (SELECT 1 FROM messages m
                                WHERE m.session_id = o.id)
                   AND COALESCE(o.source, '') != 'tool'
-                  AND json_extract(COALESCE(o.model_config, '{{}}'),
-                                   '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(o.model_config, '{{}}'),
-                                   '$._delegate_from') IS NULL
+                  AND {_sql_json_extract('o.model_config', '$._branched_from')} IS NULL
+                  AND {_sql_json_extract('o.model_config', '$._delegate_from')} IS NULL
                 ORDER BY o.started_at ASC
                 """
             ).fetchall()
