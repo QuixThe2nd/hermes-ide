@@ -137,6 +137,67 @@ def test_codex_pool_honors_model_base_url(monkeypatch):
     assert resolved["api_mode"] == "codex_responses"
 
 
+def test_codex_env_override_beats_configured_model_base_url(monkeypatch):
+    """#40913 sibling: precedence on the openai-codex pool branch is HERMES_CODEX_BASE_URL env
+    override, then the configured model.base_url, then the pool row. With BOTH overrides set the
+    env var wins — the configured URL must not shadow the profile-wide override."""
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai-codex", "default": "gpt-5.3-codex",
+        "base_url": "http://127.0.0.1:8400/backend-api/codex/"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["base_url"] == "http://127.0.0.1:8787/v1"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_other_providers_model_base_url_is_ignored_on_the_codex_pool_branch(monkeypatch):
+    """#40913 sibling: ``_config_base_url_for_provider`` only matches when model.provider IS
+    openai-codex. A model.base_url configured under a DIFFERENT provider must not be applied to
+    the Codex endpoint — the pool row's canonical URL is used."""
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "groq", "default": "llama-4-6.5",
+        "base_url": "http://must-not-apply.example/backend-api/codex/"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth
@@ -897,6 +958,48 @@ class TestPromotedOfficialOpenRouterFallbackCredential:
         assert model_cfg["key_env"] == "PROMOTED_ROUTE_KEY"
         assert "api_key" not in model_cfg
 
+    def test_other_provider_configured_key_is_not_sent_to_openrouter(self, monkeypatch):
+        """Guard on the configured-key candidate: only the openrouter route's own config block
+        contributes. A DIFFERENT provider's inline ``model.api_key`` — and its ``key_env``
+        reference — belong to that provider's endpoint and must never ride a request to
+        openrouter.ai; the ambient OpenRouter key is used instead (the ambient OpenAI key only
+        when OpenRouter's is absent)."""
+        monkeypatch.setenv("OTHER_PROVIDER_ROUTE_KEY", "sk-other-provider-keyenv-must-not-leak")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-ambient-openrouter")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        inline_cfg = {"default": "deepseek-v4-pro", "provider": "deepseek",
+                      "api_key": "sk-other-provider-must-not-leak"}
+        key_env_cfg = {"default": "deepseek-v4-pro", "provider": "deepseek",
+                       "key_env": "OTHER_PROVIDER_ROUTE_KEY"}
+
+        for model_cfg in (inline_cfg, key_env_cfg):
+            resolved = self._resolve(monkeypatch, model_cfg)
+            assert resolved["provider"] == "openrouter"
+            assert resolved["base_url"].startswith("https://openrouter.ai")
+            assert resolved["api_key"] == "sk-ambient-openrouter"
+
+        # Ambient OpenRouter absent → the ambient OpenAI key is the last candidate, never the
+        # other provider's configured key.
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient-openai")
+        resolved = self._resolve(monkeypatch, key_env_cfg)
+        assert resolved["api_key"] == "sk-ambient-openai"
+
+    def test_explicit_override_still_beats_configured_openrouter_key(self, monkeypatch):
+        """Candidate order with the configured credential present in BOTH forms (the inline
+        ``model.api_key`` takes the configured slot via ``resolve_entry_api_key`` precedence):
+        the explicit one-off override stays first."""
+        monkeypatch.setenv("PROMOTED_ROUTE_KEY", "sk-configured-must-lose")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-ambient-must-lose")
+
+        model_cfg = {"default": "anthropic/claude-sonnet-4", "provider": "openrouter",
+                     "api_key": "sk-inline-configured-must-lose", "key_env": "PROMOTED_ROUTE_KEY"}
+
+        resolved = self._resolve(monkeypatch, model_cfg, explicit_api_key="sk-explicit-one-off-wins")
+
+        assert resolved["api_key"] == "sk-explicit-one-off-wins"
+
 
 class TestCustomEndpointCredentialBehaviorUnchanged:
     """Regression (brief 5, item 6): adding the configured credential to the
@@ -1508,6 +1611,44 @@ def test_opencode_go_explicit_key_matches_env_key_route(monkeypatch, model):
     assert explicit["source"] == "explicit"
     assert (explicit["api_mode"], explicit["base_url"]) == (env_key["api_mode"], env_key["base_url"])
     assert explicit["api_mode"] == rp._models.opencode_model_api_mode("opencode-go", model)
+
+
+def test_explicit_key_does_not_change_route_for_a_non_opencode_provider(monkeypatch):
+    """#100854 sibling: deriving the OpenCode route from the model on the explicit-credential
+    rung must not move any OTHER provider. For a plain OpenAI-compatible provider an explicit
+    ``--api-key`` leaves ``(api_mode, base_url)`` identical to the env-key rung."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "deepseek")
+    monkeypatch.setattr(rp, "_get_model_config",
+                        lambda: {"provider": "deepseek", "default": "deepseek-v4-pro"})
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    explicit = rp.resolve_runtime_provider(requested="deepseek", explicit_api_key="sk-explicit-one-off")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-env")
+    env_key = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert explicit["source"] == "explicit"
+    assert env_key["api_key"] == "sk-deepseek-env"
+    assert (explicit["api_mode"], explicit["base_url"]) == (env_key["api_mode"], env_key["base_url"])
+    assert (explicit["api_mode"], explicit["base_url"]) == ("chat_completions", "https://api.deepseek.com/v1")
+
+
+def test_explicit_key_base_url_keeps_v1_normalization(monkeypatch):
+    """#100854 tail: with an explicit ``--api-key`` AND an explicit base_url that already ends
+    in ``/v1``, the explicit rung's ``_finalize_base_url`` keeps exactly one ``/v1`` for a
+    chat-routed OpenCode model — not doubled (``/v1/v1``), not stripped."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "opencode-go", "default": "glm-5.3-flash"})
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go", explicit_api_key="test-opencode-go-key",
+                                           explicit_base_url="https://opencode.ai/zen/go/v1")
+
+    assert resolved["source"] == "explicit"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 # ------------------------------------------------------------------
@@ -2275,6 +2416,45 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
 
     assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
+
+
+def test_openai_runtime_is_a_noop_for_other_providers(monkeypatch):
+    """The helper's provider gate: ``model.openai_runtime: codex_app_server`` rewrites only
+    openai / openai-codex runtimes. Any other provider keeps its own api_mode — the opt-in must
+    not leak across providers."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "deepseek")
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-env")
+    plain_cfg = {"provider": "deepseek", "default": "deepseek-v4-pro"}
+    flagged_cfg = {**plain_cfg, "openai_runtime": "codex_app_server"}
+
+    monkeypatch.setattr(rp, "_get_model_config", lambda: plain_cfg)
+    without_flag = rp.resolve_runtime_provider(requested="deepseek")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: flagged_cfg)
+    with_flag = rp.resolve_runtime_provider(requested="deepseek")
+
+    assert with_flag["provider"] == "deepseek"
+    assert with_flag["api_mode"] == without_flag["api_mode"] == "chat_completions"
+
+
+def test_runtime_without_api_mode_is_left_untouched(monkeypatch):
+    """The post-ladder application is membership-guarded: a rung dict that carries no
+    ``api_mode`` is returned unchanged instead of raising ``KeyError``. No builder currently
+    omits it — every rung goes through ``_runtime()`` — so the named-custom rung is stubbed to
+    the bare shape the guard exists for (with the opt-in configured, the worst-case rewrite)."""
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime",
+                        lambda **_kwargs: {"provider": "custom", "base_url": "https://api.example.test/v1",
+                                           "api_key": "sk-named-custom-pool"})
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom", "default": "m", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.example.test/v1"
+    assert resolved["api_key"] == "sk-named-custom-pool"
+    assert "api_mode" not in resolved
 
 
 def test_bare_custom_resolves_model_key_env_for_configured_base_url(monkeypatch):
