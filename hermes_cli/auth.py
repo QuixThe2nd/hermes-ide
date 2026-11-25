@@ -130,6 +130,14 @@ class ProviderConfig:
     extra: Dict[str, Any] = field(default_factory=dict)
     api_key_env_vars: tuple = ()  # API-key providers: env vars to check, in priority order
     base_url_env_var: str = ""  # optional env var overriding the base URL
+    # External-process (ACP) launch spec. Previously only on the per-plugin profile; the
+    # model-provider strip (db4ffa25327) removed the bundled profiles, so in-tree
+    # external-process providers carry their own here and _external_process_spec falls back to
+    # a plugin profile for out-of-tree ones.
+    process_command: str = ""
+    process_args: tuple = ()
+    process_command_env_vars: tuple = ()
+    process_args_env_var: str = ""
 
 
 def _api_key_provider(
@@ -156,7 +164,12 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
      ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), "COPILOT_API_BASE_URL"),
     ProviderConfig(
         "copilot-acp", "GitHub Copilot ACP", "external_process",
-        inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL, base_url_env_var="COPILOT_ACP_BASE_URL"),
+        inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL, base_url_env_var="COPILOT_ACP_BASE_URL",
+        # Launch spec verbatim from the pre-strip CopilotACPProfile, so existing setups keep
+        # working (env var names predate the profile; they were hardcoded in this file before it).
+        process_command="copilot", process_args=("--acp", "--stdio"),
+        process_command_env_vars=("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
+        process_args_env_var="HERMES_COPILOT_ACP_ARGS"),
     ("gemini", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta",
      ("GOOGLE_API_KEY", "GEMINI_API_KEY"), "GEMINI_BASE_URL"),
     ("zai", "Z.AI / GLM", "https://api.z.ai/api/paas/v4",
@@ -1578,20 +1591,26 @@ def _external_process_spec(
     pconfig: ProviderConfig) -> tuple[str, List[str], str, Optional[str], tuple[str, ...]]:
     """``(command, args, base_url, resolved_command, command_env_vars)`` for an ACP provider.
 
-    Launch details come from the provider's own profile (copilot-acp: HERMES_COPILOT_ACP_COMMAND /
-    COPILOT_CLI_PATH / HERMES_COPILOT_ACP_ARGS), so out-of-tree providers describe their binary."""
+    In-tree providers carry their launch spec on the registry row (copilot-acp: HERMES_COPILOT_ACP_
+    COMMAND / COPILOT_CLI_PATH / HERMES_COPILOT_ACP_ARGS); out-of-tree providers describe their
+    binary on the plugin profile, which stays the fallback."""
     base_url = _provider_env_base_url(pconfig) or pconfig.inference_base_url
     try:
         from providers import get_provider_profile as _get_provider_profile
         profile = _get_provider_profile(pconfig.id)
     except Exception:
         profile = None
-    command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
-    args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
+    command_env_vars = (tuple(getattr(pconfig, "process_command_env_vars", ()) or ())
+                        or tuple(getattr(profile, "process_command_env_vars", ()) or ()))
+    args_env_var = (str(getattr(pconfig, "process_args_env_var", "") or "")
+                    or str(getattr(profile, "process_args_env_var", "") or ""))
     command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
+               or str(getattr(pconfig, "process_command", "") or "")
                or str(getattr(profile, "process_command", "") or ""))
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
-    args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
+    args = (shlex.split(raw_args) if raw_args else
+            (list(getattr(pconfig, "process_args", ()) or ())
+             or list(getattr(profile, "process_args", ()) or [])))
     return command, args, base_url, shutil.which(command) if command else None, command_env_vars
 
 
