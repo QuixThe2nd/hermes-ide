@@ -2826,8 +2826,9 @@ class GatewayInboundMixin:
                     "protect the transcript, this message was not processed. "
                     "Wait for the active turn to finish, then resend it."
                 )
+            _suppress_reply = False
             try:
-                await self._run_post_turn_hooks(
+                _suppress_reply = await self._run_post_turn_hooks(
                     agent_result=_agent_result,
                     source=source,
                     is_internal=is_internal,
@@ -2835,6 +2836,14 @@ class GatewayInboundMixin:
                 )
             except Exception as _goal_exc:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
+            if (
+                _suppress_reply
+                and isinstance(_agent_result, dict)
+                and not _agent_result.get("failed")
+            ):
+                # Quiet goal run: this turn is reported in the statusbar, and
+                # already_sent is how the delivery path knows not to post it.
+                _agent_result["already_sent"] = True
             return _agent_result
         finally:
             self._restore_pending_one_turn_model_override(_quick_key)

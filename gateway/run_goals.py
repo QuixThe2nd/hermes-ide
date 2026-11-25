@@ -14,6 +14,7 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
+from gateway.goal_run_plan import plan_for_turn_async
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -237,9 +238,15 @@ class GatewayGoalsMixin:
         source: Any,
         final_response: str,
         auto_decision: Any = None,
-    ) -> None:
+        is_internal: bool = False,
+    ) -> bool:
         """Run the goal judge after a gateway turn and, if still active,
         enqueue a continuation prompt for the same session.
+
+        Returns True when this turn's chat reply must be suppressed: a running
+        goal reports into the statusbar, and only the turn that ends the run is
+        delivered. Only synthetic continuation turns go quiet — a human message
+        always gets its answer.
 
         Called from ``_handle_message_with_agent`` at turn boundary, AFTER
         the response has been delivered. Safe when no goal is set.
@@ -256,11 +263,11 @@ class GatewayGoalsMixin:
             from hermes_cli.goals import GoalManager
         except Exception as exc:
             logger.debug("goal continuation: goals module unavailable: %s", exc)
-            return
+            return False
 
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
-            return
+            return False
 
         max_turns = self._goal_max_turns_from_config()
 
@@ -286,7 +293,7 @@ class GatewayGoalsMixin:
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         if not mgr.is_active():
-            return
+            return False
 
         try:
             from hermes_cli.goals import gather_background_processes as _gather_bg
@@ -321,12 +328,38 @@ class GatewayGoalsMixin:
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
+        # One delivery plan per turn (internal/goalrun): a continuing run keeps
+        # its reply out of the chat, the turn that ends the run delivers it.
+        state = getattr(mgr, "state", None)
+        plan = await plan_for_turn_async(
+            active=bool(is_internal),
+            should_continue=bool(decision.get("should_continue")),
+            turn=int(getattr(state, "turns_used", 0) or 0),
+            max_turns=int(getattr(state, "max_turns", 0) or max_turns),
+            objective=str(getattr(state, "goal", "") or ""),
+            last_step=final_response or "",
+        )
+        if plan.get("line"):
+            try:
+                from hermes_cli.plugins import invoke_hook
+
+                invoke_hook(
+                    "on_goal_progress",
+                    line=plan["line"],
+                    objective=plan.get("objective") or "",
+                    done=bool(plan.get("final")),
+                    session_id=sid,
+                    platform=getattr(source, "platform", "") or "",
+                )
+            except Exception as exc:
+                logger.debug("goal progress hook failed: %s", exc)
+
         if not decision.get("should_continue"):
-            return
+            return False
 
         prompt = decision.get("continuation_prompt") or ""
         if not prompt or source is None:
-            return
+            return bool(plan.get("suppress"))
 
         # Enqueue via the adapter's FIFO so a user message already in
         # flight preempts the continuation naturally.
@@ -345,6 +378,7 @@ class GatewayGoalsMixin:
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+        return bool(plan.get("suppress"))
 
     async def _run_post_turn_hooks(
         self,
@@ -353,9 +387,14 @@ class GatewayGoalsMixin:
         source: Any,
         is_internal: bool,
         event: Any = None,
-    ) -> None:
-        """Run goal and loop bookkeeping after an agent turn returns."""
+    ) -> bool:
+        """Run goal and loop bookkeeping after an agent turn returns.
+
+        Returns True when this turn's chat reply must stay unsent (it belongs to
+        a running goal; the statusbar carries it instead).
+        """
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
+        _suppress = False
 
         try:
             session_entry = await self.async_session_store.get_or_create_session(
@@ -364,7 +403,7 @@ class GatewayGoalsMixin:
             )
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
-            return
+            return False
 
         # Auto-goal: consume the decision parked at message arrival.
         # Popped before the final-text gate and dropped — not deferred —
@@ -387,11 +426,12 @@ class GatewayGoalsMixin:
             except Exception as exc:
                 logger.debug("retrospective goal hook failed: %s", exc)
             try:
-                await self._post_turn_goal_continuation(
+                _suppress = await self._post_turn_goal_continuation(
                     session_entry=session_entry,
                     source=source,
                     final_response=final_text,
                     auto_decision=auto_decision,
+                    is_internal=is_internal,
                 )
             except Exception as exc:
                 logger.debug("goal continuation hook failed: %s", exc)
@@ -403,6 +443,7 @@ class GatewayGoalsMixin:
             )
         except Exception as exc:
             logger.debug("loop completion hook failed: %s", exc)
+        return bool(_suppress)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

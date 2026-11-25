@@ -112,6 +112,10 @@ VALID_HOOKS: Set[str] = {
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
+    # on_goal_progress: once per turn of an active /goal run, after the goal judge. Observer
+    # only (the statusbar folds the whole run into one bar). Kwargs: line, objective, done,
+    # session_id, platform. What gets suppressed is decided in internal/goalrun.
+    "on_goal_progress",
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
