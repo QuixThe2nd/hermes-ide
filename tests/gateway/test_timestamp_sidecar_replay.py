@@ -137,3 +137,42 @@ def test_full_builder_to_responses_keeps_cross_turn_prefix(responses_agent, tmp_
     assert not any("api_content" in item or "timestamp" in item for item in next_input)
     assert any(item.get("encrypted_content") == "synthetic-reasoning" for item in next_input)
     assert any(item.get("phase") == "final_answer" for item in next_input)
+
+
+def test_rendered_sidecar_survives_only_exact_separator():
+    """When rendering rewrites the content, a sidecar is kept only when it
+    equals the complete rendered message or continues with the normal
+    ``\\n\\n`` context separator — never on a loose prefix match."""
+    rendered = _render("check the result")
+    base = {"role": "user", "content": "check the result", "timestamp": STAMP}
+
+    exact = _build_gateway_agent_history([{**base, "api_content": rendered}], inject_timestamps=True)[0]
+    assert exact[0]["api_content"] == rendered
+
+    separated = _build_gateway_agent_history(
+        [{**base, "api_content": rendered + "\n\n" + POLICY}], inject_timestamps=True
+    )[0]
+    assert separated[0]["api_content"] == rendered + "\n\n" + POLICY
+    assert separated[0]["content"] == rendered
+
+    loose = _build_gateway_agent_history(
+        [{**base, "api_content": rendered + " TAMPERED CONTINUATION"}], inject_timestamps=True
+    )[0]
+    assert "api_content" not in loose[0]
+    assert loose[0]["content"] == rendered
+
+
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_mirror_rewrite_always_invalidates_sidecar(timestamps):
+    """The ``[Delivered from ...]`` prefix rewrites the replayed bytes, so the
+    stored sidecar must never ride along on a mirrored row."""
+    rendered = _render("check the result") if timestamps else "check the result"
+    replay, _ = _build_gateway_agent_history(
+        [{
+            "role": "user", "content": "check the result", "timestamp": STAMP,
+            "mirror": True, "mirror_source": "ops", "api_content": rendered + "\n\n" + POLICY,
+        }],
+        inject_timestamps=timestamps,
+    )
+    assert "api_content" not in replay[0]
+    assert replay[0]["content"] == f"[Delivered from ops] {rendered}"
