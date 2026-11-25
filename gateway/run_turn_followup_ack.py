@@ -1,7 +1,8 @@
 """Processing-lifecycle hooks for runner-drained queued follow-ups.
 
 A message that arrives mid-turn is parked in the adapter's pending slot and drained in-band by
-``TurnRunner._run_agent_queued_followup``, never by ``BasePlatformAdapter._process_message_background``
+the live follow-up lane inside ``GatewayTurnMixin._run_agent_inner`` (``_run_agent_queued_followup``
+is the extracted twin kept for unit tests), never by ``BasePlatformAdapter._process_message_background``
 — the only other call site for ``on_processing_start`` / ``on_processing_complete``. Without firing
 them here every adapter that renders a read-receipt reaction from the hooks silently skips queued,
 interrupting and steer-demoted messages (#72502, salvage #72503).

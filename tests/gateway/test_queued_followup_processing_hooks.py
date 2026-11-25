@@ -93,6 +93,21 @@ class _RaisingSecondTurnAgent:
         }
 
 
+class _NoReplyTerminalAgent:
+    """First turn answers normally; the queued follow-up answers with a silence marker."""
+
+    calls: list = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        type(self).calls.append(message)
+        if len(type(self).calls) >= 2:
+            return {"final_response": "NO_REPLY", "messages": [], "api_calls": 1}
+        return {"final_response": "done-1", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
@@ -333,4 +348,85 @@ async def test_complete_only_adapter_is_left_alone(monkeypatch, tmp_path):
     )
 
     assert result["final_response"] == "done-2"
+
     assert adapter.completed == []
+
+
+@pytest.mark.asyncio
+async def test_live_chain_human_opener_internal_terminal_silence_is_allowed(monkeypatch, tmp_path):
+    """#916 review: a human message opens the turn and an internal notification runs as its
+    queued follow-up. The terminal ``NO_REPLY`` must classify as MACHINERY silence at the
+    live recursive boundary — the chain stays silent instead of surfacing the
+    "silence marker rejected on a user turn" fallback keyed on the opening human event."""
+    _NoReplyTerminalAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _NoReplyTerminalAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="wake: background delegation finished",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        internal=True,
+        message_id="wake-1",
+    )
+
+    result = await runner._run_agent(
+        message="the human opener",
+        context_prompt="",
+        history=[],
+        source=_source(),
+        session_id="sess-live-internal-terminal",
+        session_key=SESSION_KEY,
+    )
+
+    assert _NoReplyTerminalAgent.calls == ["the human opener", "wake: background delegation finished"]
+    # The same predicate _hmwa_shape_agent_response applies, with the opening human
+    # turn's display kind as the fallback classification.
+    from gateway.response_filters import (
+        is_intentional_silence_agent_result,
+        is_machinery_display_kind,
+    )
+
+    assert is_intentional_silence_agent_result(result, result["final_response"])
+    assert is_machinery_display_kind(result.get("queued_terminal_display_kind", None))
+    assert result["queued_terminal_inbound_id"] == "wake-1"
+
+
+@pytest.mark.asyncio
+async def test_live_chain_internal_opener_human_terminal_marker_is_rejected(monkeypatch, tmp_path):
+    """Reverse chain: an internal wake opens, a human message runs as its queued follow-up.
+    The terminal human turn's ``NO_REPLY`` must be REJECTED (visible fallback), never
+    silently accepted under the opening internal event's machinery classification."""
+    _NoReplyTerminalAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _NoReplyTerminalAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="and what happened next?",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="q-1",
+    )
+
+    result = await runner._run_agent(
+        message="wake: scheduled check",
+        context_prompt="",
+        history=[],
+        source=_source(),
+        session_id="sess-live-human-terminal",
+        session_key=SESSION_KEY,
+        persist_user_display_kind="internal_notification",
+    )
+
+    assert _NoReplyTerminalAgent.calls == ["wake: scheduled check", "and what happened next?"]
+    from gateway.response_filters import (
+        is_intentional_silence_agent_result,
+        is_machinery_display_kind,
+    )
+
+    assert is_intentional_silence_agent_result(result, result["final_response"])
+    # Exactly the shaping helper's expression: the TERMINAL kind (None for the human
+    # follow-up) wins over the opener's "internal_notification" default.
+    assert not is_machinery_display_kind(
+        result.get("queued_terminal_display_kind", "internal_notification"))
+    assert adapter.completed == [("q-1", ProcessingOutcome.SUCCESS)]

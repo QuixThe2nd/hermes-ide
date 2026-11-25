@@ -117,6 +117,39 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_queued_terminal_classification_stamps_the_opening_event(monkeypatch, tmp_path):
+    """The outer final send brackets against the OPENING event, so the queued chain's
+    TERMINAL classification must ride it: ``ledger_message_id`` keys the delivery-ledger
+    row (a refused earlier reply must not be overwritten by an identical-text terminal
+    reply), and ``_notification_reply_muted`` is the snapshot base.py's
+    ``diagnostic_wake_muted`` final gate reads — the terminal turn's verdict, never the
+    opener's."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "done",
+        "messages": [
+            {"role": "user", "content": "side chatter"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "queued_terminal_inbound_id": "43",
+        "_notification_reply_muted": True,
+    })
+    event = _event()
+
+    await runner._handle_message_with_agent(
+        event, _source(), "agent:main:discord:group:-1001:12345", 1
+    )
+
+    assert event.ledger_message_id == "43"
+    assert event._notification_reply_muted is True
+
+
+@pytest.mark.asyncio
 async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={

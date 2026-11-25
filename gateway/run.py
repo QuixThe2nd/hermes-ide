@@ -5514,6 +5514,46 @@ def _preserve_queued_followup_history_offset(
     merged["history_offset"] = current_offset
     return merged
 
+def _finish_queued_followup_result(
+    current_result: dict,
+    followup_result: dict,
+    *,
+    next_inbound_id: Optional[str],
+    next_display_kind: Optional[str],
+    next_display_metadata: Optional[Dict[str, Any]],
+    pending_event: Any,
+    platform: Any = None,
+    user_config: Any = None,
+) -> dict:
+    """Merge a drained queued follow-up into the chain result, terminal turn first.
+
+    The TERMINAL turn of a queued chain owns the presentation classification the outer
+    final send consumes: the ledger identity (``queued_terminal_inbound_id`` — keyed on
+    the last inbound message so a refused earlier reply is never overwritten by an
+    identical-text terminal reply), the display kind deciding whether a bare silence
+    marker may vanish (``queued_terminal_display_kind``), the notification category, and
+    the diagnostic mute verdict. A deeper recursion has already set its own keys, so the
+    whole block is filled only while ``queued_terminal_inbound_id`` is absent — the
+    innermost turn wins.
+    """
+    from gateway.warning_notifications import diagnostic_turn_muted
+
+    merged = _preserve_queued_followup_history_offset(current_result, followup_result)
+    if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+        merged = {
+            **merged,
+            "queued_terminal_inbound_id": next_inbound_id,
+            "queued_terminal_display_kind": next_display_kind,
+            "queued_terminal_notification_category": (
+                (pending_event.metadata or {}).get("notification_category", "result")
+                if pending_event is not None and pending_event.internal else "result"),
+            # Presentation snapshot for the outer frame's ``diagnostic_wake_muted`` gate:
+            # the terminal turn's own verdict, never the opening event's.
+            "_notification_reply_muted": diagnostic_turn_muted(
+                next_display_metadata, platform, user_config),
+        }
+    return merged
+
 
 async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
     """Best-effort dispose for an adapter that never made it onto ``self.adapters``.

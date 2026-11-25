@@ -4046,6 +4046,24 @@ class GatewayTurnMixin:
                 turn_started_at=_msg_start_time,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            # A queued chain's TERMINAL turn owns the presentation classification; carry it
+            # onto the opening event so the downstream gates classify the chain's single
+            # visible reply by the turn that produced it: ``ledger_message_id`` keys the
+            # final-send delivery-ledger row (a refused earlier reply must not be
+            # overwritten by an identical-text terminal reply), and the mute snapshot is
+            # what base.py's ``diagnostic_wake_muted`` final gate reads.
+            _terminal_inbound_id = (
+                agent_result.get("queued_terminal_inbound_id")
+                if isinstance(agent_result, dict) else None
+            )
+            if _terminal_inbound_id:
+                event.ledger_message_id = str(_terminal_inbound_id)
+            _terminal_mute = (
+                agent_result.get("_notification_reply_muted")
+                if isinstance(agent_result, dict) else None
+            )
+            if isinstance(_terminal_mute, bool):
+                event._notification_reply_muted = _terminal_mute
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -6323,7 +6341,7 @@ class GatewayTurnMixin:
         from gateway.run import logger
 
         from gateway.platforms.base import merge_pending_message_event
-        from gateway.run import _preserve_queued_followup_history_offset
+        from gateway.run import _finish_queued_followup_result
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
         )
@@ -6366,6 +6384,7 @@ class GatewayTurnMixin:
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
+        next_display_metadata = diagnostic_metadata(pending_event) or None
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
             if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -6432,7 +6451,7 @@ class GatewayTurnMixin:
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
-                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
+                persist_user_display_metadata=next_display_metadata,
                 turn_started_at=time.perf_counter(),
             )
         except asyncio.CancelledError:
@@ -6445,23 +6464,14 @@ class GatewayTurnMixin:
             raise
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
-        merged = _preserve_queued_followup_history_offset(result, followup_result)
-        # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
-        # the adapter brackets against the event that OPENED the chain. Without this the terminal
-        # reply is recorded under the first message's id, so a first reply that was refused (flood
-        # control) has its outstanding row replaced and marked delivered by an identical-text
-        # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
-        # so only fill the key while it is still absent: the innermost turn wins.
-        if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
-            merged = {
-                **merged,
-                "queued_terminal_inbound_id": next_inbound_id,
-                "queued_terminal_display_kind": next_display_kind,
-                "queued_terminal_notification_category": (
-                    (pending_event.metadata or {}).get("notification_category", "result")
-                    if pending_event is not None and pending_event.internal else "result"),
-            }
-        return merged
+        return _finish_queued_followup_result(
+            result, followup_result,
+            next_inbound_id=next_inbound_id,
+            next_display_kind=next_display_kind,
+            next_display_metadata=next_display_metadata,
+            pending_event=pending_event,
+            platform=turn_ctx.source.platform if turn_ctx.source is not None else None,
+        )
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",
@@ -6712,13 +6722,13 @@ class GatewayTurnMixin:
             _abandon_timed_out_gateway_turn,
             _build_media_placeholder,
             _dequeue_pending_event,
+            _finish_queued_followup_result,
             _float_env,
             _interim_metadata,
             _is_control_interrupt_message,
             _load_gateway_config,
             _non_conversational_metadata,
             _platform_config_key,
-            _preserve_queued_followup_history_offset,
             _resolve_gateway_model,
             _resolve_progress_thread_id,
             _watch_gateway_turn_inactivity,
@@ -8166,41 +8176,64 @@ class GatewayTurnMixin:
                     except Exception:
                         pass
 
-                # Re-baseline the cached agent's message_count snapshot before
-                # recursing into the in-band queued (/queue) follow-up turn.
-                # The first turn has completed and flushed its own user +
-                # assistant rows to the SessionDB, so the cross-process
-                # coherence guard (#45966) — which this recursive _run_agent
-                # call re-enters — would otherwise see the grown on-disk count
-                # against the stale build-time snapshot and rebuild the agent
-                # on THIS process's OWN writes, destroying the prompt-cache
-                # prefix #46237 was merged to preserve.  The existing
-                # re-baseline in _handle_message_with_agent only runs after the
-                # whole _run_agent chain unwinds — too late for the in-band
-                # follow-up.  Use the same (session_key, session_id) the
-                # recursive call runs under so the snapshot matches exactly
-                # what the follow-up's guard will consult.  Fail-safe in helper.
-                await self._refresh_agent_cache_message_count(session_key, session_id)
+                # Acknowledge the follow-up the way an idle-session message is: this in-band
+                # drain is the only place a queued/interrupting message ever runs, so base.py's
+                # hook site is never entered for it. Resolve the adapter from the follow-up's
+                # OWN source — a multiplexed gateway can route it to a different profile's
+                # adapter, and only that instance holds the per-message reaction state.
+                from gateway.run_turn_followup_ack import (
+                    _followup_cancel_outcome, _run_followup_processing_hook)
+                _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
+                await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+                # The re-baseline sits inside the try: a /stop landing on its DB await must
+                # still close the marker (the hook helper's own ``except Exception`` does not
+                # catch cancellation).
+                try:
+                    await self._refresh_agent_cache_message_count(session_key, session_id)
 
-                followup_result = await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
-                    session_key=next_session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    inbound_message_id=next_inbound_id,
-                    channel_prompt=next_channel_prompt,
-                    message_type=next_message_type,
-                    persist_user_message=next_persist_message,
-                    persist_user_display_kind=next_display_kind,
-                    persist_user_display_metadata=next_display_metadata,
-                    turn_started_at=time.perf_counter(),
+                    followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        inbound_message_id=next_inbound_id,
+                        channel_prompt=next_channel_prompt,
+                        message_type=next_message_type,
+                        persist_user_message=next_persist_message,
+                        persist_user_display_kind=next_display_kind,
+                        persist_user_display_metadata=next_display_metadata,
+                        turn_started_at=time.perf_counter(),
+                    )
+                except asyncio.CancelledError:
+                    await _run_followup_processing_hook(
+                        _hook_adapter, pending_event, "on_processing_complete",
+                        _followup_cancel_outcome(_hook_adapter))
+                    raise
+                except BaseException:
+                    await _run_followup_processing_hook(
+                        _hook_adapter, pending_event, "on_processing_complete",
+                        ProcessingOutcome.FAILURE)
+                    raise
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+                # The TERMINAL turn of the chain owns the presentation classification the
+                # outer final send consumes (ledger identity, silence display kind,
+                # notification category, diagnostic mute verdict) — the review finding: the
+                # live recursive path must carry it back, not just the superseded lane.
+                return _finish_queued_followup_result(
+                    result, followup_result,
+                    next_inbound_id=next_inbound_id,
+                    next_display_kind=next_display_kind,
+                    next_display_metadata=next_display_metadata,
+                    pending_event=pending_event,
+                    platform=next_source.platform if next_source is not None else None,
+                    user_config=user_config,
                 )
-                return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Capture the exact mutable object an early return may already have
             # evaluated before awaiting stream cleanup below.
