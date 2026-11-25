@@ -374,11 +374,17 @@ def _mk_runner_stub():
         _schedule_discord_semantic_thread_rename = (
             GatewayRunner._schedule_discord_semantic_thread_rename
         )
+        _schedule_rename_from_title_thread = (
+            GatewayRunner._schedule_rename_from_title_thread
+        )
 
         def __init__(self, adapter):
             self.adapters = {Platform.RELAY: adapter}
 
         def _adapter_for_source(self, source):
+            return self.adapters.get(Platform.RELAY)
+
+        def _delivery_adapter_for(self, source):
             return self.adapters.get(Platform.RELAY)
 
     return _Stub

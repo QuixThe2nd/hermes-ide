@@ -124,6 +124,18 @@ def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
 
 
+def _interrupt_tool_reason(reason: str) -> str:
+    """System tool-cancellation category for a shutdown-path interrupt reason.
+
+    Distinct from the user-facing message ("Gateway shutting down") and slug-safe
+    for ``interrupt_issuer`` attribution (#112647).
+    """
+    normalized = (reason or "").lower()
+    if "restart" in normalized:
+        return "gateway restart"
+    return "gateway shutdown"
+
+
 class GatewayShutdownMixin:
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -280,7 +292,7 @@ class GatewayShutdownMixin:
                 continue
             seen.add(id(agent))
             try:
-                request_hard_interrupt(agent, reason)
+                request_hard_interrupt(agent, reason, tool_reason=_interrupt_tool_reason(reason))
                 interrupted += 1
             except Exception as exc:
                 logger.debug(
@@ -1009,7 +1021,7 @@ class GatewayShutdownMixin:
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
             try:
-                request_hard_interrupt(agent, reason)
+                request_hard_interrupt(agent, reason, tool_reason=_interrupt_tool_reason(reason))
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)

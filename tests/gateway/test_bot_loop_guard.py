@@ -23,7 +23,7 @@ HUMAN = "100200300"
 
 @pytest.fixture(autouse=True)
 def _isolate_authz_env(monkeypatch):
-    for var in ("DISCORD_ALLOW_BOTS", "DISCORD_ALLOWED_USERS", "SLACK_ALLOW_BOTS",
+    for var in ("DISCORD_ALLOW_BOTS", "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_BOTS", "SLACK_ALLOW_BOTS",
                 "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(var, raising=False)
 
@@ -126,8 +126,10 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     runner._effective_busy_text_mode = lambda source: "steer"
     runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
     runner._delivery_adapter_for = lambda source: SimpleNamespace(_pending_messages={})
-    runner._peek_session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=object()))
-    steer = AsyncMock(return_value=SimpleNamespace(effective_mode="steer", redirected=False, steered=True))
+    runner._peek_session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=object()),
+                                                             conversation=SimpleNamespace(queued_events=[]))
+    steer = AsyncMock(return_value=SimpleNamespace(effective_mode="steer", redirected=False, steered=True,
+                                                   demoted_for_subagents=False, demoted_for_compression=False))
     runner._resolve_busy_steer_or_redirect = steer
     events = [MessageEvent(text="more", message_id=str(i), source=_bot(BOT_A)) for i in range(3)]
 

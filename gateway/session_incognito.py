@@ -8,7 +8,7 @@ changing global config. It is never changed mid-session: ``/new`` creates a fres
 entry and therefore returns to normal mode.
 
 Consumers:
-- ``run_turn_runner._run_conversation_with_approval`` copies the flag onto ``agent._incognito``
+- ``run_turn_runner._run_conversation_with_session`` copies the flag onto ``agent._incognito``
   before every turn; turn-context gates external recall/prefetch/indicators, completed-turn
   sync/queued prefetch are suppressed, and the memory manager skips provider
   sync/end-of-session/pre-compress extraction while the flag is set.

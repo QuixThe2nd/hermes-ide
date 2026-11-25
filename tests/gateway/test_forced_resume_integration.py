@@ -919,31 +919,24 @@ def test_failed_replay_blocks_turn_and_keeps_resume_pending():
     assert store._entries["sk-restart_timeout"].resume_pending is True
 
 
-def test_replay_window_observes_real_approval_binding():
-    """REPAIR2 finding 5: the re-run goes through the NORMAL dispatcher,
-    whose approval middleware resolves the session from the approval
-    contextvar and notifies through the gateway callback.  Both must be
-    bound to the REAL session key for the whole replay window — and fully
-    unbound once the turn ends."""
-    from tools import approval as _approval
+def test_replay_window_observes_real_session_key_binding():
+    """REPAIR2 finding 5, post-approval-strip: the re-run goes through the
+    NORMAL dispatcher under the session-key contextvar bound by the forced
+    resume (tools.session_context). The REAL session key must be bound for
+    the whole replay window — and fully unbound once the turn ends."""
+    from tools.session_context import get_current_session_key
 
     observed = {}
 
     class _ObservingAgent(StubModelAgent):
         def _execute_tool_calls(self, assistant_message, messages, task_id,
                                 api_call_count):
-            observed["session_key"] = _approval.get_current_session_key()
-            observed["notify_bound"] = (
-                "sk-restart_timeout" in _approval._gateway_notify_cbs
-            )
-            observed["notify_cb"] = _approval._gateway_notify_cbs.get(
-                "sk-restart_timeout"
-            )
+            observed["session_key"] = get_current_session_key()
             return super()._execute_tool_calls(
                 assistant_message, messages, task_id, api_call_count
             )
 
-    pre_key = _approval.get_current_session_key()
+    pre_key = get_current_session_key()
     history = _interrupted_terminal_history()
     store = RecordingSessionStore(
         {f"sk-restart_timeout": _resume_entry("restart_timeout")}
@@ -954,17 +947,12 @@ def test_replay_window_observes_real_approval_binding():
     )
     TurnRunner(runner, ctx).run_sync()
 
-    # During the replay dispatch the approval middleware observed the real
-    # session key and a registered, callable gateway notify callback.
+    # During the replay dispatch the tool layer observed the real session key.
     assert observed["session_key"] == "sk-restart_timeout", observed
-    assert observed["notify_bound"] is True
-    assert callable(observed["notify_cb"])
     # The replay executed and the turn completed normally.
     assert ctx.result_holder[0].get("failed") is not True
-    # After the turn the binding is gone — no leaked contextvar, no stale
-    # notify registration for this session key.
-    assert _approval.get_current_session_key() == pre_key
-    assert "sk-restart_timeout" not in _approval._gateway_notify_cbs
+    # After the turn the binding is gone — no leaked contextvar.
+    assert get_current_session_key() == pre_key
 
 
 def test_lifecycle_only_batch_pairs_durably_without_executing():

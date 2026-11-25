@@ -256,7 +256,10 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
         _event(), _source(), "agent:main:discord:group:-1001:12345", 1
     )
 
-    assert response == text
+    # The runtime footer is always appended to a final gateway message; the
+    # contract under test is that the prose itself is delivered, not the
+    # exact full body.
+    assert response.startswith(text)
 
 
 @pytest.mark.asyncio

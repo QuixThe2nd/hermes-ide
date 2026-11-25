@@ -1,12 +1,12 @@
 """Prompt-ack sends must never seal an open draft stream.
 
 Live finding (rc.4 staging, 100% reproducible on approval turns): the
-"✅ Approved once" acknowledgement the adapter sends after resolving an
-exec-approval prompt_response carried only placement metadata (thread_id)
+"✅ Approved once" acknowledgement the adapter sends after resolving a
+slash-confirm prompt_response carried only placement metadata (thread_id)
 — no per-turn message identity and no interim marker. send()'s
 single-open-stream fallback (review B2: "a chat with exactly one open
 stream absorbs a turn-final arriving without identity") therefore matched
-the approval turn's OWN live draft and sealed it with the ack text:
+the confirming turn's OWN live draft and sealed it with the ack text:
 
   * every subsequent append hit the post-seal tombstone (silently
     swallowed by design — built for millisecond stragglers), freezing the
@@ -15,8 +15,8 @@ the approval turn's OWN live draft and sealed it with the ack text:
     send — the duplicate (fallback) message the user saw. Also silent:
     no suppression line, no seal-failed warning.
 
-The fix marks every prompt-lifecycle system send (approval ack, slash-
-confirm ack, expiry notice) as an interim send, which bypasses draft
+The fix marks every prompt-lifecycle system send (slash-confirm ack,
+clarify ack, expiry notice) as an interim send, which bypasses draft
 matching entirely. These tests pin the whole class, plus the regression
 contract that real turn-finals still absorb into their stream.
 """
@@ -110,7 +110,8 @@ class TestPromptAckDoesNotSealDraft:
 
         a._transport.send_outbound = gated_send
         prompt_id = a._mint_prompt(
-            "exec_approval", {"session_key": "sess-dl", "chat_id": "D01"}
+            "slash_confirm",
+            {"session_key": "sess-dl", "confirm_id": "cf-dl", "chat_id": "D01"},
         )
         # Pre-fix this hangs until the gate opens (deadlock shape) and the
         # wait_for trips. Post-fix it returns promptly.
@@ -126,19 +127,20 @@ class TestPromptAckDoesNotSealDraft:
         assert ack_frames, "background ack was never sent"
 
     @pytest.mark.asyncio
-    async def test_approval_ack_leaves_open_draft_untouched(self):
-        """The exact live failure: exec-approval tap resolves while the
-        turn's draft stream is open; the ack must go out as its own plain
-        send and the draft must STILL be armed afterwards."""
+    async def test_ack_leaves_open_draft_untouched(self):
+        """The exact live failure: a button tap resolves while the turn's
+        draft stream is open; the ack must go out as its own plain send and
+        the draft must STILL be armed afterwards."""
         a = _adapter()
         draft_key = await _open_turn_draft(a)
 
         prompt_id = a._mint_prompt(
-            "exec_approval", {"session_key": "sess-1", "chat_id": "D01"}
+            "slash_confirm",
+            {"session_key": "sess-1", "confirm_id": "cf-1", "chat_id": "D01"},
         )
-        # resolve_gateway_approval is imported inside the handler; a session
-        # with no waiting entry returns 0 -> "expired" label. Either label
-        # shape exercises the same send path.
+        # slash_confirm.resolve with no waiting entry returns None -> only the
+        # choice-label ack is sent. Either label shape exercises the same send
+        # path.
         consumed = await a._consume_prompt_response(
             FakeEvent(prompt_id, "once")
         )

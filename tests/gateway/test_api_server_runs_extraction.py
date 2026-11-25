@@ -14,7 +14,6 @@ from gateway.platforms import api_server_runs
 _HTTP_HANDLER_DELEGATES = (
     ("_handle_get_run", "_handle_get_run"),
     ("_handle_run_events", "_handle_run_events"),
-    ("_handle_run_approval", "_handle_run_approval"),
     ("_handle_steer_run", "_handle_steer_run"),
     ("_handle_stop_run", "_handle_stop_run"),
 )
@@ -137,7 +136,7 @@ def test_run_state_initialization_and_teardown_are_shard_owned():
     assert adapter._active_run_tasks == {}
     assert adapter._stopping_run_ids == set()
     assert adapter._run_statuses == {}
-    assert adapter._run_approval_sessions == {}
+    assert adapter._run_clarify_registrations == {}
 
     api_server_runs._close_run_state(adapter)
     store.close.assert_called_once_with()
@@ -174,9 +173,10 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs"),
         ("GET", "/v1/runs/{run_id}"),
         ("GET", "/v1/runs/{run_id}/events"),
-        ("POST", "/v1/runs/{run_id}/approval"),
         ("POST", "/v1/runs/{run_id}/steer"),
         ("POST", "/v1/runs/{run_id}/stop"),
+        ("GET", "/api/sessions/{session_id}/clarify"),
+        ("POST", "/api/sessions/{session_id}/clarify"),
     ]
     assert all(handler.__self__ is adapter for _, _, handler in room_routes)
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)

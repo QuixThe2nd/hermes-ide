@@ -1,0 +1,1010 @@
+{
+ "cases": [
+  {
+   "name": "site_code_member_context_overflow",
+   "op": "site_code",
+   "code": "context_overflow",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_member_empty_response",
+   "op": "site_code",
+   "code": "empty_response",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_member_interpreter_shutdown",
+   "op": "site_code",
+   "code": "interpreter_shutdown",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_member_invalid_response",
+   "op": "site_code",
+   "code": "invalid_response",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_member_loop_error",
+   "op": "site_code",
+   "code": "loop_error",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_member_session_busy",
+   "op": "site_code",
+   "code": "session_busy",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_member_truncated",
+   "op": "site_code",
+   "code": "truncated",
+   "expect": {
+    "member": true
+   }
+  },
+  {
+   "name": "site_code_provider_reason_not_site",
+   "op": "site_code",
+   "code": "rate_limit",
+   "expect": {
+    "member": false
+   }
+  },
+  {
+   "name": "site_code_one_off_not_site",
+   "op": "site_code",
+   "code": "server_context_rejection",
+   "expect": {
+    "member": false
+   }
+  },
+  {
+   "name": "exit_all_retries_no_response",
+   "op": "exit_reason_failure",
+   "reason": "all_retries_exhausted_no_response",
+   "expect": {
+    "reason": "server_error",
+    "retryable": true,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_empty_response_exhausted",
+   "op": "exit_reason_failure",
+   "reason": "empty_response_exhausted",
+   "expect": {
+    "reason": "empty_response",
+    "retryable": true,
+    "fails_turn": false
+   }
+  },
+  {
+   "name": "exit_interpreter_shutdown",
+   "op": "exit_reason_failure",
+   "reason": "interpreter_shutdown",
+   "expect": {
+    "reason": "interpreter_shutdown",
+    "retryable": false,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_local_processing_error_detail",
+   "op": "exit_reason_failure",
+   "reason": "local_processing_error(ValueError: bad row)",
+   "expect": {
+    "reason": "loop_error",
+    "retryable": false,
+    "fails_turn": false
+   }
+  },
+  {
+   "name": "exit_repeated_outer_errors",
+   "op": "exit_reason_failure",
+   "reason": "repeated_outer_errors",
+   "expect": {
+    "reason": "loop_error",
+    "retryable": true,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_error_near_max_iterations_detail",
+   "op": "exit_reason_failure",
+   "reason": "error_near_max_iterations(612/512)",
+   "expect": {
+    "reason": "loop_error",
+    "retryable": true,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_compression_timeout",
+   "op": "exit_reason_failure",
+   "reason": "context_compression_timeout",
+   "expect": {
+    "reason": "context_overflow",
+    "retryable": false,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_compression_exhausted",
+   "op": "exit_reason_failure",
+   "reason": "context_compression_exhausted",
+   "expect": {
+    "reason": "context_overflow",
+    "retryable": false,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_ollama_context_too_small",
+   "op": "exit_reason_failure",
+   "reason": "ollama_runtime_context_too_small",
+   "expect": {
+    "reason": "context_overflow",
+    "retryable": false,
+    "fails_turn": true
+   }
+  },
+  {
+   "name": "exit_redirect_restart_limit",
+   "op": "exit_reason_failure",
+   "reason": "redirect_restart_limit_exceeded",
+   "expect": {
+    "reason": "loop_error",
+    "retryable": true,
+    "fails_turn": false
+   }
+  },
+  {
+   "name": "exit_rebuilt_restart_limit",
+   "op": "exit_reason_failure",
+   "reason": "rebuilt_restart_limit_exceeded",
+   "expect": {
+    "reason": "loop_error",
+    "retryable": true,
+    "fails_turn": false
+   }
+  },
+  {
+   "name": "exit_unknown_none",
+   "op": "exit_reason_failure",
+   "reason": "",
+   "expect": null
+  },
+  {
+   "name": "exit_unknown_max_iterations",
+   "op": "exit_reason_failure",
+   "reason": "max_iterations",
+   "expect": null
+  },
+  {
+   "name": "inv_429_attr",
+   "op": "invalid_response_reason",
+   "code": 429,
+   "code_via": "attr",
+   "expect": {
+    "reason": "rate_limit"
+   }
+  },
+  {
+   "name": "inv_500_dict",
+   "op": "invalid_response_reason",
+   "code": 500,
+   "code_via": "dict",
+   "expect": {
+    "reason": "server_error"
+   }
+  },
+  {
+   "name": "inv_502_attr",
+   "op": "invalid_response_reason",
+   "code": 502,
+   "code_via": "attr",
+   "expect": {
+    "reason": "server_error"
+   }
+  },
+  {
+   "name": "inv_503_dict",
+   "op": "invalid_response_reason",
+   "code": 503,
+   "code_via": "dict",
+   "expect": {
+    "reason": "overloaded"
+   }
+  },
+  {
+   "name": "inv_529_attr",
+   "op": "invalid_response_reason",
+   "code": 529,
+   "code_via": "attr",
+   "expect": {
+    "reason": "overloaded"
+   }
+  },
+  {
+   "name": "inv_504_dict",
+   "op": "invalid_response_reason",
+   "code": 504,
+   "code_via": "dict",
+   "expect": {
+    "reason": "timeout"
+   }
+  },
+  {
+   "name": "inv_524_attr",
+   "op": "invalid_response_reason",
+   "code": 524,
+   "code_via": "attr",
+   "expect": {
+    "reason": "timeout"
+   }
+  },
+  {
+   "name": "inv_400_attr",
+   "op": "invalid_response_reason",
+   "code": 400,
+   "code_via": "attr",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_string_429",
+   "op": "invalid_response_reason",
+   "code": "429",
+   "code_via": "dict",
+   "expect": {
+    "reason": "rate_limit"
+   }
+  },
+  {
+   "name": "inv_string_padded_503",
+   "op": "invalid_response_reason",
+   "code": " 503 ",
+   "code_via": "dict",
+   "expect": {
+    "reason": "overloaded"
+   }
+  },
+  {
+   "name": "inv_string_float_429_5",
+   "op": "invalid_response_reason",
+   "code": "429.5",
+   "code_via": "dict",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_float_429_7",
+   "op": "invalid_response_reason",
+   "code": 429.7,
+   "code_via": "dict",
+   "expect": {
+    "reason": "rate_limit"
+   }
+  },
+  {
+   "name": "inv_float_502_2",
+   "op": "invalid_response_reason",
+   "code": 502.2,
+   "code_via": "attr",
+   "expect": {
+    "reason": "server_error"
+   }
+  },
+  {
+   "name": "inv_none_code",
+   "op": "invalid_response_reason",
+   "code": null,
+   "code_via": "dict",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_response_none",
+   "op": "invalid_response_reason",
+   "code": null,
+   "code_via": "none",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_no_error",
+   "op": "invalid_response_reason",
+   "code": null,
+   "code_via": "no_error",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_error_none",
+   "op": "invalid_response_reason",
+   "code": null,
+   "code_via": "error_none",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_string_abc",
+   "op": "invalid_response_reason",
+   "code": "abc",
+   "code_via": "dict",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "inv_bool_code",
+   "op": "invalid_response_reason",
+   "code": true,
+   "code_via": "dict",
+   "expect": {
+    "reason": "invalid_response"
+   }
+  },
+  {
+   "name": "notice_empty_turn",
+   "op": "failed_turn_notice",
+   "messages": [],
+   "expect": {
+    "notice": "Your request was not processed. Send it again if you still want me to carry it out."
+   }
+  },
+  {
+   "name": "notice_user_only",
+   "op": "failed_turn_notice",
+   "messages": [
+    {
+     "role": "user"
+    }
+   ],
+   "expect": {
+    "notice": "Your request was not processed. Send it again if you still want me to carry it out."
+   }
+  },
+  {
+   "name": "notice_plain_assistant",
+   "op": "failed_turn_notice",
+   "messages": [
+    {
+     "role": "user"
+    },
+    {
+     "role": "assistant"
+    }
+   ],
+   "expect": {
+    "notice": "Your request was not processed. Send it again if you still want me to carry it out."
+   }
+  },
+  {
+   "name": "notice_tool_row",
+   "op": "failed_turn_notice",
+   "messages": [
+    {
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": true
+    },
+    {
+     "role": "tool"
+    }
+   ],
+   "expect": {
+    "notice": "This turn did not complete. Some actions may already have run; verify their effects before resending."
+   }
+  },
+  {
+   "name": "notice_tool_calls_only",
+   "op": "failed_turn_notice",
+   "messages": [
+    {
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": true
+    }
+   ],
+   "expect": {
+    "notice": "This turn did not complete. Some actions may already have run; verify their effects before resending."
+   }
+  },
+  {
+   "name": "notice_user_with_tool_calls_flag",
+   "op": "failed_turn_notice",
+   "messages": [
+    {
+     "role": "user",
+     "tool_calls": true
+    }
+   ],
+   "expect": {
+    "notice": "Your request was not processed. Send it again if you still want me to carry it out."
+   }
+  },
+  {
+   "name": "notice_tool_buried_mid_turn",
+   "op": "failed_turn_notice",
+   "messages": [
+    {
+     "role": "user"
+    },
+    {
+     "role": "assistant"
+    },
+    {
+     "role": "tool"
+    },
+    {
+     "role": "user"
+    },
+    {
+     "role": "assistant"
+    }
+   ],
+   "expect": {
+    "notice": "This turn did not complete. Some actions may already have run; verify their effects before resending."
+   }
+  },
+  {
+   "name": "add_empty_response",
+   "op": "add_failed_turn_notice",
+   "response": "",
+   "notice": "This turn did not complete. Some actions may already have run; verify their effects before resending.",
+   "expect": {
+    "response": "This turn did not complete. Some actions may already have run; verify their effects before resending."
+   }
+  },
+  {
+   "name": "add_none_response",
+   "op": "add_failed_turn_notice",
+   "response": null,
+   "notice": "This turn did not complete. Some actions may already have run; verify their effects before resending.",
+   "expect": {
+    "response": "This turn did not complete. Some actions may already have run; verify their effects before resending."
+   }
+  },
+  {
+   "name": "add_whitespace_response",
+   "op": "add_failed_turn_notice",
+   "response": "   \n ",
+   "notice": "This turn did not complete. Some actions may already have run; verify their effects before resending.",
+   "expect": {
+    "response": "This turn did not complete. Some actions may already have run; verify their effects before resending."
+   }
+  },
+  {
+   "name": "add_text",
+   "op": "add_failed_turn_notice",
+   "response": "Provider guidance here.",
+   "notice": "Your request was not processed. Send it again if you still want me to carry it out.",
+   "expect": {
+    "response": "Provider guidance here.\n\nYour request was not processed. Send it again if you still want me to carry it out."
+   }
+  },
+  {
+   "name": "add_trailing_newline",
+   "op": "add_failed_turn_notice",
+   "response": "Line\n",
+   "notice": "Your request was not processed. Send it again if you still want me to carry it out.",
+   "expect": {
+    "response": "Line\n\nYour request was not processed. Send it again if you still want me to carry it out."
+   }
+  },
+  {
+   "name": "close_open_user_tail",
+   "op": "close_failed_turn",
+   "tail_role": "user",
+   "expect": {
+    "append": true
+   }
+  },
+  {
+   "name": "close_assistant_tail",
+   "op": "close_failed_turn",
+   "tail_role": "assistant",
+   "expect": {
+    "append": false
+   }
+  },
+  {
+   "name": "close_tool_tail",
+   "op": "close_failed_turn",
+   "tail_role": "tool",
+   "expect": {
+    "append": false
+   }
+  },
+  {
+   "name": "close_empty_tail",
+   "op": "close_failed_turn",
+   "tail_role": "",
+   "expect": {
+    "append": false
+   }
+  },
+  {
+   "name": "close_case_sensitive_user",
+   "op": "close_failed_turn",
+   "tail_role": "User",
+   "expect": {
+    "append": false
+   }
+  },
+  {
+   "name": "interrupt_restart_word",
+   "op": "interrupt_tool_reason",
+   "reason": "Scheduled restart",
+   "expect": {
+    "tool_reason": "gateway restart"
+   }
+  },
+  {
+   "name": "interrupt_restart_upper",
+   "op": "interrupt_tool_reason",
+   "reason": "GATEWAY RESTART REQUESTED",
+   "expect": {
+    "tool_reason": "gateway restart"
+   }
+  },
+  {
+   "name": "interrupt_plain_shutdown",
+   "op": "interrupt_tool_reason",
+   "reason": "sigterm",
+   "expect": {
+    "tool_reason": "gateway shutdown"
+   }
+  },
+  {
+   "name": "interrupt_empty",
+   "op": "interrupt_tool_reason",
+   "reason": "",
+   "expect": {
+    "tool_reason": "gateway shutdown"
+   }
+  },
+  {
+   "name": "interrupt_stop",
+   "op": "interrupt_tool_reason",
+   "reason": "User pressed /stop",
+   "expect": {
+    "tool_reason": "gateway shutdown"
+   }
+  },
+  {
+   "name": "copy_context_overflow",
+   "op": "site_copy",
+   "code": "context_overflow",
+   "fields": {
+    "model": "glm-4.7"
+   },
+   "expect": {
+    "copy": "This conversation has grown too long for glm-4.7 to read, and Hermes couldn't shrink it enough automatically. Start a new session with /new (your history is kept), or try /compress once more. Switching to a model with a bigger context window also works."
+   }
+  },
+  {
+   "name": "copy_context_overflow_missing_model",
+   "op": "site_copy",
+   "code": "context_overflow",
+   "fields": {},
+   "expect": {
+    "copy": "This conversation has grown too long for  to read, and Hermes couldn't shrink it enough automatically. Start a new session with /new (your history is kept), or try /compress once more. Switching to a model with a bigger context window also works."
+   }
+  },
+  {
+   "name": "copy_truncated",
+   "op": "site_copy",
+   "code": "truncated",
+   "fields": {},
+   "expect": {
+    "copy": "The model's reply was cut off before it finished (it hit its output length limit), so Hermes didn't run the incomplete action. Nothing was changed. Send `continue`, ask for the work in smaller steps, or raise max_tokens for this model."
+   }
+  },
+  {
+   "name": "copy_invalid_response",
+   "op": "site_copy",
+   "code": "invalid_response",
+   "fields": {
+    "label": "OpenRouter",
+    "attempts": 3,
+    "detail": "upstream: connection reset"
+   },
+   "expect": {
+    "copy": "OpenRouter sent back an empty or broken reply 3 times — it is probably overloaded or rate-limiting you. Wait a minute and send /retry, or switch models with /model.\n\nDetails: upstream: connection reset"
+   }
+  },
+  {
+   "name": "copy_invalid_response_missing_fields",
+   "op": "site_copy",
+   "code": "invalid_response",
+   "fields": {},
+   "expect": {
+    "copy": " sent back an empty or broken reply  times — it is probably overloaded or rate-limiting you. Wait a minute and send /retry, or switch models with /model.\n\nDetails: "
+   }
+  },
+  {
+   "name": "copy_loop_error",
+   "op": "site_copy",
+   "code": "loop_error",
+   "fields": {
+    "detail": "SyntaxError in tool wrapper"
+   },
+   "expect": {
+    "copy": "Hermes hit repeated errors and stopped this turn so it wouldn't keep retrying. Your message is saved. Send `continue` to try again, or start a new session with /new. If it happens again, run `hermes doctor` and share the error details.\n\nDetails: SyntaxError in tool wrapper"
+   }
+  },
+  {
+   "name": "copy_interpreter_shutdown_resume",
+   "op": "site_copy",
+   "code": "interpreter_shutdown",
+   "fields": {
+    "resume": " /resume"
+   },
+   "expect": {
+    "copy": "Hermes was shutting down and stopped this turn. Your conversation is saved — reopen it /resume and send your message again."
+   }
+  },
+  {
+   "name": "copy_interpreter_shutdown_no_resume",
+   "op": "site_copy",
+   "code": "interpreter_shutdown",
+   "fields": {},
+   "expect": {
+    "copy": "Hermes was shutting down and stopped this turn. Your conversation is saved — reopen it and send your message again."
+   }
+  },
+  {
+   "name": "copy_payload_too_large",
+   "op": "site_copy",
+   "code": "payload_too_large",
+   "fields": {
+    "model": "qwen3-coder"
+   },
+   "expect": {
+    "copy": "This conversation (including attachments) has grown too large to send to qwen3-coder, and Hermes couldn't shrink it enough automatically. Start a new session with /new (your history is kept), or try /compress once more."
+   }
+  },
+  {
+   "name": "copy_compression_disabled",
+   "op": "site_copy",
+   "code": "compression_disabled",
+   "fields": {
+    "model": "kimi-k2"
+   },
+   "expect": {
+    "copy": "This conversation is too long for kimi-k2 and automatic shrinking is turned off in your settings (compression.enabled). Run /compress to shrink it now, /new to start fresh, or pick a model with a bigger context window."
+   }
+  },
+  {
+   "name": "copy_server_context_rejection",
+   "op": "site_copy",
+   "code": "server_context_rejection",
+   "fields": {
+    "tokens": 31000,
+    "window": 131072,
+    "model": "glm-4.7"
+   },
+   "expect": {
+    "copy": "The model server rejected this request as too large, but this conversation is only about 31,000 tokens — well under the 131,072-token window Hermes knows for glm-4.7 — so shrinking it would not help. Another request on the same server (for example a background memory review from an earlier session) was probably holding its capacity, or the server runs glm-4.7 with a smaller window than Hermes assumes. Wait a moment and send /retry; if it keeps happening, check the server's context setting."
+   }
+  },
+  {
+   "name": "copy_server_context_rejection_small",
+   "op": "site_copy",
+   "code": "server_context_rejection",
+   "fields": {
+    "tokens": 999,
+    "window": 1000,
+    "model": "m"
+   },
+   "expect": {
+    "copy": "The model server rejected this request as too large, but this conversation is only about 999 tokens — well under the 1,000-token window Hermes knows for m — so shrinking it would not help. Another request on the same server (for example a background memory review from an earlier session) was probably holding its capacity, or the server runs m with a smaller window than Hermes assumes. Wait a moment and send /retry; if it keeps happening, check the server's context setting."
+   }
+  },
+  {
+   "name": "copy_stream_dropped_tool_call",
+   "op": "site_copy",
+   "code": "stream_dropped_tool_call",
+   "fields": {
+    "label": "Anthropic"
+   },
+   "expect": {
+    "copy": "The connection to Anthropic kept dropping while the model was writing a large action, so nothing was run. Check your network and send /retry; asking for the file in smaller pieces also helps."
+   }
+  },
+  {
+   "name": "copy_local_processing_error",
+   "op": "site_copy",
+   "code": "local_processing_error",
+   "fields": {
+    "detail": "KeyError: 'tool_call_id'"
+   },
+   "expect": {
+    "copy": "Hermes hit an internal error while handling the model's reply and stopped this turn. Your message is saved. Send `continue` to try again, or start a new session with /new. If it happens again, run `hermes doctor` and share the error details.\n\nDetails: KeyError: 'tool_call_id'"
+   }
+  },
+  {
+   "name": "copy_reasoning_only",
+   "op": "site_copy",
+   "code": "reasoning_only",
+   "fields": {
+    "model": "o7-mini",
+    "preview": "The answer is 42."
+   },
+   "expect": {
+    "copy": "⚠️ o7-mini spent all of its output budget thinking and never wrote an answer. Lower its reasoning effort with `/reasoning low`, or switch to a different model with /model. Its last thoughts, which may contain the answer:\n\nThe answer is 42."
+   }
+  },
+  {
+   "name": "copy_max_iterations_no_summary",
+   "op": "site_copy",
+   "code": "max_iterations_no_summary",
+   "fields": {
+    "limit": 512
+   },
+   "expect": {
+    "copy": "I ran out of steps for this turn (512 tool calls) before finishing, and couldn't produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
+   }
+  },
+  {
+   "name": "exhausted_rate_limit_long_window",
+   "op": "exhausted_copy",
+   "reason": "rate_limit",
+   "label": "OpenRouter",
+   "attempts": 8,
+   "summary": "429 Too Many Requests",
+   "reset_seconds": 31000,
+   "expect": {
+    "copy": "OpenRouter rate-limited every one of 8 attempts — its usage limit resets in ~9h. Send /retry after that, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: 429 Too Many Requests"
+   }
+  },
+  {
+   "name": "exhausted_rate_limit_short_window",
+   "op": "exhausted_copy",
+   "reason": "rate_limit",
+   "label": "OpenRouter",
+   "attempts": 8,
+   "summary": "429",
+   "reset_seconds": 119,
+   "expect": {
+    "copy": "OpenRouter rate-limited every one of 8 attempts — it looks temporarily unavailable. Wait a minute and send /retry, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: 429"
+   }
+  },
+  {
+   "name": "exhausted_rate_limit_boundary_120",
+   "op": "exhausted_copy",
+   "reason": "rate_limit",
+   "label": "OpenRouter",
+   "attempts": 8,
+   "summary": "429",
+   "reset_seconds": 120,
+   "expect": {
+    "copy": "OpenRouter rate-limited every one of 8 attempts — its usage limit resets in ~2 min. Send /retry after that, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: 429"
+   }
+  },
+  {
+   "name": "exhausted_overloaded_hours",
+   "op": "exhausted_copy",
+   "reason": "overloaded",
+   "label": "ZhipuAI",
+   "attempts": 5,
+   "summary": "503 overloaded",
+   "reset_seconds": 7200,
+   "expect": {
+    "copy": "ZhipuAI reported it was overloaded on all 5 attempts — its usage limit resets in ~2h. Send /retry after that, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: 503 overloaded"
+   }
+  },
+  {
+   "name": "exhausted_timeout_minutes",
+   "op": "exhausted_copy",
+   "reason": "timeout",
+   "label": "DeepSeek",
+   "attempts": 4,
+   "summary": "read timeout",
+   "reset_seconds": 600,
+   "expect": {
+    "copy": "DeepSeek didn't respond in time on any of 4 attempts — its usage limit resets in ~10 min. Send /retry after that, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: read timeout"
+   }
+  },
+  {
+   "name": "exhausted_unknown_reason",
+   "op": "exhausted_copy",
+   "reason": "ssl_cert_verification",
+   "label": "Mistral",
+   "attempts": 2,
+   "summary": "cert verify failed",
+   "reset_seconds": null,
+   "expect": {
+    "copy": "Mistral didn't answer after 2 attempts — it looks temporarily unavailable. Wait a minute and send /retry, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: cert verify failed"
+   }
+  },
+  {
+   "name": "exhausted_no_reset",
+   "op": "exhausted_copy",
+   "reason": "server_error",
+   "label": "vLLM",
+   "attempts": 6,
+   "summary": "500",
+   "expect": {
+    "copy": "vLLM returned a server error on all 6 attempts — it looks temporarily unavailable. Wait a minute and send /retry, or switch models with /model. To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: 500"
+   }
+  },
+  {
+   "name": "gloss_timeout",
+   "op": "failure_cause_gloss",
+   "reason": "timeout",
+   "expect": {
+    "gloss": "the AI model service did not respond in time"
+   }
+  },
+  {
+   "name": "gloss_rate_limit",
+   "op": "failure_cause_gloss",
+   "reason": "rate_limit",
+   "expect": {
+    "gloss": "the AI model service was rate-limited (too many requests)"
+   }
+  },
+  {
+   "name": "gloss_upstream_rate_limit",
+   "op": "failure_cause_gloss",
+   "reason": "upstream_rate_limit",
+   "expect": {
+    "gloss": "the AI model service was rate-limited (too many requests)"
+   }
+  },
+  {
+   "name": "gloss_overloaded",
+   "op": "failure_cause_gloss",
+   "reason": "overloaded",
+   "expect": {
+    "gloss": "the AI model service is overloaded right now"
+   }
+  },
+  {
+   "name": "gloss_server_error",
+   "op": "failure_cause_gloss",
+   "reason": "server_error",
+   "expect": {
+    "gloss": "the AI model service returned an internal error"
+   }
+  },
+  {
+   "name": "gloss_billing",
+   "op": "failure_cause_gloss",
+   "reason": "billing",
+   "expect": {
+    "gloss": "the AI model service says the account's usage or credit limit is reached"
+   }
+  },
+  {
+   "name": "gloss_billing_unverified",
+   "op": "failure_cause_gloss",
+   "reason": "billing_unverified",
+   "expect": {
+    "gloss": "the AI model service says the account's usage or credit limit is reached"
+   }
+  },
+  {
+   "name": "gloss_auth_permanent",
+   "op": "failure_cause_gloss",
+   "reason": "auth_permanent",
+   "expect": {
+    "gloss": "the AI model service rejected the sign-in"
+   }
+  },
+  {
+   "name": "gloss_upstream_blocked",
+   "op": "failure_cause_gloss",
+   "reason": "upstream_blocked",
+   "expect": {
+    "gloss": "a firewall/CDN in front of the AI model service blocked the request"
+   }
+  },
+  {
+   "name": "gloss_content_policy",
+   "op": "failure_cause_gloss",
+   "reason": "content_policy_blocked",
+   "expect": {
+    "gloss": "the AI model service's safety filter rejected the request"
+   }
+  },
+  {
+   "name": "gloss_model_not_found_subject",
+   "op": "failure_cause_gloss",
+   "reason": "model_not_found",
+   "subject": "the job",
+   "expect": {
+    "gloss": "the model the job uses was not found at the AI model service"
+   }
+  },
+  {
+   "name": "gloss_model_not_found_default_subject",
+   "op": "failure_cause_gloss",
+   "reason": "model_not_found",
+   "expect": {
+    "gloss": "the model it uses was not found at the AI model service"
+   }
+  },
+  {
+   "name": "gloss_context_overflow_possessive",
+   "op": "failure_cause_gloss",
+   "reason": "context_overflow",
+   "subject": "it",
+   "possessive": "the job's",
+   "expect": {
+    "gloss": "the job's request grew too large for the model"
+   }
+  },
+  {
+   "name": "gloss_payload_too_large_default",
+   "op": "failure_cause_gloss",
+   "reason": "payload_too_large",
+   "expect": {
+    "gloss": "its request grew too large for the model"
+   }
+  },
+  {
+   "name": "gloss_unknown_reason_null",
+   "op": "failure_cause_gloss",
+   "reason": "ssl_cert_verification",
+   "expect": {
+    "gloss": null
+   }
+  },
+  {
+   "name": "gloss_empty_reason_null",
+   "op": "failure_cause_gloss",
+   "reason": "",
+   "expect": {
+    "gloss": null
+   }
+  },
+  {
+   "name": "stamp_retryable",
+   "op": "stamp_failure",
+   "reason": "rate_limit",
+   "retryable": true,
+   "expect": {
+    "failure_reason": "rate_limit",
+    "failure_retryable": true
+   }
+  },
+  {
+   "name": "stamp_permanent",
+   "op": "stamp_failure",
+   "reason": "content_policy_blocked",
+   "retryable": false,
+   "expect": {
+    "failure_reason": "content_policy_blocked",
+    "failure_retryable": false
+   }
+  }
+ ]
+}
