@@ -1387,6 +1387,28 @@ def _seed_pm_node_facts(hermes_root):
     return [str(npm_dir), str(node_dir)]
 
 
+def _commit_pm_env_for_home(hermes_home: Path, project_root: Path, marker: str) -> Path:
+    """Seed an install-keyed committed venv under an explicit *hermes_home*.
+
+    Unlike _seed_pm_environment (which keys off the active HERMES_HOME), this
+    takes the home as data so a test can commit DIFFERENT environments for two
+    accounts over the same checkout and assert which one a generated unit
+    baked in. Returns the committed environment dir.
+    """
+    from hermes_cli.runtime_paths import install_key
+
+    state = hermes_home / "installs" / install_key(project_root)
+    environment = state / "environments" / marker
+    (environment / "bin").mkdir(parents=True)
+    (environment / "bin" / "python").write_text("", encoding="utf-8")
+    (environment / "pyvenv.cfg").write_text("", encoding="utf-8")
+    (state / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": {"venv": {"environment": str(environment)}}}),
+        encoding="utf-8",
+    )
+    return environment
+
+
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
@@ -1501,6 +1523,82 @@ class TestSystemUnitHermesHome:
 
         assert 'HERMES_HOME=/home/alice/.hermes' in unit
         assert '/root/.hermes' not in unit
+
+    def test_system_unit_reads_committed_env_of_target_not_caller(self, tmp_path, monkeypatch):
+        """The committed runtime environment (interpreter, VIRTUAL_ENV, PATH) baked
+        into a system unit must be resolved under the TARGET account's hermes home.
+        Reading it under the sudo invoker — then remapping the prefix — bakes the
+        invoker's environment into the target's unit; the user unit keeps resolving
+        the calling user's."""
+        root_home = tmp_path / "root"
+        caller_hermes = root_home / ".hermes"
+        alice_home = tmp_path / "home" / "alice"
+        target_hermes = alice_home / ".hermes"
+        caller_hermes.mkdir(parents=True)
+        target_hermes.mkdir(parents=True)
+        project_root = Path(gateway_cli.PROJECT_ROOT)
+        caller_env = _commit_pm_env_for_home(caller_hermes, project_root, "caller-env")
+        target_env = _commit_pm_env_for_home(target_hermes, project_root, "target-env")
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
+        monkeypatch.setenv("HERMES_HOME", str(caller_hermes))
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(alice_home), 1001),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
+
+        system_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+        user_unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"HERMES_HOME={target_hermes}" in system_unit
+        assert f"VIRTUAL_ENV={target_env}" in system_unit
+        assert str(target_env / "bin" / "python") in system_unit
+        assert str(caller_env) not in system_unit
+        # The remapped caller env is the old bug's shape: read invoker, swap prefix.
+        remapped_caller_env = alice_home / caller_env.relative_to(root_home)
+        assert str(remapped_caller_env) not in system_unit
+        assert f"VIRTUAL_ENV={caller_env}" in user_unit
+        assert str(target_env) not in user_unit
+        assert hermes_constants.get_hermes_home_override() is None
+
+    def test_system_unit_fails_closed_on_malformed_target_facts(self, tmp_path, monkeypatch):
+        """Corrupt committed facts under the TARGET home must fail closed — never
+        silently fall back to the invoker's environment — and the scoped-home
+        context must be reset on the way out."""
+        root_home = tmp_path / "root"
+        caller_hermes = root_home / ".hermes"
+        alice_home = tmp_path / "home" / "alice"
+        target_hermes = alice_home / ".hermes"
+        caller_hermes.mkdir(parents=True)
+        target_hermes.mkdir(parents=True)
+        project_root = Path(gateway_cli.PROJECT_ROOT)
+        _commit_pm_env_for_home(caller_hermes, project_root, "caller-env")
+        from hermes_cli.runtime_paths import install_key
+
+        target_state = target_hermes / "installs" / install_key(project_root)
+        target_state.mkdir(parents=True)
+        (target_state / "facts.json").write_text("{ not json", encoding="utf-8")
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
+        monkeypatch.setenv("HERMES_HOME", str(caller_hermes))
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(alice_home), 1001),
+        )
+
+        with pytest.raises(RuntimeError, match="dependency environment"):
+            gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert hermes_constants.get_hermes_home_override() is None
 
     def test_user_unit_unaffected_by_change(self):
         # User-scope units should still use the calling user's HERMES_HOME

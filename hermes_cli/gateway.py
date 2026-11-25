@@ -2612,12 +2612,33 @@ def _service_venv_dir() -> str:
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    python_path = get_python_path()
-    working_dir = _stable_service_working_dir()
-    project_root = PROJECT_ROOT
-    venv_dir = _service_venv_dir()
+    # System units run as the TARGET account: resolve its identity first (never guess
+    # another user), then read committed runtime facts — interpreter, venv, PATH —
+    # under that account's hermes home via the same context-local override
+    # _systemd_watchdog_seconds uses. Reading them under the sudo invoker's home
+    # bakes the invoker's environment into the unit; an unprivileged invoker dies
+    # on the invoker-owned installs root instead. User units keep the calling
+    # user's context untouched.
+    hermes_home = None
+    override_token = reset_home_override = None
+    if system:
+        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
+        hermes_home = _hermes_home_for_target_user(home_dir)
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    path_entries = _build_service_path_dirs()
+        override_token = set_hermes_home_override(hermes_home)
+        reset_home_override = reset_hermes_home_override
+    try:
+        python_path = get_python_path()
+        working_dir = _stable_service_working_dir()
+        project_root = PROJECT_ROOT
+        venv_dir = _service_venv_dir()
+
+        path_entries = _build_service_path_dirs()
+    finally:
+        # Malformed target facts propagate (fail closed); only the scope is reset here.
+        if override_token is not None and reset_home_override is not None:
+            reset_home_override(override_token)
     if not system:
         # System units add managed Node once the TARGET user's home is known (not the sudo caller's).
         _append_node_dir_for_service(path_entries)
@@ -2626,9 +2647,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     restart_timeout = resolve_systemd_timeout_stop_sec(_get_restart_drain_timeout(), _get_cron_drain_timeout())
 
     if system:
-        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
-        hermes_home = _hermes_home_for_target_user(home_dir)
-        # Profile arg relative to the TARGET user's ~/.hermes when hermes_home lives under it.
+        # Identity resolved before the scoped reads above; profile arg is relative
+        # to the TARGET user's ~/.hermes when hermes_home lives under it.
         target_root = Path(home_dir) / ".hermes"
         try:
             Path(hermes_home).resolve().relative_to(target_root.resolve())
