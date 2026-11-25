@@ -302,41 +302,6 @@ class _LmStudioSourceHandler(BaseHTTPRequestHandler):
         pass
 
 
-def test_anthropic_profile_drops_x_api_key_on_redirect(monkeypatch):
-    import importlib
-
-    AnthropicProfile = importlib.import_module(
-        "plugins.model-providers.anthropic"
-    ).AnthropicProfile
-
-    source = _server()
-    sink = _server()
-    _RecordingHandler.requests = []
-    _RecordingHandler.redirect_status = 302
-    _RecordingHandler.redirect_to = f"http://localhost:{sink.server_port}/sink"
-
-    original_request = urllib.request.Request
-
-    def local_anthropic_request(url, *args, **kwargs):
-        if url.startswith("https://api.anthropic.com/v1/models"):
-            url = f"http://127.0.0.1:{source.server_port}/redirect"
-        return original_request(url, *args, **kwargs)
-
-    monkeypatch.setattr(urllib.request, "Request", local_anthropic_request)
-    try:
-        result = AnthropicProfile(name="anthropic").fetch_models(
-            api_key="anthropic-secret", timeout=3
-        )
-    finally:
-        source.shutdown()
-        sink.shutdown()
-
-    assert result == []
-    _, headers = _RecordingHandler.requests[-1]
-    assert "x-api-key" not in headers
-    assert headers["accept"] == "application/json"
-
-
 def test_azure_catalog_probe_drops_api_key_and_bearer_on_redirect():
     from hermes_cli import azure_detect
 

@@ -571,6 +571,8 @@ _CONFIGURED_FEATURES_SCRIPT = (
     "try:\n"
     "    from gateway.config import load_gateway_config\n"
     "    from gateway.platform_registry import platform_registry\n"
+    "    from hermes_cli.plugins import discover_plugins\n"
+    "    discover_plugins()\n"
     "    for platform in load_gateway_config().get_connected_platforms():\n"
     "        entry = platform_registry.get(platform.value)\n"
     "        if entry is not None and not entry.check_fn():\n"

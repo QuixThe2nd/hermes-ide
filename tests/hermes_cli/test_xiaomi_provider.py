@@ -242,9 +242,11 @@ class TestXiaomiURLMapping:
 
     def test_provider_prefixes(self):
         from agent.model_metadata import _PROVIDER_PREFIXES
-        assert "xiaomi" in _PROVIDER_PREFIXES
-        assert "mimo" in _PROVIDER_PREFIXES
-        assert "xiaomi-mimo" in _PROVIDER_PREFIXES
+        # The builtin xiaomi provider plugin was retired (#719); the static
+        # prefix table no longer carries its slug. Local endpoints only.
+        assert "xiaomi" not in _PROVIDER_PREFIXES
+        assert "mimo" not in _PROVIDER_PREFIXES
+        assert "xiaomi-mimo" not in _PROVIDER_PREFIXES
 
 
     def test_infer_from_regional_urls(self):
