@@ -80,4 +80,3 @@ class TestHostMandatedRouterResponses:
         assert rp._fallback_api_mode("custom", "https://api.router.com/v1", "gpt-5.4-mini") == "codex_responses"
         # generic endpoints stay chat_completions
         assert rp._fallback_api_mode("custom", "https://generic.example.com/v1", "gpt-5.4-mini") == "chat_completions"
-

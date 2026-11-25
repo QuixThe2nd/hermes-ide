@@ -225,4 +225,3 @@ class TestSupportsReasoningExtraBodyMetadataGate:
         # unknown vendor absent from both → False.
         agent2 = self._make_agent("someveryunknown/model-x")
         assert agent2._supports_reasoning_extra_body() is False
-
