@@ -2263,21 +2263,6 @@ class GatewayInboundMixin:
             return await self._handle_reset_command(event)
 
 
-        if canonical == "whoami":
-            return await self._handle_whoami_command(event)
-
-        if canonical == "platform":
-            return await self._handle_platform_command(event)
-
-        if canonical == "stop":
-            return await self._handle_stop_command(event)
-
-        if canonical == "memory":
-            return await self._handle_memory_command(event)
-
-        if canonical == "skills":
-            return await self._handle_skills_command(event)
-
         if canonical == "learn":
             # Open-ended: rewrite the turn to a standards-guided prompt and fall
             # through to normal agent processing. The live agent gathers the
@@ -2362,12 +2347,6 @@ class GatewayInboundMixin:
             event.text = _init_prompt
             # fall through to agent processing
 
-        if canonical == "codex-runtime":
-            return await self._handle_codex_runtime_command(event)
-
-        if canonical == "suggestions":
-            return await self._handle_suggestions_command(event)
-
         if canonical == "blueprint":
             _blueprint_result = await self._handle_blueprint_command(event)
             _blueprint_seed = getattr(_blueprint_result, "agent_seed", None)
@@ -2396,56 +2375,11 @@ class GatewayInboundMixin:
             else:
                 return getattr(_blueprint_result, "text", "") or None
 
-        if canonical == "save":
-            return await self._handle_save_command(event)
-
-        if canonical == "retry":
-            return await self._handle_retry_command(event)
-
         if canonical == "undo":
             return await self._handle_undo_command(event)
 
         if canonical == "sethomeserver":
             return await self._handle_set_home_server_command(event)
-        if canonical == "setnotify":
-            return await self._handle_set_notify_command(event)
-
-        if canonical == "clearnotify":
-            return await self._handle_clear_notify_command(event)
-
-        if canonical == "compress":
-            return await self._handle_compress_command(event)
-
-        if canonical == "insights":
-            return await self._handle_insights_command(event)
-
-        if canonical == "reload-mcp":
-            return await self._handle_reload_mcp_command(event)
-
-        if canonical == "reload-skills":
-            return await self._handle_reload_skills_command(event)
-
-        if canonical == "debug":
-            return await self._handle_debug_command(event)
-
-        if canonical == "title":
-            return await self._handle_title_command(event)
-
-        if canonical == "resume":
-            return await self._handle_resume_command(event)
-
-        if canonical == "sessions":
-            return await self._handle_sessions_command(event)
-
-        if canonical == "branch":
-            return await self._handle_branch_command(event)
-
-        if canonical == "rollback":
-            return await self._handle_rollback_command(event)
-
-        if canonical == "diff":
-            return await self._handle_diff_command(event)
-
         if canonical == "queue":
             queue_payload = event.get_command_args().strip()
             if not queue_payload:
@@ -2456,13 +2390,12 @@ class GatewayInboundMixin:
                 pass
 
 
-        if canonical == "loop":
-            return await self._handle_loop_command(event)
-
-        if canonical == "refine":
-            return await self._handle_refine_command(event)
-        if canonical == "review":
-            return await self._handle_review_command(event)
+        # Idle-path commands whose handler is dispatched only through the table above.
+        # The table is the single list of them; a command that lives only there (e.g.
+        # /model) previously fell through to the agent and ran as chat text.
+        idle_handler = self._gateway_idle_command_handlers().get(canonical)
+        if idle_handler is not None:
+            return await idle_handler(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
