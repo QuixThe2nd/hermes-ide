@@ -48,6 +48,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # multi-minute provider stall sees why instead of a silent spinner.
     # Deliberately absent from every tier: no platform gets it by default.
     "retry_progress": False,
+    # Runtime-metadata footer on a turn's final reply (model, context %, timing).
+    # On by default; ``display.runtime_footer: false`` (or the per-platform /
+    # per-channel form) suppresses it.
+    "runtime_footer": True,
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -203,6 +207,7 @@ _NORMALISERS: dict[str, Any] = {
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "busy_ack_detail": _norm_bool,
     "retry_progress": _norm_bool,
+    "runtime_footer": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),

@@ -1689,6 +1689,36 @@ class GatewayTurnMixin:
         effort = cfg.get("effort")
         return effort if isinstance(effort, str) and effort else None
 
+    def _runtime_footer_enabled(self, source) -> bool:
+        """Whether this turn's final reply carries the runtime-metadata footer.
+
+        A channel override wins (``channel_overrides.<id>.runtime_footer: false``), then the
+        display setting (``display.runtime_footer`` / ``display.platforms.<platform>``).
+        Fails open: an unresolvable config keeps the footer, which is the default.
+        """
+        try:
+            from gateway.run import _get_channel_override
+            override = _get_channel_override(
+                self.config,
+                source.platform,
+                str(source.chat_id or ""),
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+            if override is not None and override.runtime_footer is not None:
+                return bool(override.runtime_footer)
+        except Exception:
+            logger.debug("runtime_footer channel override lookup failed", exc_info=True)
+        try:
+            from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
+            return _resolve_gateway_display_bool(
+                _load_gateway_config(), _platform_config_key(source.platform), "runtime_footer",
+                default=True, platform=source.platform,
+            )
+        except Exception:
+            logger.debug("runtime_footer display setting lookup failed", exc_info=True)
+            return True
+
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; always on."""
         from gateway.run import logger
@@ -4252,7 +4282,8 @@ class GatewayTurnMixin:
                 except Exception as _footer_err:
                     logger.debug("runtime_footer build failed: %s", _footer_err)
                     _footer_line = ""
-                if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                if (_footer_line and response and not agent_result.get("already_sent")
+                        and not _intentional_silence and self._runtime_footer_enabled(source)):
                     response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook

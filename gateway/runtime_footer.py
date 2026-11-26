@@ -2,8 +2,10 @@
 """Gateway runtime-metadata footer.
 
 Renders a compact footer showing runtime state (model, context %, timing) and
-appends it to the FINAL message of an agent turn. Always on with the default
-field set (``_DEFAULT_FIELDS``); not user-configurable.
+appends it to the FINAL message of an agent turn. On by default with the default
+field set (``_DEFAULT_FIELDS``); ``display.runtime_footer: false`` (global or per
+platform) and ``channel_overrides.<id>.runtime_footer: false`` suppress it. The
+switch itself lives in ``gateway/display_config.py`` and the turn call site.
 
 The footer is appended to the final response text in ``gateway/run.py`` right
 before returning the response to the adapter send path, so it only lands on
