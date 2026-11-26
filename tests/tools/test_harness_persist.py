@@ -12,6 +12,22 @@ import pytest
 pytestmark = pytest.mark.platforms("linux")
 
 
+def test_system_manager_inactive_does_not_win_over_user_manager(monkeypatch):
+    import tools.harness_persist as hp
+
+    def fake_run(cmd, **kwargs):
+        class _R:
+            returncode = 0
+            stderr = ""
+
+        r = _R()
+        r.stdout = "active" if "--user" in cmd else "inactive"
+        return r
+
+    monkeypatch.setattr(hp.subprocess, "run", fake_run)
+    assert hp._systemctl_show("some.service", "ActiveState") == "active"
+
+
 def test_detached_wrapper_is_not_a_py_file(tmp_path, monkeypatch):
     # The wrapper lands next to the stdout log — which can be a checkout root
     # (``.hermes-agent-cli.out`` from tools/agent_cli_runner.py). A ``*.py`` name

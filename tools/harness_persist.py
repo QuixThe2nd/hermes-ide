@@ -33,8 +33,23 @@ def caller_killed_service_cgroup() -> Optional[str]:
     return path if path.endswith(".service") else None
 
 
+def _manager_prefix() -> list[str]:
+    """systemctl prefix for the manager that owns this process's units.
+
+    Non-root launches land in the user manager (system transient units
+    need polkit auth), so prefer ``--user`` there. Root owns system units.
+    """
+    if hasattr(os, "getuid") and os.getuid() != 0:
+        return ["--user"]
+    return []
+
+
 def _systemctl_show(unit: str, prop: str) -> str:
-    for prefix in ([], ["--user"]):
+    owning = _manager_prefix()
+    fallback = [] if owning else ["--user"]
+    # Owning manager first: a system-manager "inactive" must not shadow a
+    # user-manager "active" for units the user manager actually owns.
+    for prefix in (owning, fallback):
         try:
             result = subprocess.run(
                 ["systemctl", *prefix, "show", unit, "-p", prop, "--value"],
@@ -91,8 +106,11 @@ def launch_detached_service(
         encoding="utf-8",
     )
     argv = [sys.executable, str(runner), str(code_path), *argv]
+    # Non-root must talk to the user manager: a system transient unit needs
+    # polkit auth, and a non-interactive gateway only times out on that bus.
     cmd = [
-        "systemd-run", "--collect", f"--unit={unit_name}", "--property=Type=exec",
+        "systemd-run", *_manager_prefix(),
+        "--collect", f"--unit={unit_name}", "--property=Type=exec",
         f"--working-directory={cwd}",
         f"--property=StandardOutput=file:{stdout_path}",
         f"--property=StandardError=file:{stderr_path}",
@@ -104,8 +122,17 @@ def launch_detached_service(
         cmd.append(f"--setenv={key}={value}")
     cmd.append("--")
     cmd.extend(str(part) for part in argv)
-    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                   timeout=30)
+    try:
+        subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=30)
+    except subprocess.CalledProcessError as exc:
+        # Never surface argv: it carries the whole child environment, secrets
+        # included, and the traceback ends up in the transcript. shortcut: the
+        # values still sit in argv (visible to ps); moving them to
+        # --property=EnvironmentFile closes that too, needs its own change.
+        raise RuntimeError(
+            f"harness launch failed for {unit_name} (systemd-run rc={exc.returncode}); argv withheld"
+        ) from None
     deadline = time.time() + 15
     pid = None
     while time.time() < deadline:
@@ -150,7 +177,7 @@ def wait_service(unit: str, timeout_seconds: int = 0) -> int:
         if state == "" and (time.monotonic() - started) > 2:
             return 0
         if timeout_seconds and (time.monotonic() - started) > timeout_seconds:
-            subprocess.run(["systemctl", "stop", unit], check=False, timeout=20, stdin=subprocess.DEVNULL)
+            subprocess.run(["systemctl", *_manager_prefix(), "stop", unit], check=False, timeout=20, stdin=subprocess.DEVNULL)
             raise subprocess.TimeoutExpired(unit, timeout_seconds)
         time.sleep(0.5)
 
