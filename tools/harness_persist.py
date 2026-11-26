@@ -33,8 +33,23 @@ def caller_killed_service_cgroup() -> Optional[str]:
     return path if path.endswith(".service") else None
 
 
+def _manager_args() -> list[str]:
+    """``["--user"]`` when the caller lives under a per-user systemd manager.
+
+    A gateway installed as a user unit (``user@UID.service/.../hermes-gateway.service``)
+    is not allowed to create system-scope transient units; ``systemd-run`` then
+    fails with "Access denied" and every harness dies in 0s. The user manager
+    still places the harness outside the gateway's cgroup, which is all we need.
+    """
+    path = caller_killed_service_cgroup() or ""
+    return ["--user"] if "/user@" in path else []
+
+
 def _systemctl_show(unit: str, prop: str) -> str:
-    for prefix in ([], ["--user"]):
+    # Ask the caller's own manager first: the other one answers "inactive" (exit 0)
+    # for a unit it has never heard of, which would shadow the real state.
+    own = _manager_args()
+    for prefix in (own, [] if own else ["--user"]):
         try:
             result = subprocess.run(
                 ["systemctl", *prefix, "show", unit, "-p", prop, "--value"],
@@ -92,7 +107,7 @@ def launch_detached_service(
     )
     argv = [sys.executable, str(runner), str(code_path), *argv]
     cmd = [
-        "systemd-run", "--collect", f"--unit={unit_name}", "--property=Type=exec",
+        "systemd-run", *_manager_args(), "--collect", f"--unit={unit_name}", "--property=Type=exec",
         f"--working-directory={cwd}",
         f"--property=StandardOutput=file:{stdout_path}",
         f"--property=StandardError=file:{stderr_path}",
@@ -104,8 +119,14 @@ def launch_detached_service(
         cmd.append(f"--setenv={key}={value}")
     cmd.append("--")
     cmd.extend(str(part) for part in argv)
-    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                   timeout=30)
+    result = subprocess.run(cmd, check=False, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=30)
+    if result.returncode != 0:
+        # Never surface cmd: its --setenv entries carry the harness environment (API keys).
+        detail = (result.stderr or result.stdout or "").strip()[:500]
+        raise RuntimeError(
+            f"systemd-run failed for harness unit {unit_name} (exit {result.returncode}): {detail}"
+        )
     deadline = time.time() + 15
     pid = None
     while time.time() < deadline:
@@ -150,7 +171,7 @@ def wait_service(unit: str, timeout_seconds: int = 0) -> int:
         if state == "" and (time.monotonic() - started) > 2:
             return 0
         if timeout_seconds and (time.monotonic() - started) > timeout_seconds:
-            subprocess.run(["systemctl", "stop", unit], check=False, timeout=20, stdin=subprocess.DEVNULL)
+            subprocess.run(["systemctl", *_manager_args(), "stop", unit], check=False, timeout=20, stdin=subprocess.DEVNULL)
             raise subprocess.TimeoutExpired(unit, timeout_seconds)
         time.sleep(0.5)
 
