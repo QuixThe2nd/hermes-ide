@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,58 @@ def test_detached_wrapper_is_not_a_py_file(tmp_path, monkeypatch):
     runner_arg = launched["cmd"][launched["cmd"].index("--") + 2]
     assert runner_arg == str(wrapper)
     assert not runner_arg.endswith(".py")
+
+
+def _fake_launch(hp, tmp_path, monkeypatch, *, cgroup, returncode=0, stderr=""):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return types.SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(hp.subprocess, "run", fake_run)
+    monkeypatch.setattr(hp, "caller_killed_service_cgroup", lambda: cgroup)
+    monkeypatch.setattr(hp, "active_service_main_pid", lambda unit: os.getpid())
+    hp.launch_detached_service(
+        ["/bin/true"], cwd=str(tmp_path), env={"SECRET_TOKEN": "sk-do-not-leak"},
+        stdout_path=tmp_path / "out", stderr_path=tmp_path / "err",
+    )
+    return seen["cmd"]
+
+
+def test_user_manager_gateway_launches_on_user_manager(tmp_path, monkeypatch):
+    # A gateway running as a user unit gets "Access denied" from system-scope
+    # systemd-run, so every harness exits in 0s. It must ask its own manager.
+    import tools.harness_persist as hp
+
+    cmd = _fake_launch(
+        hp, tmp_path, monkeypatch,
+        cgroup="/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service",
+    )
+    assert cmd[:2] == ["systemd-run", "--user"]
+
+
+def test_system_gateway_keeps_system_manager(tmp_path, monkeypatch):
+    import tools.harness_persist as hp
+
+    cmd = _fake_launch(hp, tmp_path, monkeypatch, cgroup="/system.slice/hermes-gateway.service")
+    assert cmd[0] == "systemd-run"
+    assert "--user" not in cmd[: cmd.index("--")]
+
+
+def test_launch_failure_does_not_echo_setenv_values(tmp_path, monkeypatch):
+    import tools.harness_persist as hp
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _fake_launch(
+            hp, tmp_path, monkeypatch, cgroup="/system.slice/hermes-gateway.service",
+            returncode=1, stderr="Failed to start transient service unit: Access denied",
+        )
+    message = str(excinfo.value)
+    assert "Access denied" in message
+    assert "sk-do-not-leak" not in message
+    assert "--setenv" not in message
+
 
 def _stop(unit: str) -> None:
     subprocess.run(["systemctl", "stop", unit], check=False, timeout=30)
