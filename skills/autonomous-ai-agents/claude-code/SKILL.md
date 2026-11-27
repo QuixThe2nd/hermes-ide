@@ -739,6 +739,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
 11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
 12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
+13. **Never type into a TUI by writing to its `/dev/pts/N`**: writing to the PTY *slave* (for example a `script`-wrapped `claude setup-token`) only echoes into the log; the TUI never receives it as keyboard input, and one-time codes (OAuth, setup-token) expire while you wait. Start interactive prompts with `terminal(command=..., pty=true, background=true)` and answer them with `process_manage(action="submit", session_id=..., data=...)`, or use tmux `send-keys`. If a stale wrapper already owns the PTY, kill it and restart under one of those routes before asking the user for a fresh code.
 
 ## Rules for Hermes Agents
 
